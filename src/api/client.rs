@@ -679,6 +679,25 @@ impl FluxerHttpClient {
         Ok(bytes.to_vec())
     }
 
+    /// GET a public asset (media proxy, CDN) without the Fluxer auth header.
+    pub async fn fetch_public_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let response = self
+            .inner
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("request failed for {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!("fetch failed: {status} ({url})");
+        }
+        Ok(response
+            .bytes()
+            .await
+            .context("read response body")?
+            .to_vec())
+    }
+
     fn url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             path.to_string()

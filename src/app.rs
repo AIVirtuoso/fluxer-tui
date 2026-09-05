@@ -1,7 +1,10 @@
 use image::DynamicImage;
-use ratatui::style::Color;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::text::Span;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::protocol::{Protocol, StatefulProtocol};
+use std::cell::RefCell;
 
 use crate::api::types::{
     CHANNEL_DM, CHANNEL_DM_PERSONAL_NOTES, CHANNEL_GROUP_DM, CHANNEL_GUILD_CATEGORY,
@@ -132,6 +135,29 @@ pub struct CommandAutocomplete {
 }
 
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+
+/// Width in cells of an inline custom emoji (one row tall).
+pub const CUSTOM_EMOJI_CELLS: u16 = 2;
+/// Two braille blanks: not whitespace, so wrapping never trims them, and
+/// invisible if the picture fails to land on top.
+pub const CUSTOM_EMOJI_PLACEHOLDER: &str = "\u{2800}\u{2800}";
+
+/// A guild emoji as it is known to the message renderer.
+pub enum CustomEmojiState {
+    Loading,
+    Ready(Protocol),
+    Failed,
+}
+
+impl std::fmt::Debug for CustomEmojiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CustomEmojiState::Loading => "Loading",
+            CustomEmojiState::Ready(_) => "Ready(..)",
+            CustomEmojiState::Failed => "Failed",
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ReplyState {
@@ -293,6 +319,12 @@ pub struct App {
     pub chafa_viewport: (u16, u16),
     pub chafa_preview_cells: (u16, u16),
     pub image_picker: Option<Picker>,
+    /// Custom (guild) emoji images by id, encoded for the terminal's protocol.
+    pub custom_emojis: HashMap<String, CustomEmojiState>,
+    /// Per frame: which emoji id each marker slot in the message pane refers to.
+    pub custom_emoji_slots: RefCell<Vec<String>>,
+    /// Per frame: emoji ids the renderer met but has no image for yet.
+    pub custom_emoji_wanted: RefCell<Vec<String>>,
     pub show_settings: bool,
     pub settings_cursor: usize,
     pub show_server_notifications: bool,
@@ -385,6 +417,9 @@ impl App {
             chafa_viewport: (80, 22),
             chafa_preview_cells: (100, 40),
             image_picker: None,
+            custom_emojis: HashMap::new(),
+            custom_emoji_slots: RefCell::new(Vec::new()),
+            custom_emoji_wanted: RefCell::new(Vec::new()),
             show_settings: false,
             settings_cursor: 0,
             show_server_notifications: false,
@@ -1417,6 +1452,86 @@ impl App {
 
     pub fn scroll_messages_down(&mut self, amount: u16) {
         self.message_scroll_from_bottom = self.message_scroll_from_bottom.saturating_sub(amount);
+    }
+
+    /// Whether the terminal can draw pictures inline (sixel, kitty, iTerm2);
+    /// half-block "pictures" two cells wide are not worth it.
+    pub fn custom_emoji_inline_supported(&self) -> bool {
+        self.image_picker
+            .as_ref()
+            .map(|p| p.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks)
+            .unwrap_or(false)
+    }
+
+    /// The media-proxy URL of a custom emoji, as the web app builds it.
+    pub fn custom_emoji_url(&self, id: &str) -> String {
+        let media = self.discovery.endpoints.media.trim_end_matches('/');
+        let base = if media.is_empty() {
+            "https://fluxerusercontent.com"
+        } else {
+            media
+        };
+        format!("{base}/emojis/{id}.webp?size=128")
+    }
+
+    /// Called by the message renderer for `<:name:id>`: a marked placeholder
+    /// span when the picture is ready, None to fall back to `:name:` text.
+    /// Unknown ids are queued for fetching.
+    pub fn custom_emoji_placeholder(&self, id: &str) -> Option<Span<'static>> {
+        if !self.custom_emoji_inline_supported() || id.is_empty() {
+            return None;
+        }
+        match self.custom_emojis.get(id) {
+            Some(CustomEmojiState::Ready(_)) => {
+                let mut slots = self.custom_emoji_slots.borrow_mut();
+                let k = slots.len();
+                slots.push(id.to_string());
+                Some(Span::styled(
+                    CUSTOM_EMOJI_PLACEHOLDER,
+                    custom_emoji_marker_style(k),
+                ))
+            }
+            Some(_) => None,
+            None => {
+                let mut wanted = self.custom_emoji_wanted.borrow_mut();
+                if !wanted.iter().any(|w| w == id) {
+                    wanted.push(id.to_string());
+                }
+                None
+            }
+        }
+    }
+
+    /// Ids the last frame asked for; they are marked Loading here so each is
+    /// fetched once.
+    pub fn take_custom_emoji_wants(&mut self) -> Vec<(String, String)> {
+        let wanted = std::mem::take(&mut *self.custom_emoji_wanted.borrow_mut());
+        let mut out = Vec::new();
+        for id in wanted {
+            if self.custom_emojis.contains_key(&id) {
+                continue;
+            }
+            let url = self.custom_emoji_url(&id);
+            self.custom_emojis
+                .insert(id.clone(), CustomEmojiState::Loading);
+            out.push((id, url));
+        }
+        out
+    }
+
+    pub fn set_custom_emoji_image(&mut self, id: String, image: Option<DynamicImage>) {
+        let state = match (image, self.image_picker.as_ref()) {
+            (Some(img), Some(picker)) => picker
+                .new_protocol(
+                    img,
+                    Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
+                    ratatui_image::Resize::Fit(None),
+                )
+                .map(CustomEmojiState::Ready)
+                .unwrap_or(CustomEmojiState::Failed),
+            _ => CustomEmojiState::Failed,
+        };
+        self.custom_emojis.insert(id, state);
     }
 
     /// Short label for the input title: "2 files: a.png, b.jpg".
@@ -3140,5 +3255,49 @@ mod tests {
         });
 
         assert_eq!(app.channel_mention_count("chan-1"), 0);
+    }
+}
+
+/// Placeholder cells carry their slot number in the underline colour, which
+/// is invisible without an underline and survives Paragraph wrapping.
+pub fn custom_emoji_marker_style(slot: usize) -> Style {
+    let k = slot.min(u16::MAX as usize) as u16;
+    Style::default().underline_color(Color::Rgb(0xEE, (k >> 8) as u8, k as u8))
+}
+
+pub fn custom_emoji_marker_slot(style: Style) -> Option<usize> {
+    match style.underline_color {
+        Some(Color::Rgb(0xEE, hi, lo)) => Some(((hi as usize) << 8) | lo as usize),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod custom_emoji_tests {
+    use super::*;
+
+    #[test]
+    fn marker_style_round_trips_slot_numbers() {
+        for k in [0usize, 1, 7, 255, 256, 4095, 65535] {
+            assert_eq!(
+                custom_emoji_marker_slot(custom_emoji_marker_style(k)),
+                Some(k)
+            );
+        }
+        assert_eq!(custom_emoji_marker_slot(Style::default()), None);
+        assert_eq!(
+            custom_emoji_marker_slot(Style::default().underline_color(Color::Rgb(1, 2, 3))),
+            None
+        );
+    }
+
+    #[test]
+    fn placeholder_is_two_cells_and_not_whitespace() {
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(
+            CUSTOM_EMOJI_PLACEHOLDER.width(),
+            CUSTOM_EMOJI_CELLS as usize
+        );
+        assert!(!CUSTOM_EMOJI_PLACEHOLDER.chars().any(char::is_whitespace));
     }
 }

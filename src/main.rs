@@ -150,6 +150,9 @@ async fn main() -> Result<()> {
                 eprintln!("fluxer-tui: terminal draw failed: {e}");
                 break;
             }
+            for (id, url) in app.take_custom_emoji_wants() {
+                spawn_custom_emoji_fetch(authed_client.clone(), event_tx.clone(), id, url);
+            }
             needs_redraw = false;
         }
 
@@ -1654,6 +1657,24 @@ fn spawn_send_message(
                 let _ = event_tx.send(AppEvent::ApiError(format!("Failed to send message: {err}")));
             }
         }
+    });
+}
+
+fn spawn_custom_emoji_fetch(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    id: String,
+    url: String,
+) {
+    tokio::spawn(async move {
+        let image = match client.fetch_public_bytes(&url).await {
+            Ok(bytes) => tokio::task::spawn_blocking(move || image::load_from_memory(&bytes).ok())
+                .await
+                .ok()
+                .flatten(),
+            Err(_) => None,
+        };
+        let _ = event_tx.send(AppEvent::CustomEmojiLoaded { id, image });
     });
 }
 

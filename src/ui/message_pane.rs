@@ -8,7 +8,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui_image::Image;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn clip_url_for_display(url: &str, max_chars: usize) -> String {
@@ -778,6 +779,7 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .selected_channel_id
         .as_ref()
         .is_some_and(|id| app.loading_messages.contains(id));
+    app.custom_emoji_slots.borrow_mut().clear();
 
     let body: Vec<Line<'static>> = if loading {
         vec![Line::from(Span::styled(
@@ -823,6 +825,42 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false })
         .scroll((top, 0));
     frame.render_widget(paragraph, area);
+    overlay_custom_emojis(frame, inner, app);
+}
+
+/// Draw custom emoji pictures over the marked placeholder cells the paragraph
+/// just laid out. Scanning the buffer means wrapping and scrolling are already
+/// accounted for.
+fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
+    let slots = app.custom_emoji_slots.borrow();
+    if slots.is_empty() {
+        return;
+    }
+    let w = crate::app::CUSTOM_EMOJI_CELLS;
+    let buf = frame.buffer_mut();
+    for y in inner.y..inner.y.saturating_add(inner.height) {
+        let mut x = inner.x;
+        while x.saturating_add(w) <= inner.x.saturating_add(inner.width) {
+            let slot = crate::app::custom_emoji_marker_slot(buf[(x, y)].style());
+            let Some(k) = slot else {
+                x += 1;
+                continue;
+            };
+            // both cells must belong to the same placeholder (a wrap could
+            // split one; then draw nothing rather than over a neighbour)
+            let whole = (1..w).all(|dx| {
+                crate::app::custom_emoji_marker_slot(buf[(x + dx, y)].style()) == Some(k)
+            });
+            if whole
+                && let Some(id) = slots.get(k)
+                && let Some(crate::app::CustomEmojiState::Ready(protocol)) =
+                    app.custom_emojis.get(id)
+            {
+                Image::new(protocol).render(Rect::new(x, y, w, 1), buf);
+            }
+            x += w;
+        }
+    }
 }
 
 fn render_voice(frame: &mut Frame, area: Rect, app: &App) {

@@ -117,6 +117,11 @@ pub enum AppEvent {
     AttachmentFailed {
         message: String,
     },
+    /// A custom emoji picture arrived (None: fetch or decode failed).
+    CustomEmojiLoaded {
+        id: String,
+        image: Option<DynamicImage>,
+    },
     /// An upload failed before the message was posted: give the text and
     /// the staged files back to the compose box.
     SendRestore {
@@ -138,6 +143,9 @@ pub fn apply_event(
 ) -> EventEffects {
     let mut effects = EventEffects::default();
     match event {
+        AppEvent::CustomEmojiLoaded { id, image } => {
+            app.set_custom_emoji_image(id, image);
+        }
         AppEvent::AttachmentStaged { attachment } => {
             if app.pending_attachments.len() >= crate::app::MAX_ATTACHMENTS_PER_MESSAGE {
                 app.set_status(format!(

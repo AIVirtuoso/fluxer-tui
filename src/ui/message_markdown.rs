@@ -405,6 +405,11 @@ pub fn parse_message_spans(text: &str, app: &App) -> Vec<Span<'static>> {
                         let parts: Vec<&str> = inner.split(':').collect();
                         let name_idx = if parts.len() >= 2 { parts.len() - 2 } else { 0 };
                         let emoji_name = format!(":{}:", parts.get(name_idx).unwrap_or(&"unknown"));
+                        let emoji_id = parts.last().copied().unwrap_or("").trim();
+                        if let Some(placeholder) = app.custom_emoji_placeholder(emoji_id) {
+                            spans.push(placeholder);
+                            continue;
+                        }
                         let style = if is_animated {
                             Style::default()
                                 .fg(crate::ui::theme::ACCENT)
