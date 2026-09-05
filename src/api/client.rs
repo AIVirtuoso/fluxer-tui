@@ -397,15 +397,38 @@ impl FluxerHttpClient {
         .await
     }
 
-    pub async fn handoff_status(&self, code: &str) -> Result<HandoffStatusResponse> {
-        self.send_json::<(), (), HandoffStatusResponse>(
-            Method::GET,
-            &format!("/auth/handoff/{code}/status"),
-            None::<&()>,
-            None::<&()>,
-            true,
-        )
-        .await
+    pub async fn handoff_status(
+        &self,
+        code: &str,
+        poll_secret: Option<&str>,
+    ) -> Result<HandoffStatusResponse> {
+        let path = format!("/auth/handoff/{code}/status");
+        match poll_secret {
+            // The API only hands out the token when the poll secret from
+            // `handoff_initiate` is presented in a POST body; a GET without
+            // it stays "pending" forever and counts as a failed attempt.
+            Some(secret) => {
+                let body = serde_json::json!({ "poll_secret": secret });
+                self.send_json::<(), Value, HandoffStatusResponse>(
+                    Method::POST,
+                    &path,
+                    None::<&()>,
+                    Some(&body),
+                    true,
+                )
+                .await
+            }
+            None => {
+                self.send_json::<(), (), HandoffStatusResponse>(
+                    Method::GET,
+                    &path,
+                    None::<&()>,
+                    None::<&()>,
+                    true,
+                )
+                .await
+            }
+        }
     }
 
     async fn send_json<Q, B, T>(

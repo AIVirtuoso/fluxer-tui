@@ -32,6 +32,7 @@ pub async fn ensure_auth(
         .context("failed to initiate browser handoff")?;
 
     let code = &handoff.code;
+    let poll_secret = handoff.poll_secret.as_deref();
     let formatted = if code.len() == 8 {
         format!("{}-{}", &code[..4], &code[4..])
     } else {
@@ -56,12 +57,13 @@ pub async fn ensure_auth(
     io::stderr().flush().ok();
 
     let max_attempts = 150; // 5 minutes at 2s intervals
+    let mut last_error: Option<String> = None;
     for _ in 0..max_attempts {
         sleep(Duration::from_secs(2)).await;
         eprint!(".");
         io::stderr().flush().ok();
 
-        match base_client.handoff_status(code).await {
+        match base_client.handoff_status(code, poll_secret).await {
             Ok(status) if status.status == "completed" => {
                 eprintln!(" done!");
                 let token = status
@@ -82,7 +84,18 @@ pub async fn ensure_auth(
                 bail!("login code expired, please try again");
             }
             Ok(_) => continue,
-            Err(_) => continue,
+            Err(err) => {
+                // Surface a changed error once instead of dotting silently
+                // for five minutes.
+                let text = format!("{err:#}");
+                if last_error.as_deref() != Some(text.as_str()) {
+                    eprintln!();
+                    eprintln!("  status check failed: {text}");
+                    eprint!("  Waiting for browser login");
+                    last_error = Some(text);
+                }
+                continue;
+            }
         }
     }
 

@@ -193,6 +193,10 @@ pub struct HandoffInitiateResponse {
     pub code: String,
     #[serde(default)]
     pub expires_at: String,
+    /// Secret issued alongside the code; the status endpoint only releases
+    /// the token to a poller that presents it (server change of 2026-09-02).
+    #[serde(default)]
+    pub poll_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
