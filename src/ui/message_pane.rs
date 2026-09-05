@@ -779,7 +779,6 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .selected_channel_id
         .as_ref()
         .is_some_and(|id| app.loading_messages.contains(id));
-    app.custom_emoji_slots.borrow_mut().clear();
 
     let body: Vec<Line<'static>> = if loading {
         vec![Line::from(Span::styled(
@@ -825,13 +824,12 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false })
         .scroll((top, 0));
     frame.render_widget(paragraph, area);
-    overlay_custom_emojis(frame, inner, app);
 }
 
 /// Draw custom emoji pictures over the marked placeholder cells the paragraph
 /// just laid out. Scanning the buffer means wrapping and scrolling are already
 /// accounted for.
-fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
+pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
     let slots = app.custom_emoji_slots.borrow();
     if slots.is_empty() {
         return;

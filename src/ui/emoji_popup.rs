@@ -2,7 +2,7 @@ use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -15,7 +15,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|e| {
             let line = if e.is_custom {
-                Line::from(e.label.clone()).style(Style::default().fg(crate::ui::theme::ACCENT))
+                let accent = Style::default().fg(crate::ui::theme::ACCENT);
+                match e
+                    .custom_id
+                    .as_deref()
+                    .and_then(|id| app.custom_emoji_placeholder(id))
+                {
+                    Some(picture) => {
+                        Line::from(vec![picture, Span::styled(format!(" {}", e.label), accent)])
+                    }
+                    None => Line::from(e.label.clone()).style(accent),
+                }
             } else {
                 Line::from(e.label.clone())
             };

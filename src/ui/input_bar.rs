@@ -21,7 +21,11 @@ pub fn input_display_row_count(app: &App, inner_width: u16) -> u16 {
         return 1;
     }
     if !app.input.is_empty() {
-        return input_word_wrap::wrapped_row_count(&app.input, inner_width, input_span_style());
+        return input_word_wrap::wrapped_row_count(
+            &app.input_display_plain(),
+            inner_width,
+            input_span_style(),
+        );
     }
     let mut n = 1u16;
     if app.others_typing_phrase().is_some() {
@@ -147,13 +151,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     }
 
     let paragraph = if can_type && !app.input.is_empty() {
-        let style = Style::default().fg(crate::ui::theme::TEXT);
-        let lines: Vec<Line> = app
-            .input
-            .split('\n')
-            .map(|l| Line::from(Span::styled(l.to_string(), style)))
-            .collect();
-        Paragraph::new(Text::from(lines))
+        Paragraph::new(Text::from(app.input_display(true)))
     } else if can_type
         && app.input.is_empty()
         && let (Some(phrase), Some(ph)) = (others_typing.as_ref(), placeholder.as_ref())
@@ -175,8 +173,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
 
     if focused && can_type && !app.input.is_empty() {
         let inner_w = area.width.saturating_sub(2).max(1);
-        let (col, row) =
-            input_word_wrap::eol_cursor_col_row(&app.input, inner_w, input_span_style());
+        let (col, row) = input_word_wrap::eol_cursor_col_row(
+            &app.input_display_plain(),
+            inner_w,
+            input_span_style(),
+        );
         let max_x = area.x + area.width.saturating_sub(2);
         let x = (area.x + 1 + col).min(max_x);
         let y = area.y + 1 + row;

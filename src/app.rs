@@ -1,7 +1,7 @@
 use image::DynamicImage;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::{Protocol, StatefulProtocol};
 use std::cell::RefCell;
@@ -87,6 +87,8 @@ pub struct EmojiMatch {
     pub label: String,
     pub insert: String,
     pub is_custom: bool,
+    /// Guild emoji id, so the popup can draw its picture.
+    pub custom_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1474,15 +1476,24 @@ impl App {
         format!("{base}/emojis/{id}.webp?size=128")
     }
 
-    /// Called by the message renderer for `<:name:id>`: a marked placeholder
-    /// span when the picture is ready, None to fall back to `:name:` text.
-    /// Unknown ids are queued for fetching.
+    /// Called by renderers for `<:name:id>`: a marked placeholder span when
+    /// the picture is ready, None to fall back to `:name:` text. Unknown ids
+    /// are queued for fetching.
     pub fn custom_emoji_placeholder(&self, id: &str) -> Option<Span<'static>> {
+        self.custom_emoji_placeholder_inner(id, true)
+    }
+
+    /// The compose box is measured before it is drawn; measuring must not
+    /// claim overlay slots.
+    fn custom_emoji_placeholder_inner(&self, id: &str, register: bool) -> Option<Span<'static>> {
         if !self.custom_emoji_inline_supported() || id.is_empty() {
             return None;
         }
         match self.custom_emojis.get(id) {
             Some(CustomEmojiState::Ready(_)) => {
+                if !register {
+                    return Some(Span::raw(CUSTOM_EMOJI_PLACEHOLDER));
+                }
                 let mut slots = self.custom_emoji_slots.borrow_mut();
                 let k = slots.len();
                 slots.push(id.to_string());
@@ -1500,6 +1511,71 @@ impl App {
                 None
             }
         }
+    }
+
+    /// The compose box as it should be displayed: custom emoji tokens show
+    /// their picture (or `:name:` while it loads), everything else verbatim.
+    /// One `Line` per raw line. `register` claims overlay slots for the
+    /// pictures; pass false when only measuring.
+    pub fn input_display(&self, register: bool) -> Vec<Line<'static>> {
+        let text_style = Style::default().fg(crate::ui::theme::TEXT);
+        let name_style = Style::default().fg(crate::ui::theme::EMOJI_UNKNOWN);
+        let mut lines = Vec::new();
+        for raw_line in self.input.split('\n') {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut rest = raw_line;
+            while !rest.is_empty() {
+                let Some(lt) = rest.find('<') else {
+                    spans.push(Span::styled(rest.to_string(), text_style));
+                    break;
+                };
+                if lt > 0 {
+                    spans.push(Span::styled(rest[..lt].to_string(), text_style));
+                }
+                match parse_custom_emoji_token(&rest[lt..]) {
+                    Some(tok) => {
+                        match self.custom_emoji_placeholder_inner(tok.id, register) {
+                            Some(ph) => spans.push(ph),
+                            None => spans.push(Span::styled(format!(":{}:", tok.name), name_style)),
+                        }
+                        rest = &rest[lt + tok.len..];
+                    }
+                    None => {
+                        spans.push(Span::styled("<".to_string(), text_style));
+                        rest = &rest[lt + 1..];
+                    }
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
+    }
+
+    /// `input_display` flattened to text, for width and cursor arithmetic.
+    pub fn input_display_plain(&self) -> String {
+        self.input_display(false)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Backspace: a custom emoji token at the end goes away as one unit.
+    pub fn input_pop(&mut self) {
+        if self.input.ends_with('>')
+            && let Some(lt) = self.input.rfind('<')
+            && let Some(tok) = parse_custom_emoji_token(&self.input[lt..])
+            && lt + tok.len == self.input.len()
+        {
+            self.input.truncate(lt);
+            return;
+        }
+        self.input.pop();
     }
 
     /// Ids the last frame asked for; they are marked Loading here so each is
@@ -2074,6 +2150,7 @@ impl App {
                     label: format!(":{}:", e.name),
                     insert: format!("<{}:{}:{}>", prefix, e.name, e.id),
                     is_custom: true,
+                    custom_id: Some(e.id.clone()),
                 });
             }
             if results.len() >= 12 {
@@ -2088,6 +2165,7 @@ impl App {
                     label: format!("{} :{}:", c.emoji, c.name),
                     insert: c.emoji.to_string(),
                     is_custom: false,
+                    custom_id: None,
                 });
             }
         }
@@ -3258,6 +3336,40 @@ mod tests {
     }
 }
 
+/// A `<:name:id>` / `<a:name:id>` token at the start of `s`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CustomEmojiToken<'a> {
+    pub name: &'a str,
+    pub id: &'a str,
+    pub animated: bool,
+    /// Byte length of the whole token including the angle brackets.
+    pub len: usize,
+}
+
+pub fn parse_custom_emoji_token(s: &str) -> Option<CustomEmojiToken<'_>> {
+    let body = s.strip_prefix('<')?;
+    let (animated, body) = match body.strip_prefix("a:") {
+        Some(rest) => (true, rest),
+        None => (false, body.strip_prefix(':')?),
+    };
+    let close = body.find('>')?;
+    let inner = &body[..close];
+    let (name, id) = inner.rsplit_once(':')?;
+    if name.is_empty()
+        || id.is_empty()
+        || !id.bytes().all(|b| b.is_ascii_digit())
+        || name.contains(|c: char| c.is_whitespace() || c == '<' || c == ':')
+    {
+        return None;
+    }
+    Some(CustomEmojiToken {
+        name,
+        id,
+        animated,
+        len: 1 + if animated { 2 } else { 1 } + close + 1,
+    })
+}
+
 /// Placeholder cells carry their slot number in the underline colour, which
 /// is invisible without an underline and survives Paragraph wrapping.
 pub fn custom_emoji_marker_style(slot: usize) -> Style {
@@ -3289,6 +3401,21 @@ mod custom_emoji_tests {
             custom_emoji_marker_slot(Style::default().underline_color(Color::Rgb(1, 2, 3))),
             None
         );
+    }
+
+    #[test]
+    fn custom_emoji_tokens_parse() {
+        let t = parse_custom_emoji_token("<:blob:123> tail").unwrap();
+        assert_eq!(
+            (t.name, t.id, t.animated, t.len),
+            ("blob", "123", false, 11)
+        );
+        let t = parse_custom_emoji_token("<a:party:9>").unwrap();
+        assert_eq!((t.name, t.id, t.animated, t.len), ("party", "9", true, 11));
+        assert!(parse_custom_emoji_token("<:blob:abc>").is_none());
+        assert!(parse_custom_emoji_token("<#123>").is_none());
+        assert!(parse_custom_emoji_token("<:no close").is_none());
+        assert!(parse_custom_emoji_token("<::1>").is_none());
     }
 
     #[test]

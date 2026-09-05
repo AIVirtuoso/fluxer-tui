@@ -38,6 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    app.custom_emoji_slots.borrow_mut().clear();
     let inner_w = area.width.saturating_sub(2).max(1);
     let input_lines = input_bar::input_display_row_count(app, inner_w);
     let input_block_h = input_lines.saturating_add(2).clamp(3, 40);
@@ -98,6 +99,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.channel_picker.is_some() {
         channel_picker::render(frame, area, app);
     }
+
+    // Custom emoji pictures go on top of whatever placed their marker cells
+    // this frame: message pane, compose box, emoji popup.
+    message_pane::overlay_custom_emojis(frame, area, app);
 }
 
 fn sidebar_width(terminal_width: u16) -> u16 {

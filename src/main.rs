@@ -822,7 +822,7 @@ fn handle_key_event(
                     app.update_emoji_filter();
                 }
                 KeyCode::Backspace => {
-                    app.input.pop();
+                    app.input_pop();
                     app.update_emoji_filter();
                 }
                 KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -975,7 +975,7 @@ fn handle_key_event(
                 }
             }
             KeyCode::Backspace => {
-                app.input.pop();
+                app.input_pop();
                 if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
                     app.sync_command_autocomplete();
                 }
