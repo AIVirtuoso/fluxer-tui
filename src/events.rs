@@ -110,6 +110,19 @@ pub enum AppEvent {
     UserGuildSettingsUpdated {
         settings: UserGuildSettingsResponse,
     },
+    /// Ctrl+V or /attach finished reading; stage it for the next message.
+    AttachmentStaged {
+        attachment: crate::media::StagedAttachment,
+    },
+    AttachmentFailed {
+        message: String,
+    },
+    /// An upload failed before the message was posted: give the text and
+    /// the staged files back to the compose box.
+    SendRestore {
+        content: String,
+        attachments: Vec<crate::media::StagedAttachment>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -125,6 +138,40 @@ pub fn apply_event(
 ) -> EventEffects {
     let mut effects = EventEffects::default();
     match event {
+        AppEvent::AttachmentStaged { attachment } => {
+            if app.pending_attachments.len() >= crate::app::MAX_ATTACHMENTS_PER_MESSAGE {
+                app.set_status(format!(
+                    "Attachment limit is {} per message.",
+                    crate::app::MAX_ATTACHMENTS_PER_MESSAGE
+                ));
+            } else {
+                let label = format!(
+                    "Attached {} ({}). Enter sends, Ctrl+X removes.",
+                    attachment.filename,
+                    attachment.size_label()
+                );
+                app.pending_attachments.push(attachment);
+                app.set_status(label);
+            }
+        }
+        AppEvent::AttachmentFailed { message } => {
+            app.set_status(format!("Attach failed: {message}"));
+        }
+        AppEvent::SendRestore {
+            content,
+            attachments,
+        } => {
+            if !content.is_empty() {
+                if app.input.trim().is_empty() {
+                    app.input = content;
+                } else {
+                    app.input = format!("{content} {}", app.input);
+                }
+            }
+            app.pending_attachments.extend(attachments);
+            app.pending_attachments
+                .truncate(crate::app::MAX_ATTACHMENTS_PER_MESSAGE);
+        }
         AppEvent::GatewayStatus(status) => {
             app.gateway_status = status;
             if status != GatewayStatus::Connected {
@@ -185,8 +232,7 @@ pub fn apply_event(
                 }
             }
             "USER_GUILD_SETTINGS_UPDATE" => {
-                if let Ok(settings) = serde_json::from_value::<UserGuildSettingsResponse>(payload)
-                {
+                if let Ok(settings) = serde_json::from_value::<UserGuildSettingsResponse>(payload) {
                     app.upsert_user_guild_settings(settings);
                 }
             }

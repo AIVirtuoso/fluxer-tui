@@ -50,6 +50,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     } else {
         "Input (disabled)"
     };
+    let title: String = if app.pending_attachments.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} · {}", app.attachment_summary())
+    };
 
     let placeholder: Option<String> = if voice_only || no_perms || !can_type {
         None

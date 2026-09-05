@@ -131,6 +131,8 @@ pub struct CommandAutocomplete {
     pub selected_index: usize,
 }
 
+pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+
 #[derive(Debug, Clone)]
 pub struct ReplyState {
     pub channel_id: String,
@@ -255,6 +257,8 @@ pub struct App {
     pub selected_channel_id: Option<String>,
     pub focus: Focus,
     pub input: String,
+    /// Files staged with Ctrl+V or /attach, uploaded with the next message.
+    pub pending_attachments: Vec<crate::media::StagedAttachment>,
     pub message_scroll_from_bottom: u16,
     pub message_scroll_max: u16,
     pub selected_message_index: Option<usize>,
@@ -346,6 +350,7 @@ impl App {
             selected_channel_id,
             focus: Focus::Channels,
             input: String::new(),
+            pending_attachments: Vec::new(),
             message_scroll_from_bottom: 0,
             message_scroll_max: 0,
             selected_message_index: None,
@@ -439,7 +444,10 @@ impl App {
             settings.mute_config = None;
         }
         settings.channel_overrides.retain(|_, override_settings| {
-            if Self::mute_active(override_settings.muted, override_settings.mute_config.as_ref()) {
+            if Self::mute_active(
+                override_settings.muted,
+                override_settings.mute_config.as_ref(),
+            ) {
                 true
             } else {
                 override_settings.muted = false;
@@ -678,7 +686,8 @@ impl App {
     }
 
     pub fn hide_muted_channels_enabled(&self, guild_id: &str) -> bool {
-        self.user_guild_settings_for(Some(guild_id)).hide_muted_channels
+        self.user_guild_settings_for(Some(guild_id))
+            .hide_muted_channels
     }
 
     pub fn guild_is_muted(&self, guild_id: Option<&str>) -> bool {
@@ -700,7 +709,10 @@ impl App {
     pub fn channel_is_muted_directly(&self, channel: &ChannelResponse) -> bool {
         self.channel_override(channel.guild_id.as_deref(), &channel.id)
             .is_some_and(|override_settings| {
-                Self::mute_active(override_settings.muted, override_settings.mute_config.as_ref())
+                Self::mute_active(
+                    override_settings.muted,
+                    override_settings.mute_config.as_ref(),
+                )
             })
     }
 
@@ -710,7 +722,10 @@ impl App {
         };
         self.channel_override(channel.guild_id.as_deref(), parent_id)
             .is_some_and(|override_settings| {
-                Self::mute_active(override_settings.muted, override_settings.mute_config.as_ref())
+                Self::mute_active(
+                    override_settings.muted,
+                    override_settings.mute_config.as_ref(),
+                )
             })
     }
 
@@ -766,8 +781,7 @@ impl App {
         if level == MESSAGE_NOTIFICATIONS_NO_MESSAGES {
             return NotificationVisibility::None;
         }
-        if self.channel_is_muted_effective(channel)
-            || level == MESSAGE_NOTIFICATIONS_ONLY_MENTIONS
+        if self.channel_is_muted_effective(channel) || level == MESSAGE_NOTIFICATIONS_ONLY_MENTIONS
         {
             return NotificationVisibility::MentionsOnly;
         }
@@ -1130,8 +1144,7 @@ impl App {
         for step in 1..flat.len() {
             let i = (pos + step) % flat.len();
             let (srv, cid) = &flat[i];
-            if self.visible_channel_is_unread(cid) || self.visible_channel_mention_count(cid) > 0
-            {
+            if self.visible_channel_is_unread(cid) || self.visible_channel_mention_count(cid) > 0 {
                 return Some((srv.clone(), cid.clone()));
             }
         }
@@ -1311,12 +1324,14 @@ impl App {
                 .get(gid)
                 .and_then(|mems| mems.iter().find(|m| m.user.id == self.me.id))
                 .map(|member| member.roles.as_slice())
-            && message.mention_roles.iter().any(|role_id| roles.contains(role_id))
+            && message
+                .mention_roles
+                .iter()
+                .any(|role_id| roles.contains(role_id))
         {
             return true;
         }
-        if message.mention_everyone
-            && !self.suppress_everyone_enabled(channel.guild_id.as_deref())
+        if message.mention_everyone && !self.suppress_everyone_enabled(channel.guild_id.as_deref())
         {
             return true;
         }
@@ -1402,6 +1417,21 @@ impl App {
 
     pub fn scroll_messages_down(&mut self, amount: u16) {
         self.message_scroll_from_bottom = self.message_scroll_from_bottom.saturating_sub(amount);
+    }
+
+    /// Short label for the input title: "2 files: a.png, b.jpg".
+    pub fn attachment_summary(&self) -> String {
+        let n = self.pending_attachments.len();
+        let names: Vec<String> = self
+            .pending_attachments
+            .iter()
+            .map(|a| format!("{} {}", a.filename, a.size_label()))
+            .collect();
+        format!(
+            "{n} {}: {}",
+            if n == 1 { "file" } else { "files" },
+            names.join(", ")
+        )
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {

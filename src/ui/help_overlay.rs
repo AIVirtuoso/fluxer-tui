@@ -47,6 +47,8 @@ Input
   Backspace - delete character
   Ctrl+Backspace / Ctrl+H - delete previous word (whitespace-separated chunk)
   Ctrl+U - clear input
+  Ctrl+V - attach the image on the clipboard (wl-paste / xclip); Ctrl+X - drop the last one
+  /attach <path> - attach a file from disk; Enter sends text and attachments together
   Up - back to message list
   : - custom emoji autocomplete     @ - mention autocomplete (guild/DM)
   Long lines wrap; input height grows with wrapped rows

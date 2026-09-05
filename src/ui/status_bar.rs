@@ -27,7 +27,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 " · s select · Alt+A · i input · Ctrl+H help"
             }
         }
-        Focus::Input => " · Ctrl+K picker · Ctrl+N/P channel · Alt+A · Ctrl+H help",
+        Focus::Input => {
+            " · Ctrl+V paste image · Ctrl+K picker · Ctrl+N/P channel · Alt+A · Ctrl+H help"
+        }
     };
 
     let paragraph = Paragraph::new(Line::from(vec![

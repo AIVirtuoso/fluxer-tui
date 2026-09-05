@@ -759,6 +759,83 @@ pub struct CreateMessageRequest {
     pub tts: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_reference: Option<MessageReferenceRequest>,
+    /// Uploads already PUT to their presigned URLs, referenced by upload key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<CreateMessageAttachment>>,
+}
+
+/// One finished upload to reference from `CreateMessageRequest.attachments`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CreateMessageAttachment {
+    pub id: u32,
+    pub filename: String,
+    pub upload_filename: String,
+    pub file_size: u64,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresignedAttachmentUploadRequestItem {
+    pub id: u32,
+    pub filename: String,
+    pub file_size: u64,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresignedAttachmentUploadRequest {
+    pub attachments: Vec<PresignedAttachmentUploadRequestItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresignedUploadPart {
+    #[serde(default)]
+    pub part_number: u32,
+    #[serde(default)]
+    pub upload_url: String,
+}
+
+/// Server plan for one attachment: a single PUT for files up to 10 MB, or a
+/// multipart plan (per-part URLs plus an upload_id to complete) above that.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresignedAttachmentUploadResponseItem {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub upload_filename: String,
+    #[serde(default)]
+    pub file_size: u64,
+    #[serde(default)]
+    pub content_type: String,
+    #[serde(default)]
+    pub upload_mode: String,
+    #[serde(default)]
+    pub upload_url: Option<String>,
+    #[serde(default)]
+    pub upload_id: Option<String>,
+    #[serde(default)]
+    pub part_size: Option<u64>,
+    #[serde(default)]
+    pub parts: Vec<PresignedUploadPart>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresignedAttachmentUploadResponse {
+    #[serde(default)]
+    pub attachments: Vec<PresignedAttachmentUploadResponseItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompleteMultipartUploadItem {
+    pub upload_filename: String,
+    pub upload_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompleteMultipartAttachmentUploadRequest {
+    pub uploads: Vec<CompleteMultipartUploadItem>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -58,6 +58,13 @@ pub static SLASH_COMMANDS: &[SlashCommandDef] = &[
         requires_channel_perm: Some(SEND_TTS_MESSAGES),
     },
     SlashCommandDef {
+        name: "/attach",
+        description: "Attach a file from disk (/attach ~/pic.png); Enter then sends it.",
+        simple_append: None,
+        requires_guild: false,
+        requires_channel_perm: None,
+    },
+    SlashCommandDef {
         name: "/nick",
         description: "Change your nickname in this community.",
         simple_append: None,
@@ -114,6 +121,8 @@ pub enum OutgoingSlash {
         prev_display: String,
         new_display: String,
     },
+    /// Stage a file from disk for the next message.
+    Attach(String),
     Blocked(String),
     Normal,
 }
@@ -167,6 +176,19 @@ pub fn resolve_outgoing_slash(
             );
         }
         return OutgoingSlash::SendTts(body.to_string());
+    }
+    if t == "/attach" {
+        return OutgoingSlash::Blocked(
+            "Add a file path after /attach (e.g. /attach ~/pic.png).".to_string(),
+        );
+    }
+    if let Some(rest) = t.strip_prefix("/attach ") {
+        let path = rest.trim();
+        if path.is_empty() {
+            return OutgoingSlash::Blocked("Add a file path after /attach.".to_string());
+        }
+
+        return OutgoingSlash::Attach(path.to_string());
     }
     let nick_arg = if t == "/nick" {
         Some(String::new())

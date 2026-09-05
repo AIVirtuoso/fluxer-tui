@@ -156,3 +156,5 @@ pub fn first_message_preview_media(msg: &MessageResponse) -> Option<MessagePrevi
 // Like when Tom Cruise laughs
 // That's how your finger
 // Felt in my ass
+mod attachments;
+pub use attachments::{StagedAttachment, from_clipboard, from_path};

@@ -19,6 +19,7 @@ use crate::config::{
     AppConfig, DEFAULT_API_BASE_URL, default_config_path, load_config, save_config,
 };
 use crate::events::{AppEvent, apply_event};
+use crate::media::StagedAttachment;
 use crate::media::{MessagePreviewMedia, first_message_preview_media};
 use anyhow::{Context, Error as AnyhowError, Result};
 use clap::Parser;
@@ -226,13 +227,13 @@ async fn main() -> Result<()> {
                 if t_len_prev != app.typing_users.values().map(|m| m.len()).sum::<usize>() {
                     needs_redraw = true;
                 }
-                
+
                 let s_prev = app.status_message.clone();
                 app.expire_status_if_needed();
                 if s_prev != app.status_message {
                     needs_redraw = true;
                 }
-                
+
                 if app.others_typing_anim_active() {
                     app.input_bar_anim_slow = app.input_bar_anim_slow.saturating_add(1);
                     if app.input_bar_anim_slow >= 2 {
@@ -493,12 +494,11 @@ fn handle_key_event(
                 app.show_server_notifications = false;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                app.server_notification_cursor =
-                    app.server_notification_cursor.saturating_sub(1);
+                app.server_notification_cursor = app.server_notification_cursor.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                app.server_notification_cursor = (app.server_notification_cursor + 1)
-                    .min(App::SERVER_NOTIFICATION_LAST_ROW);
+                app.server_notification_cursor =
+                    (app.server_notification_cursor + 1).min(App::SERVER_NOTIFICATION_LAST_ROW);
             }
             KeyCode::PageUp => {
                 app.server_notification_scroll = app.server_notification_scroll.saturating_sub(1);
@@ -868,7 +868,9 @@ fn handle_key_event(
                 }
                 let is_forward = app.forward_mode;
                 let has_ref = app.reply_to.is_some();
-                let allow_send = !app.input.trim().is_empty() || (is_forward && has_ref);
+                let allow_send = !app.input.trim().is_empty()
+                    || (is_forward && has_ref)
+                    || !app.pending_attachments.is_empty();
                 if app.active_channel_is_text() && app.can_send_in_active_channel() && allow_send {
                     let channel_id = match app.active_channel_id() {
                         Some(channel_id) => channel_id,
@@ -890,6 +892,14 @@ fn handle_key_event(
                     );
                     if let crate::slash_commands::OutgoingSlash::Blocked(msg) = &resolved {
                         app.set_status(msg.clone());
+                        return;
+                    }
+                    if let crate::slash_commands::OutgoingSlash::Attach(path) = &resolved {
+                        let path = path.clone();
+                        app.dismiss_command_autocomplete();
+                        let _ = std::mem::take(&mut app.input);
+                        app.set_status(format!("Reading {path}…"));
+                        spawn_file_attach(event_tx.clone(), path);
                         return;
                     }
                     if let crate::slash_commands::OutgoingSlash::SetNick {
@@ -923,7 +933,15 @@ fn handle_key_event(
                     app.forward_mode = false;
                     let _ = std::mem::take(&mut app.input);
                     let reply = app.reply_to.take();
+                    let attachments = std::mem::take(&mut app.pending_attachments);
                     app.message_scroll_from_bottom = 0;
+                    if !attachments.is_empty() {
+                        app.set_status(format!(
+                            "Uploading {} file{}…",
+                            attachments.len(),
+                            if attachments.len() == 1 { "" } else { "s" }
+                        ));
+                    }
                     spawn_send_message(
                         client.clone(),
                         event_tx.clone(),
@@ -932,6 +950,7 @@ fn handle_key_event(
                         reply,
                         is_forward,
                         tts,
+                        attachments,
                     );
                 }
             }
@@ -958,6 +977,29 @@ fn handle_key_event(
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.dismiss_command_autocomplete();
                 app.input.clear();
+            }
+            // Ctrl+V: stage the image on the system clipboard as an attachment.
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if app.pending_attachments.len() >= crate::app::MAX_ATTACHMENTS_PER_MESSAGE {
+                    app.set_status(format!(
+                        "Attachment limit is {} per message.",
+                        crate::app::MAX_ATTACHMENTS_PER_MESSAGE
+                    ));
+                } else {
+                    app.set_status("Reading image from clipboard…");
+                    spawn_clipboard_attach(event_tx.clone());
+                }
+            }
+            // Ctrl+X: drop the most recently staged attachment.
+            KeyCode::Char('x') | KeyCode::Char('X')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                match app.pending_attachments.pop() {
+                    Some(a) => app.set_status(format!("Removed {}.", a.filename)),
+                    None => app.set_status("No attachment staged."),
+                }
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.input.push(ch);
@@ -1552,8 +1594,26 @@ fn spawn_send_message(
     reply: Option<crate::app::ReplyState>,
     is_forward: bool,
     tts: bool,
+    attachments: Vec<StagedAttachment>,
 ) {
     tokio::spawn(async move {
+        let uploaded = if attachments.is_empty() {
+            None
+        } else {
+            match client.upload_attachments(&channel_id, &attachments).await {
+                Ok(refs) => Some(refs),
+                Err(err) => {
+                    let _ = event_tx.send(AppEvent::ApiError(format!(
+                        "Attachment upload failed: {err:#}"
+                    )));
+                    let _ = event_tx.send(AppEvent::SendRestore {
+                        content,
+                        attachments,
+                    });
+                    return;
+                }
+            }
+        };
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1577,6 +1637,7 @@ fn spawn_send_message(
             flags: None,
             tts: if tts { Some(true) } else { None },
             message_reference,
+            attachments: uploaded,
         };
 
         match client.send_message(&channel_id, &request).await {
@@ -1588,6 +1649,36 @@ fn spawn_send_message(
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::ApiError(format!("Failed to send message: {err}")));
+            }
+        }
+    });
+}
+
+fn spawn_clipboard_attach(event_tx: UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        match crate::media::from_clipboard().await {
+            Ok(attachment) => {
+                let _ = event_tx.send(AppEvent::AttachmentStaged { attachment });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::AttachmentFailed {
+                    message: format!("{err:#}"),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_file_attach(event_tx: UnboundedSender<AppEvent>, path: String) {
+    tokio::spawn(async move {
+        match crate::media::from_path(&path).await {
+            Ok(attachment) => {
+                let _ = event_tx.send(AppEvent::AttachmentStaged { attachment });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::AttachmentFailed {
+                    message: format!("{err:#}"),
+                });
             }
         }
     });

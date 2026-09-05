@@ -1,9 +1,12 @@
 use crate::api::types::{
-    ChannelResponse, CreateMessageRequest, EditMessageRequest, GatewayBotResponse, GuildResponse,
-    HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
-    UserGuildSettingsPatch, UserGuildSettingsResponse, UserPrivateResponse, UserSettingsResponse,
-    WellKnownFluxerResponse,
+    ChannelResponse, CompleteMultipartAttachmentUploadRequest, CompleteMultipartUploadItem,
+    CreateMessageAttachment, CreateMessageRequest, EditMessageRequest, GatewayBotResponse,
+    GuildResponse, HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
+    PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
+    PresignedAttachmentUploadResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
+    UserPrivateResponse, UserSettingsResponse, WellKnownFluxerResponse,
 };
+use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{Method, StatusCode};
 use serde::Serialize;
@@ -276,6 +279,151 @@ impl FluxerHttpClient {
             false,
         )
         .await
+    }
+
+    /// Plan uploads, PUT the bytes to the presigned URLs the server hands
+    /// back (completing multipart plans when it chose that), and return the
+    /// references to put on the message.
+    pub async fn upload_attachments(
+        &self,
+        channel_id: &str,
+        staged: &[StagedAttachment],
+    ) -> Result<Vec<CreateMessageAttachment>> {
+        let request = PresignedAttachmentUploadRequest {
+            attachments: staged
+                .iter()
+                .enumerate()
+                .map(|(i, a)| PresignedAttachmentUploadRequestItem {
+                    id: i as u32,
+                    filename: a.filename.clone(),
+                    file_size: a.bytes.len() as u64,
+                    content_type: a.content_type.clone(),
+                })
+                .collect(),
+        };
+        let plan: PresignedAttachmentUploadResponse = self
+            .send_json(
+                Method::POST,
+                &format!("/channels/{channel_id}/attachments"),
+                None::<&()>,
+                Some(&request),
+                false,
+            )
+            .await
+            .context("attachment upload was refused")?;
+
+        let mut done = Vec::with_capacity(staged.len());
+        let mut to_complete = Vec::new();
+        for item in plan.attachments {
+            let Some(src) = staged.get(item.id as usize) else {
+                bail!(
+                    "server returned an upload plan for an unknown attachment id {}",
+                    item.id
+                );
+            };
+            let content_type = if item.content_type.is_empty() {
+                src.content_type.clone()
+            } else {
+                item.content_type.clone()
+            };
+            match item.upload_mode.as_str() {
+                "singlepart" => {
+                    let url = item
+                        .upload_url
+                        .as_deref()
+                        .filter(|u| !u.is_empty())
+                        .ok_or_else(|| anyhow!("singlepart plan without an upload_url"))?;
+                    self.put_presigned(url, &content_type, src.bytes.clone())
+                        .await
+                        .with_context(|| format!("uploading {}", src.filename))?;
+                }
+                "multipart" => {
+                    let part_size = item
+                        .part_size
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| anyhow!("multipart plan without a part_size"))?
+                        as usize;
+                    let upload_id = item
+                        .upload_id
+                        .clone()
+                        .filter(|u| !u.is_empty())
+                        .ok_or_else(|| anyhow!("multipart plan without an upload_id"))?;
+                    let chunks: Vec<&[u8]> = src.bytes.chunks(part_size).collect();
+                    for part in &item.parts {
+                        let idx = part.part_number.saturating_sub(1) as usize;
+                        let Some(chunk) = chunks.get(idx) else {
+                            bail!(
+                                "multipart plan for {} names part {} but the file only has {} parts",
+                                src.filename,
+                                part.part_number,
+                                chunks.len()
+                            );
+                        };
+                        self.put_presigned(&part.upload_url, &content_type, chunk.to_vec())
+                            .await
+                            .with_context(|| {
+                                format!("uploading {} part {}", src.filename, part.part_number)
+                            })?;
+                    }
+                    to_complete.push(CompleteMultipartUploadItem {
+                        upload_filename: item.upload_filename.clone(),
+                        upload_id,
+                    });
+                }
+                other => bail!("unknown upload_mode {other:?} for {}", src.filename),
+            }
+            done.push(CreateMessageAttachment {
+                id: item.id,
+                filename: src.filename.clone(),
+                upload_filename: item.upload_filename,
+                file_size: src.bytes.len() as u64,
+                content_type,
+            });
+        }
+
+        if !to_complete.is_empty() {
+            let body = CompleteMultipartAttachmentUploadRequest {
+                uploads: to_complete,
+            };
+            let _: Value = self
+                .send_json(
+                    Method::POST,
+                    &format!("/channels/{channel_id}/attachments/complete"),
+                    None::<&()>,
+                    Some(&body),
+                    false,
+                )
+                .await
+                .context("completing multipart upload")?;
+        }
+        Ok(done)
+    }
+
+    /// PUT raw bytes to a presigned storage URL. No Fluxer auth header: the
+    /// signature in the URL is the credential, and extra headers would break it.
+    async fn put_presigned(&self, url: &str, content_type: &str, bytes: Vec<u8>) -> Result<()> {
+        let response = self
+            .inner
+            .put(url)
+            .header("Content-Type", content_type)
+            .body(bytes)
+            .send()
+            .await
+            .context("storage PUT failed")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let body = body.trim();
+            bail!(
+                "storage PUT returned {status}{}",
+                if body.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", body.chars().take(200).collect::<String>())
+                }
+            );
+        }
+        Ok(())
     }
 
     pub async fn edit_message(
