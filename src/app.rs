@@ -1921,6 +1921,27 @@ impl App {
             return;
         }
 
+        // Typing the closing colon of a known name completes it in place,
+        // like the web composer: ":eyes:" becomes the emoji and the popup closes.
+        if self.reaction_target.is_none()
+            && self.input.ends_with(':')
+            && let Some(open) = self.input[..self.input.len() - 1].rfind(':')
+        {
+            let name = self.input[open + 1..self.input.len() - 1].to_string();
+            // Inside an open code span the text is meant literally.
+            let in_code = self.input[..open].matches('`').count() % 2 == 1;
+            if !name.is_empty() && !name.contains(char::is_whitespace) && !in_code {
+                if let Some(emoji) = crate::emoji::resolve(&name) {
+                    self.input.truncate(open);
+                    self.input.push_str(emoji);
+                }
+                // Unknown name: leave the text alone; the new colon may start
+                // another shortcode, which reopens the popup on the next key.
+                self.emoji_autocomplete = None;
+                return;
+            }
+        }
+
         let query = self.input.rsplit(':').next().unwrap_or("").to_lowercase();
         let mut results: Vec<EmojiMatch> = Vec::new();
 
@@ -1945,31 +1966,15 @@ impl App {
             }
         }
 
-        // standard unicode emojis
+        // standard unicode emojis, by Fluxer name, best match first
         if results.len() < 12 {
-            for emoji in emojis::iter() {
-                if results.len() >= 12 {
-                    break;
-                }
-                let name = emoji.name().to_lowercase();
-                let shortcode = emoji.shortcode().unwrap_or("");
-                if query.is_empty()
-                    || name.contains(&query)
-                    || shortcode.to_lowercase().contains(&query)
-                {
-                    let label_code = if !shortcode.is_empty() {
-                        format!("{} :{shortcode}:", emoji.as_str())
-                    } else {
-                        format!("{} {}", emoji.as_str(), name)
-                    };
-                    results.push(EmojiMatch {
-                        label: label_code,
-                        insert: emoji.as_str().to_string(),
-                        is_custom: false,
-                    });
-                }
+            for c in crate::emoji::search(&query, 12 - results.len()) {
+                results.push(EmojiMatch {
+                    label: format!("{} :{}:", c.emoji, c.name),
+                    insert: c.emoji.to_string(),
+                    is_custom: false,
+                });
             }
-            results.truncate(12);
         }
 
         let auto = self.emoji_autocomplete.as_mut().unwrap();

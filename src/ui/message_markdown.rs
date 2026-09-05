@@ -713,6 +713,27 @@ fn flush_text_with_emoji_str(text: &str, spans: &mut Vec<Span<'static>>, base: S
     if text.is_empty() {
         return;
     }
+    // `:eyes:` and friends, spelled the way Fluxer spells them, render as the
+    // emoji itself like the web app does; unknown names stay as typed.
+    if text.contains(':') {
+        for seg in crate::emoji::segments(text) {
+            match seg {
+                crate::emoji::Segment::Text(t) => flush_unicode_emoji_str(t, spans, base),
+                crate::emoji::Segment::Emoji { emoji, .. } => spans.push(Span::styled(
+                    emoji.to_string(),
+                    base.fg(crate::ui::theme::EMOJI_UNKNOWN),
+                )),
+            }
+        }
+        return;
+    }
+    flush_unicode_emoji_str(text, spans, base);
+}
+
+fn flush_unicode_emoji_str(text: &str, spans: &mut Vec<Span<'static>>, base: Style) {
+    if text.is_empty() {
+        return;
+    }
     let mut remaining = text;
     while !remaining.is_empty() {
         if let Some(emoji) = emojis::get(remaining) {

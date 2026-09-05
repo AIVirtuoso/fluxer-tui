@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod emoji;
 mod events;
 mod media;
 mod permissions;
@@ -930,6 +931,8 @@ fn handle_key_event(
                         crate::slash_commands::OutgoingSlash::SendTts(c) => (c, true),
                         _ => unreachable!(),
                     };
+                    // Typed `:eyes:` goes out as the emoji, as from the web composer.
+                    let content_to_send = crate::emoji::replace_shortcodes(&content_to_send);
                     app.forward_mode = false;
                     let _ = std::mem::take(&mut app.input);
                     let reply = app.reply_to.take();
