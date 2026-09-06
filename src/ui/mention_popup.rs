@@ -36,12 +36,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     let g = app.guild_id_for_active_channel();
                     let fg = app.member_name_color(g.as_deref(), user_id.as_str(), is_self);
                     ListItem::new(Line::from(vec![
-                        Span::styled("user ", Style::default().fg(crate::ui::theme::text_muted())),
+                        Span::styled("user ", crate::ui::theme::muted_style()),
                         Span::styled(label, Style::default().fg(fg)),
                     ]))
                 }
                 MentionPick::Role { name, color, .. } => ListItem::new(Line::from(vec![
-                    Span::styled("role ", Style::default().fg(crate::ui::theme::text_muted())),
+                    Span::styled("role ", crate::ui::theme::muted_style()),
                     Span::styled(
                         name.clone(),
                         crate::ui::theme::role_mention_style(*color).add_modifier(Modifier::BOLD),

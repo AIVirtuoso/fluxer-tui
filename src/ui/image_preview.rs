@@ -91,7 +91,7 @@ fn render_bitmap_like(
     };
     let hint = Paragraph::new(Line::from(Span::styled(
         footer,
-        Style::default().fg(crate::ui::theme::text_muted()),
+        crate::ui::theme::muted_style(),
     )))
     .alignment(Alignment::Center);
     frame.render_widget(hint, footer_row);
@@ -146,7 +146,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             frame.render_widget(p, content);
             let hint = Paragraph::new(Line::from(Span::styled(
                 " Esc - cancel ",
-                Style::default().fg(crate::ui::theme::text_muted()),
+                crate::ui::theme::muted_style(),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(hint, footer_row);
@@ -165,7 +165,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             frame.render_widget(p, content);
             let hint = Paragraph::new(Line::from(Span::styled(
                 " Esc / q - close ",
-                Style::default().fg(crate::ui::theme::text_muted()),
+                crate::ui::theme::muted_style(),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(hint, footer_row);
@@ -234,7 +234,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             };
             let hint = Paragraph::new(Line::from(Span::styled(
                 footer,
-                Style::default().fg(crate::ui::theme::text_muted()),
+                crate::ui::theme::muted_style(),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(hint, footer_row);

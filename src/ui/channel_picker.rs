@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     if total == 0 {
         items.push(ListItem::new(Line::from(Span::styled(
             "No matching channels (Backspace to edit filter)",
-            Style::default().fg(crate::ui::theme::text_dim()),
+            crate::ui::theme::dim_style(),
         ))));
         let list = List::new(items).block(
             Block::default()
@@ -99,7 +99,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let foot = Paragraph::new(Line::from(Span::styled(
         "↑↓ Enter - open   Esc - cancel   Backspace - edit filter",
-        Style::default().fg(crate::ui::theme::text_muted()),
+        crate::ui::theme::muted_style(),
     )))
     .alignment(Alignment::Center);
     let foot_area = Rect {

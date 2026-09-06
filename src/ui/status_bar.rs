@@ -40,9 +40,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(
             format!(" | {server}{status_mid}"),
-            Style::default().fg(crate::ui::theme::text_dim()),
+            crate::ui::theme::dim_style(),
         ),
-        Span::styled(hints, Style::default().fg(crate::ui::theme::text_muted())),
+        Span::styled(hints, crate::ui::theme::muted_style()),
     ]))
     .style(Style::default().bg(crate::ui::theme::bg_tertiary()));
     frame.render_widget(paragraph, area);

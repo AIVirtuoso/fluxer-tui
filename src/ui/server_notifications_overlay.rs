@@ -53,8 +53,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .add_modifier(Modifier::BOLD);
     let accent_soft = Style::default().fg(crate::ui::theme::accent_dim());
     let text = Style::default().fg(crate::ui::theme::text());
-    let dim = Style::default().fg(crate::ui::theme::text_dim());
-    let muted = Style::default().fg(crate::ui::theme::text_muted());
+    let dim = crate::ui::theme::dim_style();
+    let muted = crate::ui::theme::muted_style();
     let strong = Style::default()
         .fg(crate::ui::theme::text())
         .add_modifier(Modifier::BOLD);

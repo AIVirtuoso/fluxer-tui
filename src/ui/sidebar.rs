@@ -15,7 +15,7 @@ pub fn render_servers(frame: &mut Frame, area: Rect, app: &App) {
     let max_name_width = (area.width as usize).saturating_sub(12);
     let items = if entries.is_empty() {
         vec![ListItem::new(
-            Line::from("No servers").style(Style::default().fg(crate::ui::theme::text_dim())),
+            Line::from("No servers").style(crate::ui::theme::dim_style()),
         )]
     } else {
         entries
@@ -56,7 +56,7 @@ pub fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
             "No direct messages"
         };
         vec![ListItem::new(
-            Line::from(message).style(Style::default().fg(crate::ui::theme::text_dim())),
+            Line::from(message).style(crate::ui::theme::dim_style()),
         )]
     } else {
         entries
@@ -112,7 +112,7 @@ fn server_label(app: &App, entry: &ServerSelection, max_width: usize) -> Line<'s
         suffix.push_str(&format!(" @{mention_count}"));
     }
 
-    let mut name_style = Style::default().fg(crate::ui::theme::text_dim());
+    let mut name_style = crate::ui::theme::dim_style();
     if is_selected {
         name_style = name_style
             .fg(crate::ui::theme::text())
@@ -120,7 +120,7 @@ fn server_label(app: &App, entry: &ServerSelection, max_width: usize) -> Line<'s
     } else if mention_count > 0 || unread_channels > 0 {
         name_style = name_style.fg(crate::ui::theme::text());
     } else if is_muted {
-        name_style = name_style.fg(crate::ui::theme::text_muted());
+        name_style = name_style.patch(crate::ui::theme::muted_style());
     }
 
     let truncated = truncate_str(&name, max_width.saturating_sub(suffix.len()).max(1));
@@ -138,9 +138,7 @@ fn server_label(app: &App, entry: &ServerSelection, max_width: usize) -> Line<'s
     if unread_channels > 0 {
         spans.push(Span::styled(
             format!(" +{unread_channels}"),
-            Style::default()
-                .fg(crate::ui::theme::text_muted())
-                .add_modifier(Modifier::BOLD),
+            crate::ui::theme::muted_style().add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -167,9 +165,7 @@ fn channel_label(
         let truncated = truncate_str(&name, max_width);
         return Line::from(Span::styled(
             format!("  {truncated}"),
-            Style::default()
-                .fg(crate::ui::theme::text_muted())
-                .add_modifier(Modifier::BOLD),
+            crate::ui::theme::muted_style().add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -195,7 +191,7 @@ fn channel_label(
     } else if visible_unread {
         style = style.fg(crate::ui::theme::text());
     } else if is_muted {
-        style = style.fg(crate::ui::theme::text_muted());
+        style = style.patch(crate::ui::theme::muted_style());
     }
 
     let name = channel_name(app, channel);

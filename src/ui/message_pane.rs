@@ -127,10 +127,7 @@ fn channel_welcome_lines(_app: &App, channel: &ChannelResponse) -> Vec<Line<'sta
             ),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            genesis,
-            Style::default().fg(crate::ui::theme::text_dim()),
-        )),
+        Line::from(Span::styled(genesis, crate::ui::theme::dim_style())),
         Line::from(""),
     ]
 }
@@ -145,9 +142,7 @@ fn message_was_edited(message: &crate::api::types::MessageResponse) -> bool {
 fn edited_span() -> Span<'static> {
     Span::styled(
         "(edited) ",
-        Style::default()
-            .fg(crate::ui::theme::text_dim())
-            .add_modifier(Modifier::ITALIC),
+        crate::ui::theme::dim_style().add_modifier(Modifier::ITALIC),
     )
 }
 
@@ -200,7 +195,7 @@ fn reply_context_line(
     let truncated = truncate_to_display_width(body, budget);
     Line::from(vec![
         sel_prefix_span(is_selected_msg),
-        Span::styled(lead, Style::default().fg(crate::ui::theme::text_muted())),
+        Span::styled(lead, crate::ui::theme::muted_style()),
         Span::styled(truncated, body_style),
     ])
     .style(header_style)
@@ -219,7 +214,7 @@ fn push_reply_message_header(
     let mut header_spans = vec![sel_prefix_span(is_selected_msg)];
     header_spans.push(Span::styled(
         format!("[{timestamp}] "),
-        Style::default().fg(crate::ui::theme::text_dim()),
+        crate::ui::theme::dim_style(),
     ));
     if message_was_edited(message) {
         header_spans.push(edited_span());
@@ -280,10 +275,7 @@ fn push_fluxer_client_system_message(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" [SYSTEM]", Style::default().fg(crate::ui::theme::accent())),
-            Span::styled(
-                format!("  \u{2014} {ts}"),
-                Style::default().fg(crate::ui::theme::text_dim()),
-            ),
+            Span::styled(format!("  \u{2014} {ts}"), crate::ui::theme::dim_style()),
         ])
         .style(header_style),
     );
@@ -313,13 +305,10 @@ fn push_fluxer_client_system_message(
         Line::from(vec![
             sel_prefix_span(is_selected_msg),
             Span::styled("┃ ", Style::default().fg(box_fg)),
-            Span::styled(
-                "\u{1F441}\u{FE0F} ",
-                Style::default().fg(crate::ui::theme::text_dim()),
-            ),
+            Span::styled("\u{1F441}\u{FE0F} ", crate::ui::theme::dim_style()),
             Span::styled(
                 "only you can see this message. ",
-                Style::default().fg(crate::ui::theme::text_dim()),
+                crate::ui::theme::dim_style(),
             ),
             Span::styled(
                 "dismiss",
@@ -411,7 +400,7 @@ fn build_message_lines(
                 tw,
                 "\u{21AA} ",
                 &ctx_body,
-                Style::default().fg(crate::ui::theme::text_dim()),
+                crate::ui::theme::dim_style(),
             ));
             push_reply_message_header(
                 is_selected_msg,
@@ -426,14 +415,12 @@ fn build_message_lines(
             let (ctx_body, body_style) = if mref.reference_type == 1 {
                 (
                     "Forwarded",
-                    Style::default()
-                        .fg(crate::ui::theme::text_muted())
-                        .add_modifier(Modifier::ITALIC),
+                    crate::ui::theme::muted_style().add_modifier(Modifier::ITALIC),
                 )
             } else {
                 (
                     "(original message unavailable)",
-                    Style::default().fg(crate::ui::theme::text_dim()),
+                    crate::ui::theme::dim_style(),
                 )
             };
             lines.push(reply_context_line(
@@ -459,10 +446,7 @@ fn build_message_lines(
             let timestamp = format_timestamp(&message.timestamp, app.ui_settings.clock_12h);
             let mut hdr = vec![
                 sel_prefix_span(is_selected_msg),
-                Span::styled(
-                    format!("[{timestamp}] "),
-                    Style::default().fg(crate::ui::theme::text_dim()),
-                ),
+                Span::styled(format!("[{timestamp}] "), crate::ui::theme::dim_style()),
             ];
             if message_was_edited(message) {
                 hdr.push(edited_span());
@@ -473,7 +457,7 @@ fn build_message_lines(
             let mut header_spans = vec![sel_prefix_span(is_selected_msg)];
             header_spans.push(Span::styled(
                 format!("[{timestamp}] "),
-                Style::default().fg(crate::ui::theme::text_dim()),
+                crate::ui::theme::dim_style(),
             ));
             if message_was_edited(message) {
                 header_spans.push(edited_span());
@@ -519,7 +503,7 @@ fn build_message_lines(
                 ),
                 Span::styled(
                     format!(" [{mime} \u{00B7} {size_str}]"),
-                    Style::default().fg(crate::ui::theme::text_dim()),
+                    crate::ui::theme::dim_style(),
                 ),
             ]));
         }
@@ -566,10 +550,7 @@ fn build_message_lines(
             if let Some(author) = &embed.author {
                 lines.push(Line::from(vec![
                     Span::styled("\u{2502} ", Style::default().fg(bar_color)),
-                    Span::styled(
-                        author.name.clone(),
-                        Style::default().fg(crate::ui::theme::text_dim()),
-                    ),
+                    Span::styled(author.name.clone(), crate::ui::theme::dim_style()),
                 ]));
             }
             if let Some(title) = &embed.title {
@@ -623,10 +604,7 @@ fn build_message_lines(
             if let Some(footer) = &embed.footer {
                 lines.push(Line::from(vec![
                     Span::styled("\u{2502} ", Style::default().fg(bar_color)),
-                    Span::styled(
-                        footer.text.clone(),
-                        Style::default().fg(crate::ui::theme::text_muted()),
-                    ),
+                    Span::styled(footer.text.clone(), crate::ui::theme::muted_style()),
                 ]));
             }
         }
@@ -644,7 +622,7 @@ fn build_message_lines(
                         .fg(crate::ui::theme::accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(crate::ui::theme::text_dim())
+                    crate::ui::theme::dim_style()
                 };
                 reaction_spans.push(Span::styled(
                     format!(" {emoji_str} {}", reaction.count),
@@ -783,7 +761,7 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
     let body: Vec<Line<'static>> = if loading {
         vec![Line::from(Span::styled(
             "Loading messages...",
-            Style::default().fg(crate::ui::theme::text_dim()),
+            crate::ui::theme::dim_style(),
         ))]
     } else if messages.is_empty() {
         Vec::new()
@@ -873,11 +851,11 @@ fn render_voice(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
         lines.push(Line::styled(
             "Voice is view-only in this client: you cannot join, transmit, or hear audio here.",
-            Style::default().fg(crate::ui::theme::text_dim()),
+            crate::ui::theme::dim_style(),
         ));
         lines.push(Line::styled(
             "Below is who appears connected from gateway state (informational only).",
-            Style::default().fg(crate::ui::theme::text_muted()),
+            crate::ui::theme::muted_style(),
         ));
         lines.push(Line::from(""));
         lines.push(Line::styled(
@@ -891,7 +869,7 @@ fn render_voice(frame: &mut Frame, area: Rect, app: &App) {
         if members.is_empty() {
             lines.push(Line::styled(
                 "Nobody listed.",
-                Style::default().fg(crate::ui::theme::text_dim()),
+                crate::ui::theme::dim_style(),
             ));
         } else {
             for member in members {
@@ -904,7 +882,7 @@ fn render_voice(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::styled(
             "Select a voice channel.",
-            Style::default().fg(crate::ui::theme::text_dim()),
+            crate::ui::theme::dim_style(),
         ));
     }
 
@@ -931,18 +909,18 @@ fn render_link(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 "Press Enter to open this link in your browser.",
-                Style::default().fg(crate::ui::theme::text_dim()),
+                crate::ui::theme::dim_style(),
             ));
         } else {
             lines.push(Line::styled(
                 "This link channel has no URL set.",
-                Style::default().fg(crate::ui::theme::text_dim()),
+                crate::ui::theme::dim_style(),
             ));
         }
     } else {
         lines.push(Line::styled(
             "Select a channel.",
-            Style::default().fg(crate::ui::theme::text_dim()),
+            crate::ui::theme::dim_style(),
         ));
     }
 

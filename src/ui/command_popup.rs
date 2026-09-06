@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                         .fg(crate::ui::theme::text())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(desc, Style::default().fg(crate::ui::theme::text_muted())),
+                Span::styled(desc, crate::ui::theme::muted_style()),
             ]))
         })
         .collect();

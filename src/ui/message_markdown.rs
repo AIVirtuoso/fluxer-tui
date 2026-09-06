@@ -223,9 +223,7 @@ fn format_line(
     if let Some(body) = rest.strip_prefix("-# ") {
         spans.push(Span::styled(
             "-# ",
-            Style::default()
-                .fg(crate::ui::theme::text_muted())
-                .add_modifier(Modifier::ITALIC),
+            crate::ui::theme::muted_style().add_modifier(Modifier::ITALIC),
         ));
         spans.extend(parse_message_spans(body, app));
         return spans;
@@ -352,10 +350,7 @@ pub fn parse_message_spans(text: &str, app: &App) -> Vec<Span<'static>> {
                         if !inner.is_empty() {
                             flush_markdown_buffer(&mut buf, &mut spans, app, Style::default());
                             let formatted = format_discord_timestamp(&inner);
-                            spans.push(Span::styled(
-                                formatted,
-                                Style::default().fg(crate::ui::theme::text_dim()),
-                            ));
+                            spans.push(Span::styled(formatted, crate::ui::theme::dim_style()));
                         } else {
                             buf.push_str("<t:");
                         }
@@ -676,7 +671,7 @@ fn parse_markdown_segments(text: &str, spans: &mut Vec<Span<'static>>, app: &App
                             spans.push(Span::styled(
                                 s.content.to_string(),
                                 s.style
-                                    .fg(crate::ui::theme::text_muted())
+                                    .patch(crate::ui::theme::muted_style())
                                     .add_modifier(Modifier::DIM),
                             ));
                         }

@@ -34,8 +34,11 @@ colour!(accent, Color::Blue, Color::Rgb(88, 101, 242));
 colour!(accent_dim, Color::Blue, Color::Rgb(71, 82, 196));
 colour!(voice_color, Color::Green, Color::Rgb(87, 242, 135));
 colour!(text, Color::Reset, Color::Rgb(219, 222, 225));
-colour!(text_dim, Color::DarkGray, Color::Rgb(148, 155, 164));
-colour!(text_muted, Color::DarkGray, Color::Rgb(94, 103, 114));
+// In the terminal theme dim and muted text keep the default foreground and
+// rely on the DIM attribute (see `dim_style` / `muted_style`): "bright black"
+// is close to invisible on many dark palettes.
+colour!(text_dim, Color::Reset, Color::Rgb(148, 155, 164));
+colour!(text_muted, Color::Reset, Color::Rgb(94, 103, 114));
 colour!(emoji_unknown, Color::Yellow, Color::Rgb(254, 231, 92));
 colour!(link_color, Color::Cyan, Color::Rgb(0, 168, 252));
 colour!(danger, Color::Red, Color::Rgb(237, 66, 69));
@@ -93,6 +96,24 @@ pub fn self_username_color() -> Color {
     }
 }
 
+/// Secondary text: timestamps, hints, section labels.
+pub fn dim_style() -> Style {
+    if is_terminal_theme() {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(text_dim())
+    }
+}
+
+/// Tertiary text: placeholders, unfocused chrome.
+pub fn muted_style() -> Style {
+    if is_terminal_theme() {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(text_muted())
+    }
+}
+
 /// Selected row in a popup list.
 pub fn highlight_style() -> Style {
     if is_terminal_theme() {
@@ -144,7 +165,7 @@ pub fn focused_border(focused: bool) -> Style {
     if focused {
         Style::default().fg(accent())
     } else {
-        Style::default().fg(text_muted())
+        muted_style()
     }
 }
 

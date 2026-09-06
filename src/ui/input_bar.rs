@@ -82,24 +82,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     let (content, style) = if voice_only {
         (
             "This client cannot join or use voice - text input is disabled here.".to_string(),
-            Style::default().fg(crate::ui::theme::text_muted()),
+            crate::ui::theme::muted_style(),
         )
     } else if no_perms {
         (
             "You do not have permission to send messages here.".to_string(),
-            Style::default().fg(crate::ui::theme::text_muted()),
+            crate::ui::theme::muted_style(),
         )
     } else if can_type && !app.input.is_empty() {
         (String::new(), Style::default().fg(crate::ui::theme::text()))
     } else if can_type {
         (
             placeholder.clone().unwrap_or_default(),
-            Style::default().fg(crate::ui::theme::text_muted()),
+            crate::ui::theme::muted_style(),
         )
     } else {
         (
             "Select a text channel to chat.".to_string(),
-            Style::default().fg(crate::ui::theme::text_muted()),
+            crate::ui::theme::muted_style(),
         )
     };
 
@@ -119,7 +119,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         format!(" {title}"),
         Style::default()
             .add_modifier(Modifier::BOLD)
-            .fg(crate::ui::theme::text_dim()),
+            .patch(crate::ui::theme::dim_style()),
     ));
 
     let focused = app.focus == Focus::Input;
@@ -142,7 +142,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
                 .fg(ratatui::style::Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(crate::ui::theme::text_muted())
+            crate::ui::theme::muted_style()
         };
 
         let right_title = Line::from(Span::styled(count_str, count_style))

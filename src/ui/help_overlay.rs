@@ -141,7 +141,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let hint = Paragraph::new(Line::from(Span::styled(
         footer,
-        Style::default().fg(crate::ui::theme::text_muted()),
+        crate::ui::theme::muted_style(),
     )))
     .alignment(Alignment::Center);
     frame.render_widget(hint, body[1]);
