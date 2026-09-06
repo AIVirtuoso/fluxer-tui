@@ -65,7 +65,10 @@ On a terminal that can draw pictures (sixel, kitty, iTerm2) and on the
 console, the message pane looks like the web app:
 
 - **Profile pictures** sit to the left of each message, two rows tall; a
-  user without one gets a disc in their colour, drawn locally.
+  user without one gets the web app's default avatar. They are round on
+  the console, kitty and iTerm2; sixel has no transparency, so there they
+  are round only with the Fluxer theme (whose background is known) and
+  square with the terminal theme.
 - **Pictures, GIFs and video posters** are shown under the message as
   previews: scaled to fit about a third of the pane, never larger than the
   original. GIFs from the picker (KLIPY, Tenor) and animated WebP play; in

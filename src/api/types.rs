@@ -173,6 +173,9 @@ pub struct WellKnownEndpoints {
     pub gateway: String,
     #[serde(default)]
     pub media: String,
+    /// Static assets of the web app, such as the default avatars.
+    #[serde(default)]
+    pub static_cdn: String,
     #[serde(default)]
     pub webapp: String,
 }

@@ -177,3 +177,12 @@ pub fn gateway_status_style(status: crate::app::GatewayStatus) -> Style {
         Disconnected => Style::default().fg(danger()),
     }
 }
+
+/// The background colour as RGB when the theme fixes one (the Fluxer
+/// theme); None on the terminal theme, whose background is the terminal's.
+pub fn bg_rgb() -> Option<[u8; 3]> {
+    match bg() {
+        Color::Rgb(r, g, b) => Some([r, g, b]),
+        _ => None,
+    }
+}

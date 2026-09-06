@@ -9,8 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
-use ratatui_image::Image;
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::collections::HashMap;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -1008,17 +1007,18 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
             });
             if whole
                 && let Some(id) = slots.get(k)
-                && let Some(picture) = app.custom_emoji_frame(id)
+                && let Some((serial, frame_idx, picture)) = app.custom_emoji_current(id)
             {
+                let rect = Rect::new(x, y, w, 1);
                 match picture {
-                    crate::app::Picture::Protocol(protocol) => {
-                        Image::new(protocol).render(Rect::new(x, y, w, 1), buf);
+                    crate::app::Picture::Terminal(tp) => {
+                        place_terminal_picture(app, buf, rect, serial, frame_idx, tp);
                     }
                     crate::app::Picture::Pixels(img) => {
                         app.pixel_placements
                             .borrow_mut()
                             .push(crate::console::raster::Placement {
-                                area: Rect::new(x, y, w, 1),
+                                area: rect,
                                 image: img.clone(),
                             });
                     }
@@ -1026,6 +1026,45 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
             }
             x += w;
         }
+    }
+}
+
+/// Put a terminal picture on a block of cells. The cells are skipped, so
+/// the text under them is never rewritten while the picture is there; the
+/// rows that carry escape sequences get a sentinel cell, and the backend
+/// prints the picture at it instead of the cell.
+fn place_terminal_picture(
+    app: &App,
+    buf: &mut ratatui::buffer::Buffer,
+    rect: Rect,
+    serial: u16,
+    frame: usize,
+    picture: &crate::app::TerminalPicture,
+) {
+    if picture.area.width > rect.width || picture.area.height > rect.height {
+        // encoded for a bigger block than it has: printing it would spill
+        return;
+    }
+    let bottom = rect.y.saturating_add(rect.height);
+    for y in rect.y..bottom {
+        for x in rect.x..rect.x.saturating_add(rect.width) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_skip(true);
+            }
+        }
+    }
+    let mut pictures = app.terminal_pictures.borrow_mut();
+    for (dy, data) in &picture.rows {
+        let y = rect.y.saturating_add(*dy);
+        if y >= bottom {
+            continue;
+        }
+        if let Some(cell) = buf.cell_mut((rect.x, y)) {
+            let style = crate::app::picture_sentinel_style(cell.style(), serial, frame);
+            cell.set_skip(false);
+            cell.set_style(style);
+        }
+        pictures.insert((rect.x, y), data.clone());
     }
 }
 
@@ -1090,16 +1129,17 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
                 if !whole {
                     continue;
                 }
-                let picture = if app.ui_settings.performance_mode || !frames.is_animated() {
-                    &frames.frames[0]
-                } else {
-                    app.media_animation_seen.set(true);
-                    frames.frame_at(app.animation_epoch.elapsed(), draw)
-                };
+                let (frame_idx, picture) =
+                    if app.ui_settings.performance_mode || !frames.is_animated() {
+                        (0, &frames.frames[0])
+                    } else {
+                        app.media_animation_seen.set(true);
+                        frames.current(app.animation_epoch.elapsed(), draw)
+                    };
                 let rect = Rect::new(block.x, block.top, slot.cols, slot.rows);
                 match picture {
-                    crate::app::Picture::Protocol(protocol) => {
-                        Image::new(protocol).render(rect, buf);
+                    crate::app::Picture::Terminal(tp) => {
+                        place_terminal_picture(app, buf, rect, frames.serial, frame_idx, tp);
                     }
                     crate::app::Picture::Pixels(img) => {
                         app.pixel_placements

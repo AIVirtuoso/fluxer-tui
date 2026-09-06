@@ -1,17 +1,94 @@
 //! A ratatui backend that keeps the cell buffer and paints it with the
-//! rasteriser on every flush, plus an enum that lets the app hold either
-//! this or the usual crossterm backend.
+//! rasteriser on every flush, a crossterm backend that prints terminal
+//! pictures at sentinel cells, and an enum that lets the app hold either.
 
 use super::output::Output;
 use super::raster::{Placement, Rasterizer};
+use crossterm::cursor::MoveTo;
+use crossterm::queue;
+use crossterm::style::Print;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
 use std::cell::RefCell;
-use std::io::{self, Stdout};
+use std::collections::HashMap;
+use std::io::{self, Stdout, Write};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub type SharedPlacements = Rc<RefCell<Vec<Placement>>>;
+
+/// Per frame: the escape sequences of the pictures on screen, by the cell
+/// they are printed at.
+pub type SharedPictures = Rc<RefCell<HashMap<(u16, u16), Arc<str>>>>;
+
+/// The crossterm backend, with pictures. ratatui's diff hands over the
+/// cells that changed; a cell with a picture sentinel is not written as
+/// text but replaced by the picture's escape sequences, printed at that
+/// position. Everything else goes to crossterm as usual.
+pub struct TermBackend<W: Write> {
+    inner: CrosstermBackend<W>,
+    pictures: SharedPictures,
+}
+
+impl<W: Write> TermBackend<W> {
+    pub fn new(writer: W, pictures: SharedPictures) -> Self {
+        Self {
+            inner: CrosstermBackend::new(writer),
+            pictures,
+        }
+    }
+}
+
+impl<W: Write> Backend for TermBackend<W> {
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        let pictures = self.pictures.borrow();
+        let mut batch: Vec<(u16, u16, &Cell)> = Vec::new();
+        for (x, y, cell) in content {
+            if !crate::app::is_picture_sentinel(cell.underline_color) {
+                batch.push((x, y, cell));
+                continue;
+            }
+            // crossterm's draw starts and ends with the cursor and colours
+            // in a known state, so text can be sent in pieces around a picture
+            self.inner.draw(batch.drain(..))?;
+            if let Some(data) = pictures.get(&(x, y)) {
+                queue!(self.inner, MoveTo(x, y), Print(&**data))?;
+            }
+        }
+        self.inner.draw(batch.into_iter())
+    }
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        self.inner.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+    fn size(&self) -> io::Result<Size> {
+        self.inner.size()
+    }
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
 
 pub struct ConsoleBackend {
     raster: Rasterizer,
@@ -144,7 +221,7 @@ impl Backend for ConsoleBackend {
 
 /// The terminal backend the app runs on.
 pub enum AnyBackend {
-    Crossterm(CrosstermBackend<Stdout>),
+    Crossterm(TermBackend<Stdout>),
     Console(ConsoleBackend),
 }
 
@@ -191,5 +268,58 @@ impl Backend for AnyBackend {
     }
     fn flush(&mut self) -> io::Result<()> {
         delegate!(self, flush)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    /// A writer whose bytes can be read back after the backend owns it.
+    #[derive(Clone, Default)]
+    struct Recorder(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for Recorder {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sentinel_cells_print_their_picture_and_text_flows_around() {
+        let pictures: SharedPictures = Rc::new(RefCell::new(HashMap::new()));
+        pictures
+            .borrow_mut()
+            .insert((3, 1), Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\"));
+        let recorder = Recorder::default();
+        let mut backend = TermBackend::new(recorder.clone(), pictures);
+        let mut a = Cell::new("a");
+        let mut sentinel = Cell::new("\u{2800}");
+        sentinel.set_style(crate::app::picture_sentinel_style(Style::default(), 7, 0));
+        let mut b = Cell::new("b");
+        a.set_style(Style::default());
+        b.set_style(Style::default());
+        backend
+            .draw(vec![(2u16, 1u16, &a), (3, 1, &sentinel), (4, 1, &b)].into_iter())
+            .unwrap();
+        Backend::flush(&mut backend).unwrap();
+        let out = String::from_utf8(recorder.0.borrow().clone()).unwrap();
+        let pic = out.find("\x1bPq").expect("the picture is printed");
+        let a_at = out.find('a').unwrap();
+        let b_at = out.rfind('b').unwrap();
+        assert!(a_at < pic && pic < b_at, "{out:?}");
+        assert!(
+            out[..pic].ends_with("\x1b[2;4H"),
+            "moved to the cell first: {out:?}"
+        );
+        assert!(
+            !out.contains('\u{2800}'),
+            "the sentinel itself is never written"
+        );
     }
 }

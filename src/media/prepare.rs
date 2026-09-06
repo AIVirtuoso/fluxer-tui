@@ -2,11 +2,11 @@
 //! decode, thin long animations, scale to the block, round avatars, then
 //! encode for the terminal's protocol or keep pixels for the console.
 
-use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames};
+use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames, terminal_picture};
 use crate::media::gif_anim::decode_preview_animation;
 use crate::media::inline::{
-    INLINE_MAX_FRAMES, block_px, circle_mask, disc_image, fit_into, parse_default_avatar_key,
-    square_crop, subsample,
+    INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
+    parse_default_avatar_key, stretch_to, subsample,
 };
 use image::DynamicImage;
 use ratatui::layout::Rect;
@@ -24,6 +24,7 @@ pub fn prepare_pictures(
     picker: Option<&Picker>,
     pixel_mode: bool,
     cell_px: (u32, u32),
+    opaque_bg: Option<[u8; 3]>,
 ) -> Option<(PictureFrames, usize)> {
     let (mut frames, mut delays) = match bytes {
         None => {
@@ -52,29 +53,35 @@ pub fn prepare_pictures(
             }
         }
     }
-    // A round avatar needs transparency around it: pixels on the console,
-    // kitty and iTerm2 have it; sixel has not, so avatars stay square there.
-    let round = slot.kind == MediaKind::Avatar
-        && (pixel_mode
-            || picker.is_some_and(|p| {
-                matches!(
-                    p.protocol_type(),
-                    ProtocolType::Kitty | ProtocolType::Iterm2
-                )
-            }));
+    // A round avatar needs transparency around it (pixels on the console,
+    // kitty and iTerm2 have it) or a known colour to sit on: sixel has no
+    // transparency, so there it is round only when the theme's background
+    // is known, and square otherwise.
+    let alpha_ok = pixel_mode
+        || picker.is_some_and(|p| {
+            matches!(
+                p.protocol_type(),
+                ProtocolType::Kitty | ProtocolType::Iterm2
+            )
+        });
+    let round = slot.kind == MediaKind::Avatar && (alpha_ok || opaque_bg.is_some());
+    // Exactly the block's pixel size: a protocol picture that does not fill
+    // its cells would be padded with black by the encoder.
     let box_px = block_px(slot.cols, slot.rows, cell_px);
     let area = Rect::new(0, 0, slot.cols, slot.rows);
     let mut pictures = Vec::with_capacity(frames.len());
     let mut total = 0usize;
     for img in frames {
-        let img = if slot.kind == MediaKind::Avatar {
-            square_crop(img)
-        } else {
-            img
+        let img = match slot.kind {
+            MediaKind::Avatar => cover_into(img, box_px),
+            MediaKind::Picture => stretch_to(img, box_px),
         };
-        let mut rgba = fit_into(img, box_px).into_rgba8();
+        let mut rgba = img.into_rgba8();
         if round {
             circle_mask(&mut rgba);
+        }
+        if !alpha_ok && let Some(bg) = opaque_bg {
+            rgba = composite_over(&rgba, bg);
         }
         total += rgba.len();
         let picture = if pixel_mode {
@@ -83,7 +90,7 @@ pub fn prepare_pictures(
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
-            Picture::Protocol(protocol)
+            Picture::Terminal(Arc::new(terminal_picture(&protocol)?))
         };
         pictures.push(picture);
     }
@@ -111,16 +118,16 @@ mod tests {
     }
 
     #[test]
-    fn pictures_are_scaled_to_the_block_on_the_console() {
-        let slot = MediaSlot::new("https://x/a.png".to_string(), 10, 5, MediaKind::Picture);
+    fn pictures_fill_their_block_exactly_on_the_console() {
+        let slot = MediaSlot::new("https://x/a.png".to_string(), 10, 3, MediaKind::Picture);
         let (frames, bytes) =
-            prepare_pictures(Some(&png(1000, 500)), &slot, None, true, (10, 20)).unwrap();
+            prepare_pictures(Some(&png(1000, 500)), &slot, None, true, (10, 20), None).unwrap();
         assert_eq!(frames.frames.len(), 1);
         match &frames.frames[0] {
-            Picture::Pixels(img) => assert_eq!((img.width(), img.height()), (100, 50)),
+            Picture::Pixels(img) => assert_eq!((img.width(), img.height()), (100, 60)),
             _ => panic!("console mode keeps pixels"),
         }
-        assert_eq!(bytes, 100 * 50 * 4);
+        assert_eq!(bytes, 100 * 60 * 4);
         assert!(!frames.is_animated());
     }
 
@@ -128,7 +135,7 @@ mod tests {
     fn avatars_are_square_cropped_round_discs_on_the_console() {
         let slot = MediaSlot::new("https://x/me.webp".to_string(), 4, 2, MediaKind::Avatar);
         let (frames, _) =
-            prepare_pictures(Some(&png(300, 100)), &slot, None, true, (10, 20)).unwrap();
+            prepare_pictures(Some(&png(300, 100)), &slot, None, true, (10, 20), None).unwrap();
         let Picture::Pixels(img) = &frames.frames[0] else {
             panic!()
         };
@@ -136,7 +143,7 @@ mod tests {
         assert_eq!(img.get_pixel(0, 0).0[3], 0, "corner is transparent");
         assert_eq!(img.get_pixel(20, 20).0[3], 255);
         let local = MediaSlot::new(default_avatar_key([1, 2, 3]), 4, 2, MediaKind::Avatar);
-        let (frames, _) = prepare_pictures(None, &local, None, true, (10, 20)).unwrap();
+        let (frames, _) = prepare_pictures(None, &local, None, true, (10, 20), None).unwrap();
         let Picture::Pixels(img) = &frames.frames[0] else {
             panic!()
         };
@@ -148,36 +155,56 @@ mod tests {
         let mut picker = Picker::from_fontsize((10, 20));
         picker.set_protocol_type(ProtocolType::Sixel);
         let slot = MediaSlot::new("https://x/a.png".to_string(), 8, 3, MediaKind::Picture);
-        let (frames, _) =
-            prepare_pictures(Some(&png(800, 600)), &slot, Some(&picker), false, (10, 20)).unwrap();
+        let (frames, _) = prepare_pictures(
+            Some(&png(800, 600)),
+            &slot,
+            Some(&picker),
+            false,
+            (10, 20),
+            None,
+        )
+        .unwrap();
         match &frames.frames[0] {
-            Picture::Protocol(p) => {
-                let area = p.area();
-                assert!(area.width <= 8 && area.height <= 3, "{area:?}");
-                assert!(area.width >= 7 && area.height >= 2, "{area:?}");
+            Picture::Terminal(tp) => {
+                assert_eq!(tp.area, Rect::new(0, 0, 8, 3), "fills its cells exactly");
+                assert_eq!(
+                    tp.rows.len(),
+                    1,
+                    "sixel draws everything from the first row"
+                );
+                assert_eq!(tp.rows[0].0, 0);
+                assert!(tp.rows[0].1.starts_with("\x1bP"), "a sixel sequence");
             }
             _ => panic!("terminal mode encodes a protocol"),
         }
-        // sixel has no transparency: avatars stay square there
+        // sixel has no transparency: avatars stay square there unless the
+        // theme's background is known to sit them on
         let avatar = MediaSlot::new("https://x/me.png".to_string(), 4, 2, MediaKind::Avatar);
-        assert!(
-            prepare_pictures(
+        for bg in [None, Some([1, 2, 3])] {
+            let (frames, _) = prepare_pictures(
                 Some(&png(100, 100)),
                 &avatar,
                 Some(&picker),
                 false,
-                (10, 20)
+                (10, 20),
+                bg,
             )
-            .is_some()
-        );
+            .unwrap();
+            let Picture::Terminal(tp) = &frames.frames[0] else {
+                panic!()
+            };
+            assert_eq!(tp.area, Rect::new(0, 0, 4, 2));
+        }
     }
 
     #[test]
     fn junk_and_missing_pickers_yield_nothing() {
         let slot = MediaSlot::new("https://x/a.png".to_string(), 10, 5, MediaKind::Picture);
-        assert!(prepare_pictures(Some(b"not a picture"), &slot, None, true, (10, 20)).is_none());
+        assert!(
+            prepare_pictures(Some(b"not a picture"), &slot, None, true, (10, 20), None).is_none()
+        );
         // terminal mode without a picker cannot encode
-        assert!(prepare_pictures(Some(&png(4, 4)), &slot, None, false, (10, 20)).is_none());
-        assert!(prepare_pictures(None, &slot, None, true, (10, 20)).is_none());
+        assert!(prepare_pictures(Some(&png(4, 4)), &slot, None, false, (10, 20), None).is_none());
+        assert!(prepare_pictures(None, &slot, None, true, (10, 20), None).is_none());
     }
 }

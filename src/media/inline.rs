@@ -136,12 +136,14 @@ pub fn fitted_px(img: (u32, u32), box_px: (u32, u32)) -> (u32, u32) {
 }
 
 /// Cells (columns, rows) a picture of `img` pixels takes within `max` cells,
-/// keeping its shape; a small picture stays small.
+/// keeping its shape; a small picture stays small. Rounded to the nearest
+/// cell: the picture is then stretched to exactly that many cells, at most
+/// half a cell off its true shape.
 pub fn picture_cells(img: (u32, u32), cell: (u32, u32), max: (u16, u16)) -> (u16, u16) {
     let (cw, ch) = cell_or_default(cell);
     let (w, h) = fitted_px(img, block_px(max.0, max.1, cell));
-    let cols = w.div_ceil(cw).clamp(1, max.0.max(1) as u32) as u16;
-    let rows = h.div_ceil(ch).clamp(1, max.1.max(1) as u32) as u16;
+    let cols = ((w as f64 / cw as f64).round() as u32).clamp(1, max.0.max(1) as u32) as u16;
+    let rows = ((h as f64 / ch as f64).round() as u32).clamp(1, max.1.max(1) as u32) as u16;
     (cols, rows)
 }
 
@@ -245,24 +247,60 @@ pub fn circle_mask(img: &mut RgbaImage) {
     }
 }
 
-/// The central square of a picture.
-pub fn square_crop(img: DynamicImage) -> DynamicImage {
-    let (w, h) = (img.width(), img.height());
-    if w == h {
-        return img;
-    }
-    let s = w.min(h);
-    img.crop_imm((w - s) / 2, (h - s) / 2, s, s)
-}
-
-/// Scale a picture down (never up) to fit `box_px`.
-pub fn fit_into(img: DynamicImage, box_px: (u32, u32)) -> DynamicImage {
-    let (w, h) = fitted_px((img.width(), img.height()), box_px);
+/// Scale a picture to exactly `box_px`, ignoring its shape. Pictures in
+/// chat are laid out within half a cell of their shape, so the stretch is
+/// invisible; a protocol picture that does not fill its cells exactly would
+/// be padded with black instead.
+pub fn stretch_to(img: DynamicImage, box_px: (u32, u32)) -> DynamicImage {
+    let (w, h) = (box_px.0.max(1), box_px.1.max(1));
     if (w, h) == (img.width(), img.height()) {
         img
     } else {
         img.resize_exact(w, h, FilterType::Triangle)
     }
+}
+
+/// Scale a picture so it covers `box_px` and crop the middle: how avatars
+/// fill their block without being stretched.
+pub fn cover_into(img: DynamicImage, box_px: (u32, u32)) -> DynamicImage {
+    let (bw, bh) = (box_px.0.max(1), box_px.1.max(1));
+    let (w, h) = (img.width().max(1), img.height().max(1));
+    let scale = (bw as f64 / w as f64).max(bh as f64 / h as f64);
+    let nw = ((w as f64 * scale).ceil() as u32).max(bw);
+    let nh = ((h as f64 * scale).ceil() as u32).max(bh);
+    let scaled = if (nw, nh) == (w, h) {
+        img
+    } else {
+        img.resize_exact(nw, nh, FilterType::Triangle)
+    };
+    scaled.crop_imm((nw - bw) / 2, (nh - bh) / 2, bw, bh)
+}
+
+/// Blend a picture over a solid colour: for sixel, which has no
+/// transparency, a round avatar sits on the theme's background.
+pub fn composite_over(img: &RgbaImage, bg: [u8; 3]) -> RgbaImage {
+    let mut out = img.clone();
+    for px in out.pixels_mut() {
+        let a = px.0[3] as u32;
+        if a == 255 {
+            continue;
+        }
+        for (channel, b) in px.0.iter_mut().take(3).zip(bg) {
+            *channel = ((*channel as u32 * a + b as u32 * (255 - a)) / 255) as u8;
+        }
+        px.0[3] = 255;
+    }
+    out
+}
+
+/// The web app's default avatar for a user without a picture: one of six
+/// on the static CDN, picked by id.
+pub fn default_avatar_url(static_cdn: &str, user_id: &str) -> String {
+    let idx = user_id
+        .parse::<u128>()
+        .map(|id| (id % DEFAULT_AVATAR_COLORS.len() as u128) as usize)
+        .unwrap_or(0);
+    format!("{}/avatars/{idx}.png?v=1", static_cdn.trim_end_matches('/'))
 }
 
 /// Thin an animation to at most `max` frames, evenly, keeping its length:
@@ -303,8 +341,8 @@ mod tests {
         assert_eq!(picture_cells((300, 600), CELL, (40, 10)), (10, 10));
         // wide: width limits -> 400x100 px -> 40 cols, 5 rows
         assert_eq!(picture_cells((1600, 400), CELL, (40, 10)), (40, 5));
-        // small stays small: 35x25 px -> 4 cols (ceil), 2 rows
-        assert_eq!(picture_cells((35, 25), CELL, (40, 10)), (4, 2));
+        // small stays small: 35x25 px -> 4 cols, 1 row (nearest)
+        assert_eq!(picture_cells((35, 25), CELL, (40, 10)), (4, 1));
         assert_eq!(picture_cells((0, 0), CELL, (40, 10)), (1, 1));
     }
 
@@ -389,12 +427,30 @@ mod tests {
     }
 
     #[test]
-    fn crops_fits_and_thins() {
-        let img = DynamicImage::new_rgba8(300, 100);
-        let sq = square_crop(img);
-        assert_eq!((sq.width(), sq.height()), (100, 100));
-        let fitted = fit_into(DynamicImage::new_rgba8(800, 600), (400, 400));
-        assert_eq!((fitted.width(), fitted.height()), (400, 300));
+    fn covers_stretches_and_composites() {
+        let covered = cover_into(DynamicImage::new_rgba8(300, 100), (40, 40));
+        assert_eq!((covered.width(), covered.height()), (40, 40));
+        let covered = cover_into(DynamicImage::new_rgba8(10, 10), (40, 38));
+        assert_eq!((covered.width(), covered.height()), (40, 38));
+        let stretched = stretch_to(DynamicImage::new_rgba8(233, 132), (240, 140));
+        assert_eq!((stretched.width(), stretched.height()), (240, 140));
+        let mut img = RgbaImage::from_pixel(2, 1, Rgba([255, 255, 255, 255]));
+        img.put_pixel(1, 0, Rgba([255, 255, 255, 0]));
+        let flat = composite_over(&img, [10, 20, 30]);
+        assert_eq!(flat.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(flat.get_pixel(1, 0).0, [10, 20, 30, 255]);
+        assert_eq!(
+            default_avatar_url("https://fluxerstatic.com/", "7"),
+            "https://fluxerstatic.com/avatars/1.png?v=1"
+        );
+        assert_eq!(
+            default_avatar_url("https://s", "x"),
+            "https://s/avatars/0.png?v=1"
+        );
+    }
+
+    #[test]
+    fn thins_long_animations_evenly() {
         let frames: Vec<DynamicImage> = (0..10).map(|_| DynamicImage::new_rgba8(2, 2)).collect();
         let delays = vec![Duration::from_millis(10); 10];
         let (f, d) = subsample(frames, delays, 4);

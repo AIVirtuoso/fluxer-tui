@@ -154,20 +154,60 @@ pub enum CustomEmojiState {
 
 /// One encoded picture per animation frame (a single frame for still
 /// emoji). Animated emoji all run on the app's shared clock, see
-/// [`App::custom_emoji_frame`].
-/// A picture of a custom emoji, encoded for a terminal protocol or kept as
+/// [`App::custom_emoji_current`].
+/// A picture, encoded for the terminal's graphics protocol or kept as
 /// pixels for console mode.
 #[derive(Clone)]
 pub enum Picture {
-    Protocol(Protocol),
+    Terminal(std::sync::Arc<TerminalPicture>),
     Pixels(std::sync::Arc<image::RgbaImage>),
 }
+
+/// A picture as escape sequences for the terminal's graphics protocol,
+/// ready to print at a block's cells: sixel and iTerm2 draw the whole
+/// picture from the first row, kitty places one row at a time. The
+/// sequences never enter ratatui's buffer: it would take their length for
+/// the width of a character and re-send the rest of the screen on every
+/// frame. The backend prints them where a sentinel cell sits instead.
+pub struct TerminalPicture {
+    /// (row within the block, what to print at that row's first cell).
+    pub rows: Vec<(u16, std::sync::Arc<str>)>,
+    pub area: Rect,
+}
+
+/// Encode a protocol picture for printing: draw it into a scratch buffer
+/// the way ratatui-image would and lift out what it put in the cells.
+pub fn terminal_picture(protocol: &Protocol) -> Option<TerminalPicture> {
+    let area = protocol.area();
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, area.width, area.height));
+    ratatui::widgets::Widget::render(ratatui_image::Image::new(protocol), buf.area, &mut buf);
+    let mut rows = Vec::new();
+    for y in 0..area.height {
+        let cell = &buf[(0, y)];
+        if cell.skip || cell.symbol().len() <= 1 {
+            continue;
+        }
+        rows.push((y, std::sync::Arc::<str>::from(cell.symbol())));
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    Some(TerminalPicture { rows, area })
+}
+
+/// Numbers each set of frames, so a sentinel cell can tell pictures apart.
+static PICTURE_SERIAL: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
 
 #[derive(Clone)]
 pub struct PictureFrames {
     pub frames: Vec<Picture>,
     pub delays: Vec<Duration>,
     pub total: Duration,
+    /// Tells this picture from any other one that was on the same cells.
+    pub serial: u16,
     /// Frame index drawn last, when it first appeared, and the draw (frame
     /// of the UI) it was decided in: every instance of the emoji on screen
     /// in one draw shows the same frame.
@@ -188,6 +228,7 @@ impl PictureFrames {
             frames,
             delays,
             total,
+            serial: PICTURE_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             shown: std::cell::Cell::new(0),
             shown_at: std::cell::Cell::new(None),
             decided_in_draw: std::cell::Cell::new(0),
@@ -239,11 +280,17 @@ impl PictureFrames {
         i
     }
 
+    #[cfg(test)]
     pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &Picture {
+        self.current(elapsed, draw).1
+    }
+
+    /// The frame to draw now: its index and its picture.
+    pub fn current(&self, elapsed: Duration, draw: u64) -> (usize, &Picture) {
         let i = self
             .index_at(elapsed, Instant::now(), draw)
             .min(self.frames.len() - 1);
-        &self.frames[i]
+        (i, &self.frames[i])
     }
 }
 
@@ -468,6 +515,9 @@ pub struct App {
     pub cell_px: (u32, u32),
     /// Downloaded pictures kept between runs.
     pub disk_cache: Option<std::sync::Arc<crate::media::DiskCache>>,
+    /// Per frame: the escape sequences to print at each picture's sentinel
+    /// cell (shared with the terminal backend).
+    pub terminal_pictures: crate::console::backend::SharedPictures,
     /// Shared animation clock for custom emoji.
     pub animation_epoch: Instant,
     /// Counts UI draws; animated emoji decide their frame once per draw.
@@ -575,6 +625,7 @@ impl App {
             media_animation_seen: std::cell::Cell::new(false),
             cell_px: (8, 16),
             disk_cache: None,
+            terminal_pictures: std::rc::Rc::new(RefCell::new(HashMap::new())),
             animation_epoch: Instant::now(),
             draw_serial: std::cell::Cell::new(0),
             show_settings: false,
@@ -1648,11 +1699,14 @@ impl App {
         }
     }
 
-    /// The picture to draw for a custom emoji right now.
-    pub fn custom_emoji_frame(&self, id: &str) -> Option<&Picture> {
+    /// The picture of a custom emoji right now: the frames' serial, the
+    /// frame index and the picture.
+    pub fn custom_emoji_current(&self, id: &str) -> Option<(u16, usize, &Picture)> {
         match self.custom_emojis.get(id)? {
             CustomEmojiState::Ready(frames) => {
-                Some(frames.frame_at(self.animation_epoch.elapsed(), self.draw_serial.get()))
+                let (i, picture) =
+                    frames.current(self.animation_epoch.elapsed(), self.draw_serial.get());
+                Some((frames.serial, i, picture))
             }
             _ => None,
         }
@@ -1816,13 +1870,18 @@ impl App {
             Some(picker) if !frames.is_empty() => {
                 let mut encoded = Vec::with_capacity(frames.len());
                 let mut delays = Vec::with_capacity(frames.len());
+                // exactly the cells' pixel size: anything smaller would be
+                // padded with black on sixel
+                let (cw, ch) = crate::media::block_px(CUSTOM_EMOJI_CELLS, 1, self.cell_px);
                 for (img, delay) in frames.into_iter().take(CUSTOM_EMOJI_MAX_FRAMES) {
+                    let img = img.resize_exact(cw, ch, image::imageops::FilterType::Triangle);
                     if let Ok(p) = picker.new_protocol(
                         img,
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
-                    ) {
-                        encoded.push(Picture::Protocol(p));
+                    ) && let Some(tp) = terminal_picture(&p)
+                    {
+                        encoded.push(Picture::Terminal(std::sync::Arc::new(tp)));
                         delays.push(delay.max(Duration::from_millis(20)));
                     }
                 }
@@ -1847,6 +1906,15 @@ impl App {
         }
     }
 
+    /// The web app's static CDN (default avatars), from discovery.
+    pub fn static_cdn_url(&self) -> String {
+        self.discovery
+            .endpoints
+            .static_cdn
+            .trim_end_matches('/')
+            .to_string()
+    }
+
     /// Previews under messages: wanted, and drawable on this terminal.
     pub fn inline_media_enabled(&self) -> bool {
         self.ui_settings.inline_media && self.custom_emoji_inline_supported()
@@ -1865,7 +1933,8 @@ impl App {
     }
 
     /// The avatar block of a message author: their guild avatar, their own
-    /// avatar, or a disc in their colour drawn locally.
+    /// avatar, the web app's default avatar for their id, or (without a
+    /// static CDN) a disc in their colour drawn locally.
     pub fn avatar_slot(
         &self,
         guild_id: Option<&str>,
@@ -1880,7 +1949,14 @@ impl App {
             (_, _, Some(hash)) if !hash.is_empty() => {
                 crate::media::avatar_url(&base, None, &user.id, hash)
             }
-            _ => crate::media::default_avatar_key(crate::media::default_avatar_color(user)),
+            _ => {
+                let cdn = self.static_cdn_url();
+                if cdn.is_empty() {
+                    crate::media::default_avatar_key(crate::media::default_avatar_color(user))
+                } else {
+                    crate::media::default_avatar_url(&cdn, &user.id)
+                }
+            }
         };
         MediaSlot::new(
             url,
@@ -3732,6 +3808,23 @@ pub fn media_marker(style: Style) -> Option<(usize, u16)> {
     }
 }
 
+/// The cell a terminal picture is printed at: the backend prints the
+/// picture there instead of the cell. The frames' serial and the frame
+/// index sit in the underline colour (red 0x80..0xBF), so the cell changes
+/// exactly when the picture does: a still picture is sent once, an
+/// animation once per frame.
+pub fn picture_sentinel_style(style: Style, serial: u16, frame: usize) -> Style {
+    style.underline_color(Color::Rgb(
+        0x80 | (frame as u8 & 0x3F),
+        (serial >> 8) as u8,
+        serial as u8,
+    ))
+}
+
+pub fn is_picture_sentinel(underline_color: Color) -> bool {
+    matches!(underline_color, Color::Rgb(r, _, _) if r & 0xC0 == 0x80)
+}
+
 #[cfg(test)]
 mod custom_emoji_tests {
     use super::*;
@@ -3749,6 +3842,22 @@ mod custom_emoji_tests {
             custom_emoji_marker_slot(Style::default().underline_color(Color::Rgb(1, 2, 3))),
             None
         );
+    }
+
+    #[test]
+    fn picture_sentinels_are_not_markers() {
+        let s = picture_sentinel_style(Style::default(), 0x1234, 47);
+        assert!(is_picture_sentinel(s.underline_color.unwrap()));
+        assert_eq!(s.underline_color, Some(Color::Rgb(0x80 | 47, 0x12, 0x34)));
+        assert_eq!(media_marker(s), None);
+        assert_eq!(custom_emoji_marker_slot(s), None);
+        assert!(!is_picture_sentinel(
+            media_marker_style(3, 2).underline_color.unwrap()
+        ));
+        assert!(!is_picture_sentinel(
+            custom_emoji_marker_style(3).underline_color.unwrap()
+        ));
+        assert!(!is_picture_sentinel(Color::Reset));
     }
 
     #[test]

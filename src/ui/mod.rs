@@ -42,6 +42,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.custom_emoji_slots.borrow_mut().clear();
     app.media_slots.borrow_mut().clear();
     app.media_animation_seen.set(false);
+    app.terminal_pictures.borrow_mut().clear();
     app.pixel_placements.borrow_mut().clear();
     app.draw_serial.set(app.draw_serial.get().wrapping_add(1));
     let inner_w = area.width.saturating_sub(2).max(1);

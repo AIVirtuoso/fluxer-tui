@@ -35,7 +35,6 @@ use crossterm::terminal::{
 use crossterm::{execute, terminal};
 use futures_util::StreamExt;
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use reqwest::StatusCode;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -158,6 +157,7 @@ async fn main() -> Result<()> {
         &console_selection,
         &config.console,
         app.pixel_placements.clone(),
+        app.terminal_pictures.clone(),
     ) {
         Ok(v) => v,
         Err(e) if console_mode => {
@@ -168,6 +168,7 @@ async fn main() -> Result<()> {
                 &console::Selection::Terminal,
                 &config.console,
                 app.pixel_placements.clone(),
+                app.terminal_pictures.clone(),
             )?
         }
         Err(e) => return Err(e),
@@ -185,6 +186,12 @@ async fn main() -> Result<()> {
         app.image_picker = None;
     } else {
         app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+        // whatever the encoder still pads gets the theme's background, not black
+        if let Some(picker) = app.image_picker.as_mut()
+            && let Some(bg) = ui::theme::bg_rgb()
+        {
+            picker.set_background_color(image::Rgba([bg[0], bg[1], bg[2], 255]));
+        }
     }
     // Pictures in chat are prepared for exact cell sizes, so the pixel size
     // of a cell has to be known; the caches are sized from the config.
@@ -219,6 +226,12 @@ async fn main() -> Result<()> {
             for (id, url) in app.take_custom_emoji_wants() {
                 spawn_custom_emoji_fetch(authed_client.clone(), event_tx.clone(), id, url);
             }
+            // sixel cannot show transparency: round avatars there need the
+            // theme's background colour to sit on
+            let opaque_bg = match app.image_picker.as_ref().map(|p| p.protocol_type()) {
+                Some(ratatui_image::picker::ProtocolType::Sixel) => ui::theme::bg_rgb(),
+                _ => None,
+            };
             for slot in app.take_media_wants() {
                 spawn_media_fetch(
                     authed_client.clone(),
@@ -227,6 +240,7 @@ async fn main() -> Result<()> {
                     app.image_picker.clone(),
                     app.pixel_mode,
                     app.cell_px,
+                    opaque_bg,
                     app.disk_cache.clone(),
                 );
             }
@@ -1802,6 +1816,7 @@ fn spawn_media_fetch(
     picker: Option<ratatui_image::picker::Picker>,
     pixel_mode: bool,
     cell_px: (u32, u32),
+    opaque_bg: Option<[u8; 3]>,
     disk: Option<std::sync::Arc<crate::media::DiskCache>>,
 ) {
     tokio::spawn(async move {
@@ -1849,6 +1864,7 @@ fn spawn_media_fetch(
                 picker.as_ref(),
                 pixel_mode,
                 cell_px,
+                opaque_bg,
             )
         })
         .await
@@ -1967,6 +1983,7 @@ fn init_terminal(
     selection: &console::Selection,
     console_cfg: &config::ConsoleSettings,
     placements: console::backend::SharedPlacements,
+    pictures: console::backend::SharedPictures,
 ) -> Result<(
     Terminal<console::backend::AnyBackend>,
     Option<console::ConsoleSession>,
@@ -1976,7 +1993,9 @@ fn init_terminal(
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
             .context("failed to enter alternate screen")?;
-        let backend = console::backend::AnyBackend::Crossterm(CrosstermBackend::new(stdout));
+        let backend = console::backend::AnyBackend::Crossterm(console::backend::TermBackend::new(
+            stdout, pictures,
+        ));
         return Ok((
             Terminal::new(backend).context("failed to create terminal")?,
             None,
