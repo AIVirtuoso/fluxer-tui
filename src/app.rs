@@ -159,26 +159,72 @@ pub struct CustomEmojiFrames {
     pub frames: Vec<Protocol>,
     pub delays: Vec<Duration>,
     pub total: Duration,
+    /// Frame index drawn last, and when it first appeared.
+    shown: std::cell::Cell<usize>,
+    shown_at: std::cell::Cell<Option<Instant>>,
 }
 
+/// A frame that the clock would repeat is advanced by hand once it has been
+/// on screen this long, so loops shorter than (or aligned with) the redraw
+/// tick still visibly move instead of freezing on one frame.
+const CUSTOM_EMOJI_FORCE_ADVANCE_AFTER: Duration = Duration::from_millis(90);
+
 impl CustomEmojiFrames {
-    pub fn is_animated(&self) -> bool {
-        self.frames.len() > 1 && !self.total.is_zero()
+    pub fn new(frames: Vec<Protocol>, delays: Vec<Duration>) -> Self {
+        let total = delays.iter().sum();
+        Self {
+            frames,
+            delays,
+            total,
+            shown: std::cell::Cell::new(0),
+            shown_at: std::cell::Cell::new(None),
+        }
     }
 
-    /// The frame showing at `elapsed` on a looping timeline.
-    pub fn frame_at(&self, elapsed: Duration) -> &Protocol {
-        if !self.is_animated() {
-            return &self.frames[0];
-        }
+    pub fn is_animated(&self) -> bool {
+        self.delays.len() > 1 && !self.total.is_zero()
+    }
+
+    /// Index of the frame at `elapsed` on the looping timeline.
+    fn timeline_index(&self, elapsed: Duration) -> usize {
         let mut t = Duration::from_nanos((elapsed.as_nanos() % self.total.as_nanos()) as u64);
-        for (frame, delay) in self.frames.iter().zip(&self.delays) {
+        for (i, delay) in self.delays.iter().enumerate() {
             if t < *delay {
-                return frame;
+                return i;
             }
             t -= *delay;
         }
-        &self.frames[self.frames.len() - 1]
+        self.delays.len() - 1
+    }
+
+    /// The frame to draw at `elapsed`, drawn at instant `now`.
+    pub fn index_at(&self, elapsed: Duration, now: Instant) -> usize {
+        if !self.is_animated() {
+            return 0;
+        }
+        let n = self.delays.len();
+        let mut i = self.timeline_index(elapsed);
+        let shown = self.shown.get();
+        match self.shown_at.get() {
+            Some(at)
+                if i == shown
+                    && now.saturating_duration_since(at) >= CUSTOM_EMOJI_FORCE_ADVANCE_AFTER =>
+            {
+                i = (shown + 1) % n;
+            }
+            Some(_) if i == shown => return shown,
+            _ => {}
+        }
+        self.shown.set(i);
+        self.shown_at.set(Some(now));
+        i
+    }
+
+    pub fn frame_at(&self, elapsed: Duration) -> &Protocol {
+        let i = self
+            .index_at(elapsed, Instant::now())
+            .min(self.frames.len() - 1);
+        &self.frames[i]
     }
 }
 
@@ -1688,12 +1734,7 @@ impl App {
                 if encoded.is_empty() {
                     CustomEmojiState::Failed
                 } else {
-                    let total = delays.iter().sum();
-                    CustomEmojiState::Ready(CustomEmojiFrames {
-                        frames: encoded,
-                        delays,
-                        total,
-                    })
+                    CustomEmojiState::Ready(CustomEmojiFrames::new(encoded, delays))
                 }
             }
             _ => CustomEmojiState::Failed,
@@ -3513,32 +3554,48 @@ mod custom_emoji_tests {
 
     #[test]
     fn animation_timeline_loops() {
-        // frame_at only needs delays; protocols are opaque, so test the
-        // arithmetic on the index it would pick.
-        let delays = [
-            Duration::from_millis(100),
-            Duration::from_millis(50),
-            Duration::from_millis(150),
-        ];
-        let total: Duration = delays.iter().sum();
-        let pick = |elapsed: Duration| {
-            let mut t = Duration::from_nanos((elapsed.as_nanos() % total.as_nanos()) as u64);
-            for (i, d) in delays.iter().enumerate() {
-                if t < *d {
-                    return i;
-                }
-                t -= *d;
-            }
-            delays.len() - 1
-        };
-        assert_eq!(pick(Duration::ZERO), 0);
-        assert_eq!(pick(Duration::from_millis(99)), 0);
-        assert_eq!(pick(Duration::from_millis(100)), 1);
-        assert_eq!(pick(Duration::from_millis(149)), 1);
-        assert_eq!(pick(Duration::from_millis(150)), 2);
-        assert_eq!(pick(Duration::from_millis(299)), 2);
-        assert_eq!(pick(Duration::from_millis(300)), 0);
-        assert_eq!(pick(Duration::from_millis(1000)), 1); // 1000 mod 300 = 100
+        let f = CustomEmojiFrames::new(
+            Vec::new(),
+            vec![
+                Duration::from_millis(100),
+                Duration::from_millis(50),
+                Duration::from_millis(150),
+            ],
+        );
+        let t0 = Instant::now();
+        // time-based picks, each a fresh draw well after the previous one
+        let mut now = t0;
+        // (consecutive picks differ, so the progress rule never kicks in here)
+        for (ms, want) in [(0u64, 0usize), (100, 1), (150, 2), (300, 0), (1000, 1)] {
+            now += Duration::from_millis(200);
+            assert_eq!(
+                f.index_at(Duration::from_millis(ms), now),
+                want,
+                "at {ms} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn fast_loops_still_advance() {
+        // two 50 ms frames: a 100 ms loop that a 100 ms tick would always
+        // sample at the same frame
+        let f = CustomEmojiFrames::new(
+            Vec::new(),
+            vec![Duration::from_millis(50), Duration::from_millis(50)],
+        );
+        let t0 = Instant::now();
+        let mut seen = Vec::new();
+        for tick in 0..6u64 {
+            let now = t0 + Duration::from_millis(100 * tick);
+            seen.push(f.index_at(Duration::from_millis(100 * tick), now));
+        }
+        assert_eq!(seen, vec![0, 1, 0, 1, 0, 1]);
+        // redraws inside the same tick (typing, cursor blink) do not advance
+        let now = t0 + Duration::from_millis(520);
+        let a = f.index_at(Duration::from_millis(520), now);
+        let b = f.index_at(Duration::from_millis(525), now + Duration::from_millis(5));
+        assert_eq!(a, b);
     }
 
     #[test]

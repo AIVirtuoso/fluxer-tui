@@ -8,13 +8,19 @@ pub fn is_gif_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
 }
 
+/// Frame delay as browsers (and so the web app) interpret it: a missing
+/// delay or one of 10 ms or less plays at 100 ms, anything else is honoured
+/// down to 20 ms.
 fn delay_to_duration(delay: Delay) -> Duration {
     let (n, d) = delay.numer_denom_ms();
     if d == 0 || n == 0 {
         return Duration::from_millis(100);
     }
-    let ms = (n as f64 / d as f64).round().clamp(20.0, 30_000.0) as u64;
-    Duration::from_millis(ms)
+    let ms = (n as f64 / d as f64).round();
+    if ms <= 10.0 {
+        return Duration::from_millis(100);
+    }
+    Duration::from_millis(ms.clamp(20.0, 30_000.0) as u64)
 }
 
 const MAX_FRAME_DIM: u32 = 256;
