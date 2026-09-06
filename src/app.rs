@@ -164,38 +164,221 @@ pub enum Picture {
 }
 
 /// A picture as escape sequences for the terminal's graphics protocol,
-/// ready to print at a block's cells: sixel and iTerm2 draw the whole
-/// picture from the first row, kitty places one row at a time. The
-/// sequences never enter ratatui's buffer: it would take their length for
+/// kept in parts so that any run of the block's rows can be printed on
+/// its own: a block cut by the pane's edge shows what is on screen. The
+/// sequences never enter ratatui's buffer (it would take their length for
 /// the width of a character and re-send the rest of the screen on every
-/// frame. The backend prints them where a sentinel cell sits instead.
-pub struct TerminalPicture {
-    /// (row within the block, what to print at that row's first cell).
-    pub rows: Vec<(u16, std::sync::Arc<str>)>,
-    pub area: Rect,
+/// frame); the backend prints them where a sentinel cell sits.
+pub enum TerminalPicture {
+    /// Sixel paints bands of six pixel rows. The header up to the height,
+    /// the palette and the bands are kept apart, so a run of bands can be
+    /// put together under a header with its own height.
+    Sixel {
+        head: std::sync::Arc<str>,
+        palette: std::sync::Arc<str>,
+        bands: Vec<std::sync::Arc<str>>,
+        area: Rect,
+    },
+    /// Kitty places one row of placeholder cells per cell row, each naming
+    /// its row of the image, once the image has been transmitted.
+    Kitty {
+        transmit: std::sync::Arc<str>,
+        rows: Vec<std::sync::Arc<str>>,
+        area: Rect,
+    },
+    /// iTerm2: one sequence for the whole block, all or nothing.
+    Whole {
+        data: std::sync::Arc<str>,
+        area: Rect,
+    },
 }
 
-/// Encode a protocol picture for printing: draw it into a scratch buffer
-/// the way ratatui-image would and lift out what it put in the cells.
+/// What to print for a run of a picture's rows.
+pub struct PicturePrintout {
+    /// Sent once per picture before any of its rows (kitty's image data).
+    pub transmit: Option<std::sync::Arc<str>>,
+    /// (row within the block, the sequence to print at that row's first cell).
+    pub rows: Vec<(u16, std::sync::Arc<str>)>,
+}
+
+impl TerminalPicture {
+    pub fn area(&self) -> Rect {
+        match self {
+            Self::Sixel { area, .. } | Self::Kitty { area, .. } | Self::Whole { area, .. } => *area,
+        }
+    }
+
+    /// The sequences that show block rows `r0..r1`, for cells `cell_h`
+    /// pixels tall; None when that part cannot be shown on its own. A sixel
+    /// run starts at the first whole band inside the rows, at most five
+    /// pixels below the row's edge, and is printed at the row.
+    pub fn printout(&self, r0: u16, r1: u16, cell_h: u32) -> Option<PicturePrintout> {
+        let rows = self.area().height;
+        if r0 >= r1 || r1 > rows {
+            return None;
+        }
+        match self {
+            Self::Sixel {
+                head,
+                palette,
+                bands,
+                ..
+            } => {
+                let b0 = (r0 as u32 * cell_h).div_ceil(6) as usize;
+                let b1 = ((r1 as u32 * cell_h) / 6) as usize;
+                let b1 = b1.min(bands.len());
+                if b0 >= b1 {
+                    return None;
+                }
+                let mut data = String::with_capacity(
+                    head.len()
+                        + palette.len()
+                        + bands[b0..b1].iter().map(|b| b.len() + 1).sum::<usize>()
+                        + 8,
+                );
+                data.push_str(head);
+                data.push_str(&((b1 - b0) as u32 * 6).to_string());
+                data.push_str(palette);
+                for (i, band) in bands[b0..b1].iter().enumerate() {
+                    if i > 0 {
+                        data.push('-');
+                    }
+                    data.push_str(band);
+                }
+                data.push_str("\x1b\\");
+                Some(PicturePrintout {
+                    transmit: None,
+                    rows: vec![(r0, std::sync::Arc::from(data))],
+                })
+            }
+            Self::Kitty { transmit, rows, .. } => Some(PicturePrintout {
+                transmit: Some(transmit.clone()),
+                rows: (r0..r1).map(|r| (r, rows[r as usize].clone())).collect(),
+            }),
+            Self::Whole { data, .. } => (r0 == 0 && r1 == rows).then(|| PicturePrintout {
+                transmit: None,
+                rows: vec![(0, data.clone())],
+            }),
+        }
+    }
+}
+
+/// The cells a protocol picture would put its sequences in, by row: what
+/// ratatui-image writes into a scratch buffer.
+fn protocol_rows(protocol: &Protocol) -> Vec<(u16, String)> {
+    let area = protocol.area();
+    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, area.width, area.height));
+    ratatui::widgets::Widget::render(ratatui_image::Image::new(protocol), buf.area, &mut buf);
+    (0..area.height)
+        .filter_map(|y| {
+            let cell = &buf[(0, y)];
+            (!cell.skip && cell.symbol().len() > 1).then(|| (y, cell.symbol().to_string()))
+        })
+        .collect()
+}
+
+/// Encode a protocol picture for printing in parts.
 pub fn terminal_picture(protocol: &Protocol) -> Option<TerminalPicture> {
     let area = protocol.area();
     if area.width == 0 || area.height == 0 {
         return None;
     }
-    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, area.width, area.height));
-    ratatui::widgets::Widget::render(ratatui_image::Image::new(protocol), buf.area, &mut buf);
-    let mut rows = Vec::new();
-    for y in 0..area.height {
-        let cell = &buf[(0, y)];
-        if cell.skip || cell.symbol().len() <= 1 {
-            continue;
+    match protocol {
+        Protocol::Sixel(sixel) => parse_sixel(&sixel.data, area).or_else(|| {
+            Some(TerminalPicture::Whole {
+                data: std::sync::Arc::from(sixel.data.as_str()),
+                area,
+            })
+        }),
+        Protocol::Kitty(_) => {
+            let rows = protocol_rows(protocol);
+            if rows.len() != area.height as usize {
+                return None;
+            }
+            // the image data comes before the first row's placeholders
+            let (transmit, first) = match rows[0].1.find("\x1b[s") {
+                Some(at) => (rows[0].1[..at].to_string(), rows[0].1[at..].to_string()),
+                None => (String::new(), rows[0].1.clone()),
+            };
+            let mut placeholders: Vec<std::sync::Arc<str>> = vec![std::sync::Arc::from(first)];
+            placeholders.extend(
+                rows[1..]
+                    .iter()
+                    .map(|(_, s)| std::sync::Arc::from(s.as_str())),
+            );
+            Some(TerminalPicture::Kitty {
+                transmit: std::sync::Arc::from(transmit),
+                rows: placeholders,
+                area,
+            })
         }
-        rows.push((y, std::sync::Arc::<str>::from(cell.symbol())));
+        _ => {
+            let rows = protocol_rows(protocol);
+            let (_, data) = rows.into_iter().next()?;
+            Some(TerminalPicture::Whole {
+                data: std::sync::Arc::from(data),
+                area,
+            })
+        }
     }
-    if rows.is_empty() {
+}
+
+/// Take a sixel sequence apart: the DCS header up to the height in the
+/// raster attributes, the palette definitions, and the bands.
+fn parse_sixel(data: &str, area: Rect) -> Option<TerminalPicture> {
+    let b = data.as_bytes();
+    if !data.starts_with("\x1bP") {
         return None;
     }
-    Some(TerminalPicture { rows, area })
+    let mut i = data.find('q')? + 1;
+    if b.get(i) != Some(&b'"') {
+        return None;
+    }
+    i += 1;
+    // "Pan;Pad;Ph;Pv: keep everything up to and including the third ';'
+    let mut semicolons = 0;
+    while i < b.len() && semicolons < 3 {
+        match b[i] {
+            b';' => semicolons += 1,
+            c if c.is_ascii_digit() => {}
+            _ => return None,
+        }
+        i += 1;
+    }
+    if semicolons < 3 {
+        return None;
+    }
+    let head = &data[..i];
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let palette_start = i;
+    // "#n;2;r;g;b" definitions; a "#n" followed by anything but ';' is the
+    // body's first colour selection
+    while b.get(i) == Some(&b'#') {
+        let mut j = i + 1;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if b.get(j) != Some(&b';') {
+            break;
+        }
+        while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+            j += 1;
+        }
+        i = j;
+    }
+    let palette = &data[palette_start..i];
+    let body = data[i..].strip_suffix("\x1b\\").unwrap_or(&data[i..]);
+    if body.is_empty() {
+        return None;
+    }
+    Some(TerminalPicture::Sixel {
+        head: std::sync::Arc::from(head),
+        palette: std::sync::Arc::from(palette),
+        bands: body.split('-').map(std::sync::Arc::from).collect(),
+        area,
+    })
 }
 
 /// Numbers each set of frames, so a sentinel cell can tell pictures apart.
@@ -3944,6 +4127,83 @@ mod custom_emoji_tests {
             custom_emoji_marker_slot(Style::default().underline_color(Color::Rgb(1, 2, 3))),
             None
         );
+    }
+
+    #[test]
+    fn a_sixel_comes_apart_into_bands_and_goes_back_together() {
+        use ratatui_image::picker::{Picker, ProtocolType};
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let mut img = image::RgbaImage::from_pixel(40, 36, image::Rgba([200, 30, 30, 255]));
+        for y in 18..36 {
+            for x in 0..40 {
+                img.put_pixel(x, y, image::Rgba([30, 30, 200, 255]));
+            }
+        }
+        let protocol = picker
+            .new_protocol(
+                image::DynamicImage::ImageRgba8(img),
+                Rect::new(0, 0, 4, 2),
+                ratatui_image::Resize::Fit(None),
+            )
+            .unwrap();
+        let original = match &protocol {
+            Protocol::Sixel(s) => s.data.clone(),
+            _ => panic!("sixel"),
+        };
+        let picture = terminal_picture(&protocol).unwrap();
+        let TerminalPicture::Sixel { bands, .. } = &picture else {
+            panic!("kept in bands");
+        };
+        assert_eq!(bands.len(), 6, "36 px = 6 bands");
+        // the whole block prints exactly what the encoder produced
+        let whole = picture.printout(0, 2, 20).unwrap();
+        assert_eq!(whole.rows.len(), 1);
+        assert_eq!(&*whole.rows[0].1, original);
+        // the second row alone: whole bands from 20 px on (24..36), 12 px tall
+        let lower = picture.printout(1, 2, 20).unwrap();
+        assert_eq!(lower.rows[0].0, 1);
+        let data = &*lower.rows[0].1;
+        assert!(data.contains("\"1;1;40;12"), "{data:?}");
+        assert_eq!(data.matches('-').count(), 1, "two bands: {data:?}");
+        assert!(data.ends_with("\x1b\\"));
+        // the first row alone: bands 0..3, 18 px, and nothing past the row
+        let upper = picture.printout(0, 1, 20).unwrap();
+        assert!(
+            upper.rows[0].1.contains("\"1;1;40;18"),
+            "{:?}",
+            upper.rows[0].1
+        );
+        assert!(picture.printout(1, 1, 20).is_none());
+        assert!(picture.printout(0, 3, 20).is_none());
+    }
+
+    #[test]
+    fn a_kitty_picture_prints_any_run_of_rows_after_one_transmit() {
+        use ratatui_image::picker::{Picker, ProtocolType};
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Kitty);
+        let img = image::RgbaImage::from_pixel(40, 60, image::Rgba([1, 2, 3, 255]));
+        let protocol = picker
+            .new_protocol(
+                image::DynamicImage::ImageRgba8(img),
+                Rect::new(0, 0, 4, 3),
+                ratatui_image::Resize::Fit(None),
+            )
+            .unwrap();
+        let picture = terminal_picture(&protocol).unwrap();
+        let TerminalPicture::Kitty { transmit, rows, .. } = &picture else {
+            panic!("kitty keeps rows");
+        };
+        assert_eq!(rows.len(), 3);
+        assert!(transmit.starts_with("\x1b_G"), "{transmit:?}");
+        assert!(
+            rows.iter().all(|r| r.starts_with("\x1b[s")),
+            "placeholders only"
+        );
+        let middle = picture.printout(1, 3, 20).unwrap();
+        assert_eq!(middle.rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
+        assert!(middle.transmit.is_some());
     }
 
     #[test]

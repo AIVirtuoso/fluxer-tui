@@ -1154,6 +1154,89 @@ mod anchor_tests {
     }
 }
 
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames, ServerSelection};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn app_with_picture() -> (App, usize) {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        // a 4x3 block whose picture is 40x60 px, ready in the cache
+        let slot = MediaSlot::new("https://x/p.png".to_string(), 4, 3, MediaKind::Picture);
+        let img = image::RgbaImage::from_pixel(40, 60, image::Rgba([9, 9, 9, 255]));
+        assert!(app.media.start(&slot.key));
+        app.media.finish(
+            slot.key.clone(),
+            Some(PictureFrames::new(
+                vec![Picture::Pixels(std::sync::Arc::new(img))],
+                vec![std::time::Duration::ZERO],
+            )),
+            40 * 60 * 4,
+            1,
+        );
+        let k = app.register_media_slot(slot);
+        (app, k)
+    }
+
+    /// Draw marker rows `rows` of block `k` at screen rows `at`, run the
+    /// overlay, and return the placements.
+    fn placements(app: &App, k: usize, rows: &[u16], at: &[u16]) -> Vec<(Rect, u32, u32)> {
+        let mut terminal = Terminal::new(TestBackend::new(6, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                let buf = frame.buffer_mut();
+                for (&r, &y) in rows.iter().zip(at) {
+                    for x in 1..5u16 {
+                        buf[(x, y)].set_style(crate::app::media_marker_style(k, r));
+                    }
+                }
+                app.pixel_placements.borrow_mut().clear();
+                overlay_media(frame, Rect::new(0, 0, 6, 4), app);
+            })
+            .unwrap();
+        app.pixel_placements
+            .borrow()
+            .iter()
+            .map(|p| (p.area, p.image.width(), p.image.height()))
+            .collect()
+    }
+
+    #[test]
+    fn a_block_cut_by_the_pane_edge_shows_the_rows_on_screen() {
+        let (app, k) = app_with_picture();
+        // whole: rows 0..3 at screen rows 1..4
+        assert_eq!(
+            placements(&app, k, &[0, 1, 2], &[1, 2, 3]),
+            [(Rect::new(1, 1, 4, 3), 40, 60)]
+        );
+        // cut at the top: rows 1..3 visible at screen rows 0..2 -> pixels 20..60
+        assert_eq!(
+            placements(&app, k, &[1, 2], &[0, 1]),
+            [(Rect::new(1, 0, 4, 2), 40, 40)]
+        );
+        // cut at the bottom: rows 0..2 at screen rows 2..4 -> pixels 0..40
+        assert_eq!(
+            placements(&app, k, &[0, 1], &[2, 3]),
+            [(Rect::new(1, 2, 4, 2), 40, 40)]
+        );
+        // rows that do not follow each other are not a block on screen
+        assert_eq!(placements(&app, k, &[0, 2], &[1, 2]), []);
+    }
+}
+
 /// When a message is selected, adjust `message_scroll_from_bottom` so the selection stays in view.
 pub fn scroll_for_selected_message(
     app: &App,
@@ -1368,7 +1451,7 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
                 let rect = Rect::new(x, y, w, 1);
                 match picture {
                     crate::app::Picture::Terminal(tp) => {
-                        place_terminal_picture(app, buf, rect, serial, frame_idx, tp);
+                        place_terminal_picture(app, buf, rect, 0, 1, serial, frame_idx, tp);
                     }
                     crate::app::Picture::Pixels(img) => {
                         app.pixel_placements
@@ -1385,22 +1468,30 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
     }
 }
 
-/// Put a terminal picture on a block of cells. The cells are skipped, so
-/// the text under them is never rewritten while the picture is there; the
-/// rows that carry escape sequences get a sentinel cell, and the backend
-/// prints the picture at it instead of the cell.
+/// Put rows `r0..r1` of a terminal picture on the cells `rect` (the rows
+/// of the block that are on screen). The cells are skipped, so the text
+/// under them is never rewritten while the picture is there; the rows that
+/// carry escape sequences get a sentinel cell, and the backend prints the
+/// picture at it instead of the cell. The sentinel carries the picture,
+/// the frame and the run, so it changes exactly when what to print does.
+#[allow(clippy::too_many_arguments)]
 fn place_terminal_picture(
     app: &App,
     buf: &mut ratatui::buffer::Buffer,
     rect: Rect,
+    r0: u16,
+    r1: u16,
     serial: u16,
     frame: usize,
     picture: &crate::app::TerminalPicture,
 ) {
-    if picture.area.width > rect.width || picture.area.height > rect.height {
-        // encoded for a bigger block than it has: printing it would spill
+    if picture.area().width > rect.width {
+        // encoded for a wider block than it has: printing it would spill
         return;
     }
+    let Some(printout) = picture.printout(r0, r1, app.cell_px.1) else {
+        return;
+    };
     let bottom = rect.y.saturating_add(rect.height);
     for y in rect.y..bottom {
         for x in rect.x..rect.x.saturating_add(rect.width) {
@@ -1409,25 +1500,42 @@ fn place_terminal_picture(
             }
         }
     }
+    let transmit = printout
+        .transmit
+        .map(|seq| (((serial as u32) << 8) | (frame as u32 & 0xFF), seq));
     let mut pictures = app.terminal_pictures.borrow_mut();
-    for (dy, data) in &picture.rows {
-        let y = rect.y.saturating_add(*dy);
+    for (dy, data) in printout.rows {
+        let y = rect.y.saturating_add(dy.saturating_sub(r0));
         if y >= bottom {
             continue;
         }
         if let Some(cell) = buf.cell_mut((rect.x, y)) {
-            let style = crate::app::picture_sentinel_style(cell.style(), serial, frame);
+            let style = crate::app::picture_sentinel_style(cell.style(), serial, frame)
+                .fg(ratatui::style::Color::Rgb(0xC0, r0 as u8, r1 as u8));
             cell.set_skip(false);
             cell.set_style(style);
         }
         pictures.insert(
             (rect.x, y),
             crate::console::backend::PicturePrint {
-                data: data.clone(),
+                data,
                 area: rect,
+                transmit: transmit.clone(),
             },
         );
     }
+}
+
+/// The rows of a picture's pixels for block rows `r0..r1`, for the console.
+fn crop_rows(
+    img: &image::RgbaImage,
+    r0: u16,
+    r1: u16,
+    cell_h: u32,
+) -> std::sync::Arc<image::RgbaImage> {
+    let y0 = (r0 as u32 * cell_h).min(img.height());
+    let h = ((r1 - r0) as u32 * cell_h).min(img.height() - y0).max(1);
+    std::sync::Arc::new(image::imageops::crop_imm(img, 0, y0, img.width(), h).to_image())
 }
 
 /// Draw the pictures whose marker blocks the message pane laid out this
@@ -1440,10 +1548,13 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
     if slots.is_empty() {
         return;
     }
+    /// A block's rows found on screen: cut by the pane's edge, only a run
+    /// of them may be there.
     struct Seen {
         x: u16,
-        top: u16,
-        rows: u32,
+        y_first: u16,
+        r_first: u16,
+        r_last: u16,
         consistent: bool,
     }
     let draw = app.draw_serial.get();
@@ -1465,19 +1576,32 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
             }
             if let Some(slot) = slots.get(k)
                 && run == slot.cols
-                && y >= r
+                && r < slot.rows
             {
-                let top = y - r;
-                let entry = seen.entry(k).or_insert(Seen {
-                    x,
-                    top,
-                    rows: 0,
-                    consistent: true,
-                });
-                if entry.x != x || entry.top != top {
-                    entry.consistent = false;
+                match seen.get_mut(&k) {
+                    None => {
+                        seen.insert(
+                            k,
+                            Seen {
+                                x,
+                                y_first: y,
+                                r_first: r,
+                                r_last: r,
+                                consistent: true,
+                            },
+                        );
+                    }
+                    Some(entry) => {
+                        // the rows must follow each other down the screen
+                        if entry.x != x
+                            || r != entry.r_last + 1
+                            || y - entry.y_first != r - entry.r_first
+                        {
+                            entry.consistent = false;
+                        }
+                        entry.r_last = r;
+                    }
                 }
-                entry.rows |= 1 << r.min(31);
             }
             x = x.saturating_add(run);
         }
@@ -1485,12 +1609,12 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
     let mut wanted = app.media_wanted.borrow_mut();
     for (k, block) in seen {
         let slot = &slots[k];
-        let whole = block.consistent && block.rows == (1u32 << slot.rows.min(31)) - 1;
+        if !block.consistent {
+            continue;
+        }
+        let (r0, r1) = (block.r_first, block.r_last + 1);
         match app.media.lookup(&slot.key, draw) {
             crate::media::Lookup::Ready(frames) => {
-                if !whole {
-                    continue;
-                }
                 let animated = !app.ui_settings.performance_mode && frames.is_animated();
                 let (frame_idx, picture) = if animated {
                     app.note_animation(frames);
@@ -1498,18 +1622,29 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     (0, &frames.frames[0])
                 };
-                let rect = Rect::new(block.x, block.top, slot.cols, slot.rows);
+                let rect = Rect::new(block.x, block.y_first, slot.cols, r1 - r0);
                 match picture {
                     crate::app::Picture::Terminal(tp) => {
-                        place_terminal_picture(app, buf, rect, frames.serial, frame_idx, tp);
+                        place_terminal_picture(
+                            app,
+                            buf,
+                            rect,
+                            r0,
+                            r1,
+                            frames.serial,
+                            frame_idx,
+                            tp,
+                        );
                     }
                     crate::app::Picture::Pixels(img) => {
+                        let image = if r0 == 0 && r1 == slot.rows {
+                            img.clone()
+                        } else {
+                            crop_rows(img, r0, r1, app.cell_px.1)
+                        };
                         app.pixel_placements
                             .borrow_mut()
-                            .push(crate::console::raster::Placement {
-                                area: rect,
-                                image: img.clone(),
-                            });
+                            .push(crate::console::raster::Placement { area: rect, image });
                     }
                 }
                 if animated {

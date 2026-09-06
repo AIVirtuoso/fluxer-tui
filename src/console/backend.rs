@@ -24,6 +24,9 @@ pub type SharedPlacements = Rc<RefCell<Vec<Placement>>>;
 pub struct PicturePrint {
     pub data: Arc<str>,
     pub area: Rect,
+    /// Image data to send once before any row of this picture (kitty),
+    /// keyed by the picture and frame it belongs to.
+    pub transmit: Option<(u32, Arc<str>)>,
 }
 
 /// Per frame: the pictures on screen, by the cell they are printed at.
@@ -150,6 +153,8 @@ pub struct TermBackend<W: Write> {
     pictures: SharedPictures,
     frame: SharedFrame,
     shadow: Shadow,
+    /// Pictures whose image data the terminal has (kitty).
+    transmitted: std::collections::HashSet<u32>,
 }
 
 impl<W: Write> TermBackend<W> {
@@ -159,6 +164,7 @@ impl<W: Write> TermBackend<W> {
             pictures,
             frame,
             shadow: Shadow::new(Rect::default(), true),
+            transmitted: std::collections::HashSet::new(),
         }
     }
 
@@ -203,6 +209,11 @@ impl<W: Write> TermBackend<W> {
                 if crate::app::is_picture_sentinel(current.underline_color) {
                     self.inner.draw(batch.drain(..))?;
                     if let Some(p) = pictures.get(&(x, y)) {
+                        if let Some((key, seq)) = &p.transmit
+                            && self.transmitted.insert(*key)
+                        {
+                            queue!(self.inner, Print(&**seq))?;
+                        }
                         queue!(self.inner, MoveTo(x, y), Print(&*p.data))?;
                         self.shadow.cover(p.area);
                     }
@@ -258,6 +269,7 @@ impl<W: Write> Backend for TermBackend<W> {
     fn clear(&mut self) -> io::Result<()> {
         self.inner.clear()?;
         self.shadow = Shadow::new(self.shadow.area, false);
+        self.transmitted.clear();
         Ok(())
     }
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
@@ -596,6 +608,7 @@ mod tests {
         let picture = PicturePrint {
             data: Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\"),
             area,
+            transmit: None,
         };
         let sentinel = crate::app::picture_sentinel_style(Style::default(), 7, 0);
         let mut buf = buffer_of(&["....", "....", "....", "...."]);
@@ -624,6 +637,7 @@ mod tests {
             PicturePrint {
                 data: picture.data.clone(),
                 area: Rect::new(1, 0, 2, 2),
+                transmit: None,
             },
         );
         let out = r.draw_buf(

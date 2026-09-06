@@ -173,14 +173,15 @@ mod tests {
         .unwrap();
         match &frames.frames[0] {
             Picture::Terminal(tp) => {
-                assert_eq!(tp.area, Rect::new(0, 0, 8, 3), "fills its cells exactly");
+                assert_eq!(tp.area(), Rect::new(0, 0, 8, 3), "fills its cells exactly");
+                let out = tp.printout(0, 3, 20).expect("the whole block");
                 assert_eq!(
-                    tp.rows.len(),
+                    out.rows.len(),
                     1,
                     "sixel draws everything from the first row"
                 );
-                assert_eq!(tp.rows[0].0, 0);
-                let data = &*tp.rows[0].1;
+                assert_eq!(out.rows[0].0, 0);
+                let data = &*out.rows[0].1;
                 assert!(data.starts_with("\x1bP"), "a sixel sequence");
                 // 3 rows of 20 px = 60 px = 10 whole bands: nothing spills below
                 assert!(data.contains("\"1;1;80;60"), "{data:?}");
@@ -202,8 +203,9 @@ mod tests {
         let Picture::Terminal(tp) = &frames.frames[0] else {
             panic!()
         };
-        assert!(tp.rows[0].1.contains("\"1;1;40;36"), "{:?}", tp.rows[0].1);
-        assert_eq!(tp.rows[0].1.matches('-').count(), 5);
+        let data = tp.printout(0, 2, 20).unwrap().rows.remove(0).1;
+        assert!(data.contains("\"1;1;40;36"), "{data:?}");
+        assert_eq!(data.matches('-').count(), 5);
         // sixel has no transparency: avatars stay square there unless the
         // theme's background is known to sit them on
         for bg in [None, Some([1, 2, 3])] {
@@ -219,7 +221,7 @@ mod tests {
             let Picture::Terminal(tp) = &frames.frames[0] else {
                 panic!()
             };
-            assert_eq!(tp.area, Rect::new(0, 0, 4, 2));
+            assert_eq!(tp.area(), Rect::new(0, 0, 4, 2));
         }
     }
 

@@ -109,8 +109,9 @@ disk_cache_mb = 64    # 0 turns the disk cache off
 memory_cache_mb = 64
 ```
 
-Both `[ui]` switches are also in the settings overlay (**F2**). A block
-cut by the pane's edge draws nothing until it has scrolled fully in.
+Both `[ui]` switches are also in the settings overlay (**F2**). A picture
+cut by the pane's edge shows the part that is on screen (on sixel, whole
+six-pixel bands of it).
 
 Scrolling is cheap on a terminal: when the pane merely scrolled, the
 terminal is asked to shift those rows itself (pictures move with them, as
