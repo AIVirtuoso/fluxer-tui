@@ -19,7 +19,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 match e
                     .custom_id
                     .as_deref()
-                    .and_then(|id| app.custom_emoji_placeholder(id))
+                    .and_then(|id| app.custom_emoji_placeholder(id, e.custom_animated))
                 {
                     Some(picture) => {
                         Line::from(vec![picture, Span::styled(format!(" {}", e.label), accent)])

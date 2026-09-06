@@ -1,4 +1,5 @@
 use image::codecs::gif::GifDecoder;
+use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Delay, DynamicImage};
 use std::io::Cursor;
 use std::time::Duration;
@@ -18,20 +19,59 @@ fn delay_to_duration(delay: Delay) -> Duration {
 
 const MAX_FRAME_DIM: u32 = 256;
 
+pub fn is_webp_bytes(bytes: &[u8]) -> bool {
+    bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
+}
+
+/// Frames and delays of an animated GIF or animated WebP, at most
+/// `max_frames` of them; None for still images and anything else.
+pub fn decode_animation(
+    bytes: &[u8],
+    max_frames: usize,
+) -> Option<(Vec<DynamicImage>, Vec<Duration>)> {
+    let raw = if is_gif_bytes(bytes) {
+        GifDecoder::new(Cursor::new(bytes))
+            .ok()?
+            .into_frames()
+            .take(max_frames)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?
+    } else if is_webp_bytes(bytes) {
+        let decoder = WebPDecoder::new(Cursor::new(bytes)).ok()?;
+        if !decoder.has_animation() {
+            return None;
+        }
+        decoder
+            .into_frames()
+            .take(max_frames)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?
+    } else {
+        return None;
+    };
+    frames_from_raw(raw, max_frames)
+}
+
 pub fn decode_gif_animation(bytes: &[u8]) -> Option<(Vec<DynamicImage>, Vec<Duration>)> {
     if !is_gif_bytes(bytes) {
         return None;
     }
     let decoder = GifDecoder::new(Cursor::new(bytes)).ok()?;
     let raw = decoder.into_frames().collect_frames().ok()?;
+    frames_from_raw(raw, 200)
+}
+
+fn frames_from_raw(
+    raw: Vec<image::Frame>,
+    max_frames: usize,
+) -> Option<(Vec<DynamicImage>, Vec<Duration>)> {
     if raw.len() <= 1 {
         return None;
     }
 
-    const MAX_FRAMES: usize = 200;
     const MAX_PIXELS: u64 = 1024 * 1024;
 
-    let take = raw.len().min(MAX_FRAMES);
+    let take = raw.len().min(max_frames);
     let mut frames = Vec::with_capacity(take);
     let mut delays = Vec::with_capacity(take);
 

@@ -612,11 +612,6 @@ fn build_message_lines(
         if !message.reactions.is_empty() {
             let mut reaction_spans: Vec<Span<'static>> = Vec::new();
             for reaction in &message.reactions {
-                let emoji_str = if reaction.emoji.id.is_some() {
-                    format!(":{}:", reaction.emoji.name)
-                } else {
-                    reaction.emoji.name.clone()
-                };
                 let style = if reaction.me {
                     Style::default()
                         .fg(crate::ui::theme::accent())
@@ -624,10 +619,30 @@ fn build_message_lines(
                 } else {
                     crate::ui::theme::dim_style()
                 };
-                reaction_spans.push(Span::styled(
-                    format!(" {emoji_str} {}", reaction.count),
-                    style,
-                ));
+                // custom emoji: the picture where the terminal can draw one
+                let picture = reaction
+                    .emoji
+                    .id
+                    .as_deref()
+                    .and_then(|id| app.custom_emoji_placeholder(id, reaction.emoji.animated));
+                match picture {
+                    Some(p) => {
+                        reaction_spans.push(Span::styled(" ", style));
+                        reaction_spans.push(p);
+                        reaction_spans.push(Span::styled(format!(" {}", reaction.count), style));
+                    }
+                    None => {
+                        let emoji_str = if reaction.emoji.id.is_some() {
+                            format!(":{}:", reaction.emoji.name)
+                        } else {
+                            reaction.emoji.name.clone()
+                        };
+                        reaction_spans.push(Span::styled(
+                            format!(" {emoji_str} {}", reaction.count),
+                            style,
+                        ));
+                    }
+                }
                 reaction_spans.push(Span::raw(" "));
             }
             lines.push(Line::from(reaction_spans));
@@ -829,8 +844,7 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
             });
             if whole
                 && let Some(id) = slots.get(k)
-                && let Some(crate::app::CustomEmojiState::Ready(protocol)) =
-                    app.custom_emojis.get(id)
+                && let Some(protocol) = app.custom_emoji_frame(id)
             {
                 Image::new(protocol).render(Rect::new(x, y, w, 1), buf);
             }

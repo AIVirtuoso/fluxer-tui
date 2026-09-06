@@ -89,6 +89,7 @@ pub struct EmojiMatch {
     pub is_custom: bool,
     /// Guild emoji id, so the popup can draw its picture.
     pub custom_id: Option<String>,
+    pub custom_animated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -147,9 +148,42 @@ pub const CUSTOM_EMOJI_PLACEHOLDER: &str = "\u{2800}\u{2800}";
 /// A guild emoji as it is known to the message renderer.
 pub enum CustomEmojiState {
     Loading,
-    Ready(Protocol),
+    Ready(CustomEmojiFrames),
     Failed,
 }
+
+/// One encoded picture per animation frame (a single frame for still
+/// emoji). Animated emoji all run on the app's shared clock, see
+/// [`App::custom_emoji_frame`].
+pub struct CustomEmojiFrames {
+    pub frames: Vec<Protocol>,
+    pub delays: Vec<Duration>,
+    pub total: Duration,
+}
+
+impl CustomEmojiFrames {
+    pub fn is_animated(&self) -> bool {
+        self.frames.len() > 1 && !self.total.is_zero()
+    }
+
+    /// The frame showing at `elapsed` on a looping timeline.
+    pub fn frame_at(&self, elapsed: Duration) -> &Protocol {
+        if !self.is_animated() {
+            return &self.frames[0];
+        }
+        let mut t = Duration::from_nanos((elapsed.as_nanos() % self.total.as_nanos()) as u64);
+        for (frame, delay) in self.frames.iter().zip(&self.delays) {
+            if t < *delay {
+                return frame;
+            }
+            t -= *delay;
+        }
+        &self.frames[self.frames.len() - 1]
+    }
+}
+
+/// Animation frames kept per custom emoji; enough for the usual short loops.
+pub const CUSTOM_EMOJI_MAX_FRAMES: usize = 48;
 
 impl std::fmt::Debug for CustomEmojiState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -325,8 +359,10 @@ pub struct App {
     pub custom_emojis: HashMap<String, CustomEmojiState>,
     /// Per frame: which emoji id each marker slot in the message pane refers to.
     pub custom_emoji_slots: RefCell<Vec<String>>,
-    /// Per frame: emoji ids the renderer met but has no image for yet.
-    pub custom_emoji_wanted: RefCell<Vec<String>>,
+    /// Per frame: (id, animated) the renderer met but has no image for yet.
+    pub custom_emoji_wanted: RefCell<Vec<(String, bool)>>,
+    /// Shared animation clock for custom emoji.
+    pub custom_emoji_epoch: Instant,
     pub show_settings: bool,
     pub settings_cursor: usize,
     pub show_server_notifications: bool,
@@ -422,6 +458,7 @@ impl App {
             custom_emojis: HashMap::new(),
             custom_emoji_slots: RefCell::new(Vec::new()),
             custom_emoji_wanted: RefCell::new(Vec::new()),
+            custom_emoji_epoch: Instant::now(),
             show_settings: false,
             settings_cursor: 0,
             show_server_notifications: false,
@@ -1474,26 +1511,54 @@ impl App {
     }
 
     /// The media-proxy URL of a custom emoji, as the web app builds it.
-    pub fn custom_emoji_url(&self, id: &str) -> String {
+    /// Animated ones are asked for with their animation, as animated WebP.
+    pub fn custom_emoji_url(&self, id: &str, animated: bool) -> String {
         let media = self.discovery.endpoints.media.trim_end_matches('/');
         let base = if media.is_empty() {
             "https://fluxerusercontent.com"
         } else {
             media
         };
-        format!("{base}/emojis/{id}.webp?size=128")
+        if animated {
+            format!("{base}/emojis/{id}.webp?size=128&animated=true")
+        } else {
+            format!("{base}/emojis/{id}.webp?size=128")
+        }
+    }
+
+    /// The picture to draw for a custom emoji right now.
+    pub fn custom_emoji_frame(&self, id: &str) -> Option<&Protocol> {
+        match self.custom_emojis.get(id)? {
+            CustomEmojiState::Ready(frames) => {
+                Some(frames.frame_at(self.custom_emoji_epoch.elapsed()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the last frame drew an animated custom emoji, so the next
+    /// tick should redraw to advance it.
+    pub fn custom_emoji_animation_visible(&self) -> bool {
+        self.custom_emoji_slots.borrow().iter().any(|id| {
+            matches!(self.custom_emojis.get(id), Some(CustomEmojiState::Ready(f)) if f.is_animated())
+        })
     }
 
     /// Called by renderers for `<:name:id>`: a marked placeholder span when
     /// the picture is ready, None to fall back to `:name:` text. Unknown ids
     /// are queued for fetching.
-    pub fn custom_emoji_placeholder(&self, id: &str) -> Option<Span<'static>> {
-        self.custom_emoji_placeholder_inner(id, true)
+    pub fn custom_emoji_placeholder(&self, id: &str, animated: bool) -> Option<Span<'static>> {
+        self.custom_emoji_placeholder_inner(id, animated, true)
     }
 
     /// The compose box is measured before it is drawn; measuring must not
     /// claim overlay slots.
-    fn custom_emoji_placeholder_inner(&self, id: &str, register: bool) -> Option<Span<'static>> {
+    fn custom_emoji_placeholder_inner(
+        &self,
+        id: &str,
+        animated: bool,
+        register: bool,
+    ) -> Option<Span<'static>> {
         if !self.custom_emoji_inline_supported() || id.is_empty() {
             return None;
         }
@@ -1513,8 +1578,8 @@ impl App {
             Some(_) => None,
             None => {
                 let mut wanted = self.custom_emoji_wanted.borrow_mut();
-                if !wanted.iter().any(|w| w == id) {
-                    wanted.push(id.to_string());
+                if !wanted.iter().any(|(w, _)| w == id) {
+                    wanted.push((id.to_string(), animated));
                 }
                 None
             }
@@ -1542,7 +1607,7 @@ impl App {
                 }
                 match parse_custom_emoji_token(&rest[lt..]) {
                     Some(tok) => {
-                        match self.custom_emoji_placeholder_inner(tok.id, register) {
+                        match self.custom_emoji_placeholder_inner(tok.id, tok.animated, register) {
                             Some(ph) => spans.push(ph),
                             None => spans.push(Span::styled(format!(":{}:", tok.name), name_style)),
                         }
@@ -1591,11 +1656,11 @@ impl App {
     pub fn take_custom_emoji_wants(&mut self) -> Vec<(String, String)> {
         let wanted = std::mem::take(&mut *self.custom_emoji_wanted.borrow_mut());
         let mut out = Vec::new();
-        for id in wanted {
+        for (id, animated) in wanted {
             if self.custom_emojis.contains_key(&id) {
                 continue;
             }
-            let url = self.custom_emoji_url(&id);
+            let url = self.custom_emoji_url(&id, animated);
             self.custom_emojis
                 .insert(id.clone(), CustomEmojiState::Loading);
             out.push((id, url));
@@ -1603,16 +1668,34 @@ impl App {
         out
     }
 
-    pub fn set_custom_emoji_image(&mut self, id: String, image: Option<DynamicImage>) {
-        let state = match (image, self.image_picker.as_ref()) {
-            (Some(img), Some(picker)) => picker
-                .new_protocol(
-                    img,
-                    Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
-                    ratatui_image::Resize::Fit(None),
-                )
-                .map(CustomEmojiState::Ready)
-                .unwrap_or(CustomEmojiState::Failed),
+    /// Store the decoded frames of a custom emoji (one for a still image,
+    /// an empty list when the fetch or decode failed).
+    pub fn set_custom_emoji_frames(&mut self, id: String, frames: Vec<(DynamicImage, Duration)>) {
+        let state = match self.image_picker.as_ref() {
+            Some(picker) if !frames.is_empty() => {
+                let mut encoded = Vec::with_capacity(frames.len());
+                let mut delays = Vec::with_capacity(frames.len());
+                for (img, delay) in frames.into_iter().take(CUSTOM_EMOJI_MAX_FRAMES) {
+                    if let Ok(p) = picker.new_protocol(
+                        img,
+                        Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
+                        ratatui_image::Resize::Fit(None),
+                    ) {
+                        encoded.push(p);
+                        delays.push(delay.max(Duration::from_millis(20)));
+                    }
+                }
+                if encoded.is_empty() {
+                    CustomEmojiState::Failed
+                } else {
+                    let total = delays.iter().sum();
+                    CustomEmojiState::Ready(CustomEmojiFrames {
+                        frames: encoded,
+                        delays,
+                        total,
+                    })
+                }
+            }
             _ => CustomEmojiState::Failed,
         };
         self.custom_emojis.insert(id, state);
@@ -2159,6 +2242,7 @@ impl App {
                     insert: format!("<{}:{}:{}>", prefix, e.name, e.id),
                     is_custom: true,
                     custom_id: Some(e.id.clone()),
+                    custom_animated: e.animated,
                 });
             }
             if results.len() >= 12 {
@@ -2174,6 +2258,7 @@ impl App {
                     insert: c.emoji.to_string(),
                     is_custom: false,
                     custom_id: None,
+                    custom_animated: false,
                 });
             }
         }
@@ -3424,6 +3509,36 @@ mod custom_emoji_tests {
         assert!(parse_custom_emoji_token("<#123>").is_none());
         assert!(parse_custom_emoji_token("<:no close").is_none());
         assert!(parse_custom_emoji_token("<::1>").is_none());
+    }
+
+    #[test]
+    fn animation_timeline_loops() {
+        // frame_at only needs delays; protocols are opaque, so test the
+        // arithmetic on the index it would pick.
+        let delays = [
+            Duration::from_millis(100),
+            Duration::from_millis(50),
+            Duration::from_millis(150),
+        ];
+        let total: Duration = delays.iter().sum();
+        let pick = |elapsed: Duration| {
+            let mut t = Duration::from_nanos((elapsed.as_nanos() % total.as_nanos()) as u64);
+            for (i, d) in delays.iter().enumerate() {
+                if t < *d {
+                    return i;
+                }
+                t -= *d;
+            }
+            delays.len() - 1
+        };
+        assert_eq!(pick(Duration::ZERO), 0);
+        assert_eq!(pick(Duration::from_millis(99)), 0);
+        assert_eq!(pick(Duration::from_millis(100)), 1);
+        assert_eq!(pick(Duration::from_millis(149)), 1);
+        assert_eq!(pick(Duration::from_millis(150)), 2);
+        assert_eq!(pick(Duration::from_millis(299)), 2);
+        assert_eq!(pick(Duration::from_millis(300)), 0);
+        assert_eq!(pick(Duration::from_millis(1000)), 1); // 1000 mod 300 = 100
     }
 
     #[test]

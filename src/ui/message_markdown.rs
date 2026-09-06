@@ -391,7 +391,9 @@ pub fn parse_message_spans(text: &str, app: &App) -> Vec<Span<'static>> {
                         let name_idx = if parts.len() >= 2 { parts.len() - 2 } else { 0 };
                         let emoji_name = format!(":{}:", parts.get(name_idx).unwrap_or(&"unknown"));
                         let emoji_id = parts.last().copied().unwrap_or("").trim();
-                        if let Some(placeholder) = app.custom_emoji_placeholder(emoji_id) {
+                        if let Some(placeholder) =
+                            app.custom_emoji_placeholder(emoji_id, is_animated)
+                        {
                             spans.push(placeholder);
                             continue;
                         }

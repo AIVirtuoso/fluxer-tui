@@ -228,6 +228,9 @@ async fn main() -> Result<()> {
                     app.advance_image_preview_animation(Duration::from_millis(100));
                     needs_redraw = true;
                 }
+                if app.custom_emoji_animation_visible() {
+                    needs_redraw = true;
+                }
                 let t_len_prev = app.typing_users.values().map(|m| m.len()).sum::<usize>();
                 app.prune_stale_typing();
                 if t_len_prev != app.typing_users.values().map(|m| m.len()).sum::<usize>() {
@@ -1669,14 +1672,24 @@ fn spawn_custom_emoji_fetch(
     url: String,
 ) {
     tokio::spawn(async move {
-        let image = match client.fetch_public_bytes(&url).await {
-            Ok(bytes) => tokio::task::spawn_blocking(move || image::load_from_memory(&bytes).ok())
-                .await
-                .ok()
-                .flatten(),
-            Err(_) => None,
+        let frames = match client.fetch_public_bytes(&url).await {
+            Ok(bytes) => tokio::task::spawn_blocking(move || {
+                // animated GIF/WebP first, then a still image
+                if let Some((imgs, delays)) =
+                    crate::media::decode_animation(&bytes, crate::app::CUSTOM_EMOJI_MAX_FRAMES)
+                {
+                    imgs.into_iter().zip(delays).collect()
+                } else if let Ok(img) = image::load_from_memory(&bytes) {
+                    vec![(img, Duration::ZERO)]
+                } else {
+                    Vec::new()
+                }
+            })
+            .await
+            .unwrap_or_default(),
+            Err(_) => Vec::new(),
         };
-        let _ = event_tx.send(AppEvent::CustomEmojiLoaded { id, image });
+        let _ = event_tx.send(AppEvent::CustomEmojiLoaded { id, frames });
     });
 }
 

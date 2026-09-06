@@ -3,7 +3,7 @@ mod gif_anim;
 mod open_external;
 
 pub use chafa::chafa_from_bytes;
-pub use gif_anim::decode_gif_animation;
+pub use gif_anim::{decode_animation, decode_gif_animation};
 pub use open_external::{open_file_path, write_temp_video_bytes};
 
 use crate::api::types::{
