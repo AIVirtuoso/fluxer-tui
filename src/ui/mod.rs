@@ -42,6 +42,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.custom_emoji_slots.borrow_mut().clear();
     app.media_slots.borrow_mut().clear();
     app.media_animation_seen.set(false);
+    app.animation_delay_seen.set(None);
     app.terminal_pictures.borrow_mut().clear();
     app.pane_scroll_hint = None;
     app.pixel_placements.borrow_mut().clear();

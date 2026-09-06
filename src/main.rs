@@ -38,9 +38,9 @@ use ratatui::Terminal;
 use reqwest::StatusCode;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use tokio::time::{Duration, interval};
+use tokio::time::Duration;
 
 fn err_is_http_status(err: &AnyhowError, want: StatusCode) -> bool {
     err.chain().any(|cause| {
@@ -216,7 +216,9 @@ async fn main() -> Result<()> {
         })
         .map(std::sync::Arc::new);
     let mut reader = EventStream::new();
-    let mut tick = interval(Duration::from_millis(100));
+    // ticks run every 100 ms, faster while an animation on screen asks for it
+    let mut next_tick = tokio::time::Instant::now() + Duration::from_millis(100);
+    let mut last_tick = Instant::now();
     let mut needs_redraw = true;
 
     loop {
@@ -323,7 +325,11 @@ async fn main() -> Result<()> {
                 schedule_needed_fetches(&mut app, authed_client.clone(), event_tx.clone());
                 ensure_lazy_guild_subscription(&mut app, &gateway_cmd_tx);
             }
-            _ = tick.tick() => {
+            _ = tokio::time::sleep_until(next_tick) => {
+                let now = Instant::now();
+                let dt = now.duration_since(last_tick);
+                last_tick = now;
+                next_tick = tokio::time::Instant::now() + app.tick_period();
                 // VT switching in console mode: hand the display over and back
                 if let Some(session) = console_session.as_ref()
                     && let Some(vt) = session.vt.as_ref()
@@ -347,7 +353,7 @@ async fn main() -> Result<()> {
                     Some(ImagePreviewState::ReadyAnimatedGif { .. })
                         | Some(ImagePreviewState::ReadyPixels { .. })
                 ) {
-                    app.advance_image_preview_animation(Duration::from_millis(100));
+                    app.advance_image_preview_animation(dt);
                     needs_redraw = true;
                 }
                 if app.custom_emoji_animation_visible() || app.media_animation_visible() {

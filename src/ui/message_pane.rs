@@ -1372,7 +1372,8 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 let animated = !app.ui_settings.performance_mode && frames.is_animated();
                 let (frame_idx, picture) = if animated {
-                    frames.current(app.animation_epoch.elapsed(), draw)
+                    app.note_animation(frames);
+                    frames.current(std::time::Instant::now(), draw)
                 } else {
                     (0, &frames.frames[0])
                 };

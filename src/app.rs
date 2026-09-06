@@ -216,11 +216,6 @@ pub struct PictureFrames {
     decided_in_draw: std::cell::Cell<u64>,
 }
 
-/// A frame that the clock would repeat is advanced by hand once it has been
-/// on screen this long, so loops shorter than (or aligned with) the redraw
-/// tick still visibly move instead of freezing on one frame.
-const CUSTOM_EMOJI_FORCE_ADVANCE_AFTER: Duration = Duration::from_millis(90);
-
 impl PictureFrames {
     pub fn new(frames: Vec<Picture>, delays: Vec<Duration>) -> Self {
         let total = delays.iter().sum();
@@ -239,52 +234,59 @@ impl PictureFrames {
         self.delays.len() > 1 && !self.total.is_zero()
     }
 
-    /// Index of the frame at `elapsed` on the looping timeline.
-    fn timeline_index(&self, elapsed: Duration) -> usize {
-        let mut t = Duration::from_nanos((elapsed.as_nanos() % self.total.as_nanos()) as u64);
-        for (i, delay) in self.delays.iter().enumerate() {
-            if t < *delay {
-                return i;
-            }
-            t -= *delay;
-        }
-        self.delays.len() - 1
+    /// The shortest delay between two frames.
+    pub fn min_delay(&self) -> Option<Duration> {
+        self.delays.iter().copied().min()
     }
 
-    /// The frame to draw at `elapsed`, drawn at instant `now` in UI draw
-    /// number `draw`. Decided once per draw: a second instance of the same
-    /// emoji in the same draw gets the same frame.
-    pub fn index_at(&self, elapsed: Duration, now: Instant, draw: u64) -> usize {
+    /// The frame to draw at `now`, in UI draw number `draw`. The clock only
+    /// runs forward: from the frame shown last and the moment it went up,
+    /// the frames whose delay has passed are stepped over, carrying the
+    /// remainder, so the cadence stays exact however irregular the draws
+    /// are and a frame is never shown again once it is over. A loop shorter
+    /// than the time between two draws would land on the same frame; it is
+    /// moved one on so it visibly plays. Decided once per draw: every
+    /// instance on screen shows the same frame.
+    pub fn index_at(&self, now: Instant, draw: u64) -> usize {
         if !self.is_animated() {
             return 0;
         }
-        if self.shown_at.get().is_some() && self.decided_in_draw.get() == draw {
+        if self.decided_in_draw.get() == draw && self.shown_at.get().is_some() {
             return self.shown.get();
         }
         self.decided_in_draw.set(draw);
         let n = self.delays.len();
-        let mut i = self.timeline_index(elapsed);
         let shown = self.shown.get();
-        match self.shown_at.get() {
-            Some(at)
-                if i == shown
-                    && now.saturating_duration_since(at) >= CUSTOM_EMOJI_FORCE_ADVANCE_AFTER =>
-            {
-                i = (shown + 1) % n;
-            }
-            Some(_) if i == shown => return shown,
-            _ => {}
+        let Some(mut at) = self.shown_at.get() else {
+            self.shown_at.set(Some(now));
+            return shown;
+        };
+        let mut elapsed = now.saturating_duration_since(at);
+        let mut stepped = false;
+        if elapsed >= self.total {
+            // whole loops went by (the pane was hidden, say): keep the phase
+            elapsed = Duration::from_nanos((elapsed.as_nanos() % self.total.as_nanos()) as u64);
+            at = now - elapsed;
+            stepped = true;
+        }
+        let mut i = shown;
+        while elapsed >= self.delays[i] {
+            elapsed -= self.delays[i];
+            at += self.delays[i];
+            i = (i + 1) % n;
+            stepped = true;
+        }
+        if stepped && i == shown {
+            i = (i + 1) % n;
         }
         self.shown.set(i);
-        self.shown_at.set(Some(now));
+        self.shown_at.set(Some(at));
         i
     }
 
     /// The frame to draw now: its index and its picture.
-    pub fn current(&self, elapsed: Duration, draw: u64) -> (usize, &Picture) {
-        let i = self
-            .index_at(elapsed, Instant::now(), draw)
-            .min(self.frames.len() - 1);
+    pub fn current(&self, now: Instant, draw: u64) -> (usize, &Picture) {
+        let i = self.index_at(now, draw).min(self.frames.len() - 1);
         (i, &self.frames[i])
     }
 }
@@ -537,8 +539,9 @@ pub struct App {
     pub pane_last: Option<PaneView>,
     /// Set by the message pane when it merely scrolled since the last draw.
     pub pane_scroll_hint: Option<crate::console::backend::RegionScroll>,
-    /// Shared animation clock for custom emoji.
-    pub animation_epoch: Instant,
+    /// Per frame: the shortest frame delay of an animation drawn, which
+    /// sets the pace of the ticks.
+    pub animation_delay_seen: std::cell::Cell<Option<Duration>>,
     /// Counts UI draws; animated emoji decide their frame once per draw.
     pub draw_serial: std::cell::Cell<u64>,
     pub show_settings: bool,
@@ -651,7 +654,7 @@ impl App {
             custom_emoji_version: 0,
             pane_last: None,
             pane_scroll_hint: None,
-            animation_epoch: Instant::now(),
+            animation_delay_seen: std::cell::Cell::new(None),
             draw_serial: std::cell::Cell::new(0),
             show_settings: false,
             settings_cursor: 0,
@@ -1732,8 +1735,10 @@ impl App {
     pub fn custom_emoji_current(&self, id: &str) -> Option<(u16, usize, &Picture)> {
         match self.custom_emojis.get(id)? {
             CustomEmojiState::Ready(frames) => {
-                let (i, picture) =
-                    frames.current(self.animation_epoch.elapsed(), self.draw_serial.get());
+                if frames.is_animated() && !self.ui_settings.performance_mode {
+                    self.note_animation(frames);
+                }
+                let (i, picture) = frames.current(Instant::now(), self.draw_serial.get());
                 Some((frames.serial, i, picture))
             }
             _ => None,
@@ -2026,6 +2031,36 @@ impl App {
     /// should redraw to advance it.
     pub fn media_animation_visible(&self) -> bool {
         self.media_animation_seen.get()
+    }
+
+    /// An animation is being drawn this frame: its pace counts for the ticks.
+    pub fn note_animation(&self, frames: &PictureFrames) {
+        if let Some(d) = frames.min_delay() {
+            let seen = self.animation_delay_seen.get();
+            self.animation_delay_seen
+                .set(Some(seen.map_or(d, |s| s.min(d))));
+        }
+    }
+
+    /// How long until the next tick: 100 ms, or the shortest frame delay of
+    /// an animation on screen, down to 50 ms, so animations play at their
+    /// own pace instead of being sampled ten times a second.
+    pub fn tick_period(&self) -> Duration {
+        let floor = Duration::from_millis(50);
+        let mut period = Duration::from_millis(100);
+        if let Some(d) = self.animation_delay_seen.get() {
+            period = period.min(d.max(floor));
+        }
+        match &self.image_preview {
+            Some(ImagePreviewState::ReadyAnimatedGif { delays, .. })
+            | Some(ImagePreviewState::ReadyPixels { delays, .. }) => {
+                if let Some(d) = delays.iter().copied().min() {
+                    period = period.min(d.max(floor));
+                }
+            }
+            _ => {}
+        }
+        period
     }
 
     /// Short label for the input title: "2 files: a.png, b.jpg".
@@ -3935,19 +3970,35 @@ mod custom_emoji_tests {
             ],
         );
         let t0 = Instant::now();
-        // time-based picks, each a fresh draw well after the previous one
-        let mut now = t0;
         let mut draw = 0u64;
-        // (consecutive picks differ, so the progress rule never kicks in here)
         for (ms, want) in [(0u64, 0usize), (100, 1), (150, 2), (300, 0), (1000, 1)] {
-            now += Duration::from_millis(200);
             draw += 1;
             assert_eq!(
-                f.index_at(Duration::from_millis(ms), now, draw),
+                f.index_at(t0 + Duration::from_millis(ms), draw),
                 want,
                 "at {ms} ms"
             );
         }
+    }
+
+    #[test]
+    fn a_long_frame_is_held_and_never_shown_twice() {
+        // three quick frames and a half-second pause: the pause is held
+        // for as many draws as it takes, without stepping ahead and back
+        let f = PictureFrames::new(
+            Vec::new(),
+            vec![
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+                Duration::from_millis(500),
+            ],
+        );
+        let t0 = Instant::now();
+        let seen: Vec<usize> = (0..10u64)
+            .map(|tick| f.index_at(t0 + Duration::from_millis(100 * tick), tick + 1))
+            .collect();
+        assert_eq!(seen, vec![0, 1, 2, 3, 3, 3, 3, 3, 0, 1]);
     }
 
     #[test]
@@ -3959,21 +4010,28 @@ mod custom_emoji_tests {
             vec![Duration::from_millis(50), Duration::from_millis(50)],
         );
         let t0 = Instant::now();
-        let mut seen = Vec::new();
-        for tick in 0..6u64 {
-            let now = t0 + Duration::from_millis(100 * tick);
-            seen.push(f.index_at(Duration::from_millis(100 * tick), now, tick + 1));
-        }
+        let seen: Vec<usize> = (0..6u64)
+            .map(|tick| f.index_at(t0 + Duration::from_millis(100 * tick), tick + 1))
+            .collect();
         assert_eq!(seen, vec![0, 1, 0, 1, 0, 1]);
-        // redraws inside the same tick (typing, cursor blink) do not advance
+        // redraws inside the same frame's time (typing, cursor blink) do not advance
         let now = t0 + Duration::from_millis(520);
-        let a = f.index_at(Duration::from_millis(520), now, 10);
-        let b = f.index_at(
-            Duration::from_millis(525),
-            now + Duration::from_millis(5),
-            11,
-        );
+        let a = f.index_at(now, 10);
+        let b = f.index_at(now + Duration::from_millis(5), 11);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn irregular_draws_keep_the_cadence() {
+        // 40 ms frames drawn every 50 ms: five frames go by in every four
+        // draws, never the same frame twice in a row, never a frame skipped
+        // twice in a row
+        let f = PictureFrames::new(Vec::new(), vec![Duration::from_millis(40); 10]);
+        let t0 = Instant::now();
+        let seen: Vec<usize> = (0..8u64)
+            .map(|tick| f.index_at(t0 + Duration::from_millis(50 * tick), tick + 1))
+            .collect();
+        assert_eq!(seen, vec![0, 1, 2, 3, 5, 6, 7, 8]);
     }
 
     #[test]
@@ -3986,11 +4044,10 @@ mod custom_emoji_tests {
         let mut per_draw = Vec::new();
         for draw in 1..=6u64 {
             let now = t0 + Duration::from_millis(100 * draw);
-            let elapsed = Duration::from_millis(100 * draw);
             // the same emoji drawn three times in this draw
-            let a = f.index_at(elapsed, now, draw);
-            let b = f.index_at(elapsed, now, draw);
-            let c = f.index_at(elapsed, now, draw);
+            let a = f.index_at(now, draw);
+            let b = f.index_at(now, draw);
+            let c = f.index_at(now, draw);
             assert_eq!(b, a);
             assert_eq!(c, a);
             per_draw.push(a);
