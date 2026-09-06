@@ -36,18 +36,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     if total == 0 {
         items.push(ListItem::new(Line::from(Span::styled(
             "No matching channels (Backspace to edit filter)",
-            Style::default().fg(crate::ui::theme::TEXT_DIM),
+            Style::default().fg(crate::ui::theme::text_dim()),
         ))));
         let list = List::new(items).block(
             Block::default()
                 .title(Line::from(Span::styled(
                     " Channels (Ctrl+K) ",
                     Style::default()
-                        .fg(crate::ui::theme::ACCENT)
+                        .fg(crate::ui::theme::accent())
                         .add_modifier(Modifier::BOLD),
                 )))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM)),
+                .border_style(Style::default().fg(crate::ui::theme::accent_dim())),
         );
         frame.render_widget(list, popup);
         return;
@@ -64,11 +64,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let is_sel = fi == sel_vis;
         let style = if is_sel {
             Style::default()
-                .fg(crate::ui::theme::ACCENT)
+                .fg(crate::ui::theme::accent())
                 .add_modifier(Modifier::BOLD)
-                .bg(crate::ui::theme::BG_TERTIARY)
+                .bg(crate::ui::theme::bg_tertiary())
         } else {
-            Style::default().fg(crate::ui::theme::TEXT)
+            Style::default().fg(crate::ui::theme::text())
         };
         items.push(ListItem::new(Line::from(Span::styled(
             entry.label.clone(),
@@ -89,17 +89,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             .title(Line::from(Span::styled(
                 title,
                 Style::default()
-                    .fg(crate::ui::theme::ACCENT)
+                    .fg(crate::ui::theme::accent())
                     .add_modifier(Modifier::BOLD),
             )))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM)),
+            .border_style(Style::default().fg(crate::ui::theme::accent_dim())),
     );
     frame.render_widget(list, popup);
 
     let foot = Paragraph::new(Line::from(Span::styled(
         "↑↓ Enter - open   Esc - cancel   Backspace - edit filter",
-        Style::default().fg(crate::ui::theme::TEXT_MUTED),
+        Style::default().fg(crate::ui::theme::text_muted()),
     )))
     .alignment(Alignment::Center);
     let foot_area = Rect {

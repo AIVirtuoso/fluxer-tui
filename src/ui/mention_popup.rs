@@ -1,7 +1,7 @@
 use crate::app::{App, MentionPick};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
@@ -36,12 +36,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     let g = app.guild_id_for_active_channel();
                     let fg = app.member_name_color(g.as_deref(), user_id.as_str(), is_self);
                     ListItem::new(Line::from(vec![
-                        Span::styled("user ", Style::default().fg(crate::ui::theme::TEXT_MUTED)),
+                        Span::styled("user ", Style::default().fg(crate::ui::theme::text_muted())),
                         Span::styled(label, Style::default().fg(fg)),
                     ]))
                 }
                 MentionPick::Role { name, color, .. } => ListItem::new(Line::from(vec![
-                    Span::styled("role ", Style::default().fg(crate::ui::theme::TEXT_MUTED)),
+                    Span::styled("role ", Style::default().fg(crate::ui::theme::text_muted())),
                     Span::styled(
                         name.clone(),
                         crate::ui::theme::role_mention_style(*color).add_modifier(Modifier::BOLD),
@@ -70,12 +70,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(crate::ui::theme::focused_border(true)),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::ui::theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::theme::highlight_style())
         .highlight_symbol("> ");
 
     let mut state = ListState::default().with_selected(Some(sel));

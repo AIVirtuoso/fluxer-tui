@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 fn input_span_style() -> Style {
-    Style::default().fg(crate::ui::theme::TEXT)
+    Style::default().fg(crate::ui::theme::text())
 }
 
 fn typing_line_with_dots(phrase: &str, dots: &str) -> String {
@@ -82,24 +82,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     let (content, style) = if voice_only {
         (
             "This client cannot join or use voice - text input is disabled here.".to_string(),
-            Style::default().fg(crate::ui::theme::TEXT_MUTED),
+            Style::default().fg(crate::ui::theme::text_muted()),
         )
     } else if no_perms {
         (
             "You do not have permission to send messages here.".to_string(),
-            Style::default().fg(crate::ui::theme::TEXT_MUTED),
+            Style::default().fg(crate::ui::theme::text_muted()),
         )
     } else if can_type && !app.input.is_empty() {
-        (String::new(), Style::default().fg(crate::ui::theme::TEXT))
+        (String::new(), Style::default().fg(crate::ui::theme::text()))
     } else if can_type {
         (
             placeholder.clone().unwrap_or_default(),
-            Style::default().fg(crate::ui::theme::TEXT_MUTED),
+            Style::default().fg(crate::ui::theme::text_muted()),
         )
     } else {
         (
             "Select a text channel to chat.".to_string(),
-            Style::default().fg(crate::ui::theme::TEXT_MUTED),
+            Style::default().fg(crate::ui::theme::text_muted()),
         )
     };
 
@@ -119,7 +119,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         format!(" {title}"),
         Style::default()
             .add_modifier(Modifier::BOLD)
-            .fg(crate::ui::theme::TEXT_DIM),
+            .fg(crate::ui::theme::text_dim()),
     ));
 
     let focused = app.focus == Focus::Input;
@@ -127,7 +127,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         .title(title_line)
         .borders(Borders::ALL)
         .border_style(crate::ui::theme::focused_border(focused))
-        .style(Style::default().bg(crate::ui::theme::BG_SECONDARY));
+        .style(Style::default().bg(crate::ui::theme::bg_secondary()));
 
     if can_type && !app.input.is_empty() {
         let char_count = app.input.chars().count();
@@ -135,14 +135,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         let count_str = format!(" {char_count}/{max_chars} ");
         let count_style = if char_count > max_chars {
             Style::default()
-                .fg(crate::ui::theme::DANGER)
+                .fg(crate::ui::theme::danger())
                 .add_modifier(Modifier::BOLD)
         } else if char_count > max_chars - 100 {
             Style::default()
                 .fg(ratatui::style::Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(crate::ui::theme::TEXT_MUTED)
+            Style::default().fg(crate::ui::theme::text_muted())
         };
 
         let right_title = Line::from(Span::styled(count_str, count_style))
@@ -157,7 +157,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         && let (Some(phrase), Some(ph)) = (others_typing.as_ref(), placeholder.as_ref())
     {
         let typing_style = Style::default()
-            .fg(crate::ui::theme::TYPING_OTHERS)
+            .fg(crate::ui::theme::typing_others())
             .add_modifier(Modifier::ITALIC);
         let typing_text = typing_line_with_dots(phrase, typing_dots);
         Paragraph::new(Text::from(vec![

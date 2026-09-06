@@ -84,6 +84,8 @@ async fn main() -> Result<()> {
         config.api_base_url = DEFAULT_API_BASE_URL.to_string();
     }
 
+    crate::ui::theme::set_terminal_theme(config.ui.theme == config::Theme::Terminal);
+
     let base_client = FluxerHttpClient::new(config.api_base_url.clone())?;
     let discovery = base_client.discover().await.unwrap_or_default();
 

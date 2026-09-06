@@ -5,10 +5,23 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_API_BASE_URL: &str = "https://api.fluxer.app/v1";
 
+/// Where colours come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// The terminal's own palette: default foreground/background and the
+    /// 16 ANSI colours, so the client matches whatever theme the terminal uses.
+    #[default]
+    Terminal,
+    /// The fixed dark RGB theme modelled on the Fluxer web app.
+    Fluxer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSettings {
     pub clock_12h: bool,
+    pub theme: Theme,
     #[serde(default, skip_serializing, rename = "image_display")]
     legacy_image_display: Option<String>,
     #[serde(default = "default_true")]
@@ -24,6 +37,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             clock_12h: false,
+            theme: Theme::Terminal,
             legacy_image_display: None,
             show_typing_indicators: true,
             performance_mode: false,

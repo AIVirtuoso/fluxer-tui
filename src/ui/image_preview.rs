@@ -74,12 +74,12 @@ fn render_bitmap_like(
             Span::styled(title_part, text_style),
         ]))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+        .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
     let inner = block.inner(content);
     let resize = Resize::Scale(None);
     let fit = protocol.size_for(resize.clone(), inner);
     let img_area = center_subrect(inner, fit.width, fit.height);
-    let fill = Block::default().style(Style::default().bg(crate::ui::theme::BG));
+    let fill = Block::default().style(Style::default().bg(crate::ui::theme::bg()));
     frame.render_widget(fill, inner);
     let img = StatefulImage::default().resize(resize);
     frame.render_stateful_widget(img, img_area, protocol);
@@ -91,7 +91,7 @@ fn render_bitmap_like(
     };
     let hint = Paragraph::new(Line::from(Span::styled(
         footer,
-        Style::default().fg(crate::ui::theme::TEXT_MUTED),
+        Style::default().fg(crate::ui::theme::text_muted()),
     )))
     .alignment(Alignment::Center);
     frame.render_widget(hint, footer_row);
@@ -125,9 +125,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Clear, popup);
 
     let (content, footer_row) = overlay_body_split(area);
-    let text_style = Style::default().fg(crate::ui::theme::TEXT);
+    let text_style = Style::default().fg(crate::ui::theme::text());
     let accent = Style::default()
-        .fg(crate::ui::theme::ACCENT)
+        .fg(crate::ui::theme::accent())
         .add_modifier(Modifier::BOLD);
 
     match state {
@@ -136,7 +136,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             let block = Block::default()
                 .title(Line::from(Span::styled(" Image preview ", accent)))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+                .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
             let p = Paragraph::new(Text::from(vec![Line::from(Span::styled(
                 format!("Loading… {title}"),
                 text_style,
@@ -146,7 +146,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             frame.render_widget(p, content);
             let hint = Paragraph::new(Line::from(Span::styled(
                 " Esc - cancel ",
-                Style::default().fg(crate::ui::theme::TEXT_MUTED),
+                Style::default().fg(crate::ui::theme::text_muted()),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(hint, footer_row);
@@ -155,7 +155,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             let block = Block::default()
                 .title(Line::from(Span::styled(" Image preview ", accent)))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+                .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
             let p = Paragraph::new(Text::from(vec![Line::from(Span::styled(
                 message.clone(),
                 text_style,
@@ -165,7 +165,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             frame.render_widget(p, content);
             let hint = Paragraph::new(Line::from(Span::styled(
                 " Esc / q - close ",
-                Style::default().fg(crate::ui::theme::TEXT_MUTED),
+                Style::default().fg(crate::ui::theme::text_muted()),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(hint, footer_row);
@@ -222,7 +222,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Span::styled(format!(" {title} "), text_style),
                 ]))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+                .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
             let p = Paragraph::new(Text::from(out_lines))
                 .block(block)
                 .alignment(Alignment::Left);
@@ -234,7 +234,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             };
             let hint = Paragraph::new(Line::from(Span::styled(
                 footer,
-                Style::default().fg(crate::ui::theme::TEXT_MUTED),
+                Style::default().fg(crate::ui::theme::text_muted()),
             )))
             .alignment(Alignment::Center);
             frame.render_widget(hint, footer_row);

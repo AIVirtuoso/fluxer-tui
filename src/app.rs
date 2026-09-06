@@ -433,7 +433,7 @@ impl App {
         app
     }
 
-    pub const UI_SETTINGS_LAST_ROW: usize = 2;
+    pub const UI_SETTINGS_LAST_ROW: usize = 3;
     pub const SERVER_NOTIFICATION_LAST_ROW: usize = 5;
     pub const HISTORY_AUTOLOAD_THRESHOLD_ROWS: u16 = 3;
     pub const TRANSIENT_STATUS_DURATION: Duration = Duration::from_millis(1800);
@@ -705,6 +705,14 @@ impl App {
             }
             2 => {
                 self.ui_settings.performance_mode = !self.ui_settings.performance_mode;
+            }
+            3 => {
+                use crate::config::Theme;
+                self.ui_settings.theme = match self.ui_settings.theme {
+                    Theme::Terminal => Theme::Fluxer,
+                    Theme::Fluxer => Theme::Terminal,
+                };
+                crate::ui::theme::set_terminal_theme(self.ui_settings.theme == Theme::Terminal);
             }
             _ => {}
         }
@@ -1518,8 +1526,8 @@ impl App {
     /// One `Line` per raw line. `register` claims overlay slots for the
     /// pictures; pass false when only measuring.
     pub fn input_display(&self, register: bool) -> Vec<Line<'static>> {
-        let text_style = Style::default().fg(crate::ui::theme::TEXT);
-        let name_style = Style::default().fg(crate::ui::theme::EMOJI_UNKNOWN);
+        let text_style = Style::default().fg(crate::ui::theme::text());
+        let name_style = Style::default().fg(crate::ui::theme::emoji_unknown());
         let mut lines = Vec::new();
         for raw_line in self.input.split('\n') {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -2763,7 +2771,7 @@ impl App {
     pub fn member_name_color(&self, guild_id: Option<&str>, user_id: &str, is_self: bool) -> Color {
         use crate::api::types::snowflake_sort_key;
 
-        let guild_default = || crate::ui::theme::TEXT;
+        let guild_default = || crate::ui::theme::text();
 
         if let Some(gid) = guild_id {
             if let Some(members) = self.guild_members.get(gid) {

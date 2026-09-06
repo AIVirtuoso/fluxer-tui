@@ -79,9 +79,9 @@ fn parse_admonition_open(trimmed: &str) -> Option<Admonition> {
 
 fn admonition_title_line(kind: Admonition) -> Vec<Span<'static>> {
     let (label, color) = match kind {
-        Admonition::Warning => (" WARNING ", crate::ui::theme::DANGER),
-        Admonition::Important => (" IMPORTANT ", crate::ui::theme::ACCENT),
-        Admonition::Note => (" NOTE ", crate::ui::theme::TEXT_DIM),
+        Admonition::Warning => (" WARNING ", crate::ui::theme::danger()),
+        Admonition::Important => (" IMPORTANT ", crate::ui::theme::accent()),
+        Admonition::Note => (" NOTE ", crate::ui::theme::text_dim()),
     };
     vec![Span::styled(
         format!("━━{label}━━"),
@@ -91,9 +91,9 @@ fn admonition_title_line(kind: Admonition) -> Vec<Span<'static>> {
 
 fn admonition_bar_color(kind: Admonition) -> ratatui::style::Color {
     match kind {
-        Admonition::Warning => crate::ui::theme::DANGER,
-        Admonition::Important => crate::ui::theme::ACCENT,
-        Admonition::Note => crate::ui::theme::TEXT_DIM,
+        Admonition::Warning => crate::ui::theme::danger(),
+        Admonition::Important => crate::ui::theme::accent(),
+        Admonition::Note => crate::ui::theme::text_dim(),
     }
 }
 
@@ -146,9 +146,9 @@ fn strip_callout_tag(body: &str, kind: QuoteCallout) -> &str {
 
 fn quote_callout_bar_fg(kind: QuoteCallout) -> Color {
     match kind {
-        QuoteCallout::Warning => crate::ui::theme::DANGER,
-        QuoteCallout::Important => crate::ui::theme::ACCENT,
-        QuoteCallout::Note => crate::ui::theme::VOICE_COLOR,
+        QuoteCallout::Warning => crate::ui::theme::danger(),
+        QuoteCallout::Important => crate::ui::theme::accent(),
+        QuoteCallout::Note => crate::ui::theme::voice_color(),
     }
 }
 
@@ -156,24 +156,14 @@ fn quote_callout_badge(kind: QuoteCallout) -> Span<'static> {
     match kind {
         QuoteCallout::Warning => Span::styled(
             " ! WARNING ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::ui::theme::DANGER)
-                .add_modifier(Modifier::BOLD),
+            crate::ui::theme::pill_style(crate::ui::theme::danger()).add_modifier(Modifier::BOLD),
         ),
-        QuoteCallout::Important => Span::styled(
-            " ! IMPORTANT ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::ui::theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
+        QuoteCallout::Important => {
+            Span::styled(" ! IMPORTANT ", crate::ui::theme::highlight_style())
+        }
         QuoteCallout::Note => Span::styled(
             " NOTE ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::ui::theme::TEXT_DIM)
-                .add_modifier(Modifier::BOLD),
+            crate::ui::theme::pill_style(crate::ui::theme::text_dim()).add_modifier(Modifier::BOLD),
         ),
     }
 }
@@ -181,13 +171,13 @@ fn quote_callout_badge(kind: QuoteCallout) -> Span<'static> {
 fn quote_callout_body_base(kind: QuoteCallout) -> Style {
     match kind {
         QuoteCallout::Warning => Style::default()
-            .fg(crate::ui::theme::TEXT)
+            .fg(crate::ui::theme::text())
             .add_modifier(Modifier::BOLD),
         QuoteCallout::Important => Style::default()
-            .fg(crate::ui::theme::ACCENT)
+            .fg(crate::ui::theme::accent())
             .add_modifier(Modifier::BOLD),
         QuoteCallout::Note => Style::default()
-            .fg(crate::ui::theme::TEXT)
+            .fg(crate::ui::theme::text())
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -225,7 +215,7 @@ fn format_line(
             return spans;
         }
 
-        let qc = quote_accent_color(q_body).unwrap_or(crate::ui::theme::TEXT_MUTED);
+        let qc = quote_accent_color(q_body).unwrap_or(crate::ui::theme::text_muted());
         spans.push(Span::styled("> ", Style::default().fg(qc)));
         rest = q_body;
     }
@@ -234,7 +224,7 @@ fn format_line(
         spans.push(Span::styled(
             "-# ",
             Style::default()
-                .fg(crate::ui::theme::TEXT_MUTED)
+                .fg(crate::ui::theme::text_muted())
                 .add_modifier(Modifier::ITALIC),
         ));
         spans.extend(parse_message_spans(body, app));
@@ -246,7 +236,7 @@ fn format_line(
         spans.push(Span::styled(
             hashes,
             Style::default()
-                .fg(crate::ui::theme::ACCENT)
+                .fg(crate::ui::theme::accent())
                 .add_modifier(Modifier::BOLD),
         ));
         spans.extend(parse_message_spans(body, app));
@@ -276,13 +266,13 @@ fn strip_blockquote(s: &str) -> Option<(&'static str, &str)> {
 fn quote_accent_color(body: &str) -> Option<ratatui::style::Color> {
     let u = body.trim_start().to_uppercase();
     if u.starts_with("**WARNING") || u.starts_with("WARNING") || u.contains("[!WARNING]") {
-        return Some(crate::ui::theme::DANGER);
+        return Some(crate::ui::theme::danger());
     }
     if u.starts_with("**IMPORTANT") || u.starts_with("IMPORTANT") || u.contains("[!IMPORTANT]") {
-        return Some(crate::ui::theme::ACCENT);
+        return Some(crate::ui::theme::accent());
     }
     if u.starts_with("**NOTE") || u.starts_with("NOTE") || u.contains("[!NOTE]") {
-        return Some(crate::ui::theme::VOICE_COLOR);
+        return Some(crate::ui::theme::voice_color());
     }
     None
 }
@@ -317,7 +307,7 @@ pub fn parse_message_spans(text: &str, app: &App) -> Vec<Span<'static>> {
                         let name = resolve_channel_name(app, &id);
                         spans.push(Span::styled(
                             format!("#{name}"),
-                            Style::default().fg(crate::ui::theme::LINK_COLOR),
+                            Style::default().fg(crate::ui::theme::link_color()),
                         ));
                     } else {
                         buf.push('<');
@@ -364,7 +354,7 @@ pub fn parse_message_spans(text: &str, app: &App) -> Vec<Span<'static>> {
                             let formatted = format_discord_timestamp(&inner);
                             spans.push(Span::styled(
                                 formatted,
-                                Style::default().fg(crate::ui::theme::TEXT_DIM),
+                                Style::default().fg(crate::ui::theme::text_dim()),
                             ));
                         } else {
                             buf.push_str("<t:");
@@ -412,10 +402,10 @@ pub fn parse_message_spans(text: &str, app: &App) -> Vec<Span<'static>> {
                         }
                         let style = if is_animated {
                             Style::default()
-                                .fg(crate::ui::theme::ACCENT)
+                                .fg(crate::ui::theme::accent())
                                 .add_modifier(Modifier::ITALIC)
                         } else {
-                            Style::default().fg(crate::ui::theme::EMOJI_UNKNOWN)
+                            Style::default().fg(crate::ui::theme::emoji_unknown())
                         };
                         spans.push(Span::styled(emoji_name, style));
                     } else {
@@ -621,7 +611,7 @@ fn parse_markdown_segments(text: &str, spans: &mut Vec<Span<'static>>, app: &App
 
         match next {
             SpecialMatch::Link { end, label, .. } => {
-                let link_style = Style::default().fg(crate::ui::theme::LINK_COLOR);
+                let link_style = Style::default().fg(crate::ui::theme::link_color());
                 for s in parse_message_spans(label, app) {
                     spans.push(Span::styled(
                         s.content.to_string(),
@@ -634,7 +624,7 @@ fn parse_markdown_segments(text: &str, spans: &mut Vec<Span<'static>>, app: &App
             SpecialMatch::Autolink { end, url, .. } => {
                 spans.push(Span::styled(
                     url.to_string(),
-                    base.patch(Style::default().fg(crate::ui::theme::LINK_COLOR)),
+                    base.patch(Style::default().fg(crate::ui::theme::link_color())),
                 ));
                 rest = &rest[end..];
                 continue;
@@ -686,7 +676,7 @@ fn parse_markdown_segments(text: &str, spans: &mut Vec<Span<'static>>, app: &App
                             spans.push(Span::styled(
                                 s.content.to_string(),
                                 s.style
-                                    .fg(crate::ui::theme::TEXT_MUTED)
+                                    .fg(crate::ui::theme::text_muted())
                                     .add_modifier(Modifier::DIM),
                             ));
                         }
@@ -703,9 +693,7 @@ fn parse_markdown_segments(text: &str, spans: &mut Vec<Span<'static>>, app: &App
                     Delim::Code => {
                         spans.push(Span::styled(
                             inner.to_string(),
-                            Style::default()
-                                .fg(crate::ui::theme::TEXT)
-                                .bg(crate::ui::theme::BG_TERTIARY),
+                            crate::ui::theme::code_style(),
                         ));
                     }
                 }
@@ -726,7 +714,7 @@ fn flush_text_with_emoji_str(text: &str, spans: &mut Vec<Span<'static>>, base: S
                 crate::emoji::Segment::Text(t) => flush_unicode_emoji_str(t, spans, base),
                 crate::emoji::Segment::Emoji { emoji, .. } => spans.push(Span::styled(
                     emoji.to_string(),
-                    base.fg(crate::ui::theme::EMOJI_UNKNOWN),
+                    base.fg(crate::ui::theme::emoji_unknown()),
                 )),
             }
         }
@@ -745,7 +733,7 @@ fn flush_unicode_emoji_str(text: &str, spans: &mut Vec<Span<'static>>, base: Sty
             let elen = emoji.as_str().len();
             spans.push(Span::styled(
                 emoji.as_str().to_string(),
-                base.fg(crate::ui::theme::EMOJI_UNKNOWN),
+                base.fg(crate::ui::theme::emoji_unknown()),
             ));
             remaining = &remaining[elen.min(remaining.len())..];
             continue;
@@ -779,7 +767,7 @@ fn role_mention_span(app: &App, role_id: &str) -> Span<'static> {
         .map(|i| &role_id[i..])
         .unwrap_or(role_id);
     let fallback = Style::default()
-        .fg(crate::ui::theme::ACCENT)
+        .fg(crate::ui::theme::accent())
         .add_modifier(Modifier::BOLD);
 
     let Some(gid) = app.guild_id_for_active_channel() else {
@@ -907,7 +895,7 @@ mod tests {
         assert!(
             spans
                 .iter()
-                .filter(|span| span.style.fg == Some(crate::ui::theme::LINK_COLOR))
+                .filter(|span| span.style.fg == Some(crate::ui::theme::link_color()))
                 .map(|span| span.content.as_ref())
                 .collect::<Vec<_>>()
                 .contains(&"Fluxer")
@@ -915,7 +903,7 @@ mod tests {
         assert!(
             spans
                 .iter()
-                .filter(|span| span.style.fg == Some(crate::ui::theme::LINK_COLOR))
+                .filter(|span| span.style.fg == Some(crate::ui::theme::link_color()))
                 .map(|span| span.content.as_ref())
                 .collect::<Vec<_>>()
                 .contains(&"https://fluxer.app")

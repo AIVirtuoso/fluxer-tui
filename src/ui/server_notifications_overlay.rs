@@ -49,14 +49,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let content = body[0];
     let accent = Style::default()
-        .fg(crate::ui::theme::ACCENT)
+        .fg(crate::ui::theme::accent())
         .add_modifier(Modifier::BOLD);
-    let accent_soft = Style::default().fg(crate::ui::theme::ACCENT_DIM);
-    let text = Style::default().fg(crate::ui::theme::TEXT);
-    let dim = Style::default().fg(crate::ui::theme::TEXT_DIM);
-    let muted = Style::default().fg(crate::ui::theme::TEXT_MUTED);
+    let accent_soft = Style::default().fg(crate::ui::theme::accent_dim());
+    let text = Style::default().fg(crate::ui::theme::text());
+    let dim = Style::default().fg(crate::ui::theme::text_dim());
+    let muted = Style::default().fg(crate::ui::theme::text_muted());
     let strong = Style::default()
-        .fg(crate::ui::theme::TEXT)
+        .fg(crate::ui::theme::text())
         .add_modifier(Modifier::BOLD);
 
     let Some(settings) = app.selected_server_notification_settings() else {
@@ -65,7 +65,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 Block::default()
                     .title(Line::from(Span::styled(" Notifications ", accent)))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM)),
+                    .border_style(Style::default().fg(crate::ui::theme::accent_dim())),
             )
             .alignment(Alignment::Center);
         frame.render_widget(paragraph, content);
@@ -175,7 +175,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Line::from(Span::styled(" Notifications ", accent)))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+        .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
 
     let paragraph = Paragraph::new(Text::from(lines.clone()))
         .block(block)

@@ -35,15 +35,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let content = body[0];
     let accent = Style::default()
-        .fg(crate::ui::theme::ACCENT)
+        .fg(crate::ui::theme::accent())
         .add_modifier(Modifier::BOLD);
-    let accent_soft = Style::default().fg(crate::ui::theme::ACCENT_DIM);
-    let text = Style::default().fg(crate::ui::theme::TEXT);
-    let dim = Style::default().fg(crate::ui::theme::TEXT_DIM);
-    let muted = Style::default().fg(crate::ui::theme::TEXT_MUTED);
+    let accent_soft = Style::default().fg(crate::ui::theme::accent_dim());
+    let text = Style::default().fg(crate::ui::theme::text());
+    let dim = Style::default().fg(crate::ui::theme::text_dim());
+    let muted = Style::default().fg(crate::ui::theme::text_muted());
     let panel = Style::default()
-        .fg(crate::ui::theme::TEXT)
-        .bg(crate::ui::theme::BG_SECONDARY);
+        .fg(crate::ui::theme::text())
+        .bg(crate::ui::theme::bg_secondary());
 
     let clock_on = app.ui_settings.clock_12h;
     let clock_primary = if clock_on {
@@ -78,6 +78,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         ("On", "Fast typing, skips some UI features")
     };
+    let terminal_theme = app.ui_settings.theme == crate::config::Theme::Terminal;
+    let theme_primary = if terminal_theme {
+        ("Terminal", "Use the terminal's own colours")
+    } else {
+        ("Fluxer", "Fixed dark theme like the web app")
+    };
+    let theme_alt = if terminal_theme {
+        ("Fluxer", "Fixed dark theme like the web app")
+    } else {
+        ("Terminal", "Use the terminal's own colours")
+    };
+
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
         Span::styled("  ", text),
@@ -146,7 +158,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!("{}  ·  {}", typing_alt.0, typing_alt.1), muted),
     ]));
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled("  Performance Mode (Low Spec)", dim)]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Performance Mode (Low Spec)",
+        dim,
+    )]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("  ", text),
@@ -171,10 +186,36 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("    ", text),
         Span::styled(format!("{}  ·  {}", perf_alt.0, perf_alt.1), muted),
     ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled("  Colours", dim)]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", text),
+        Span::styled(
+            if app.settings_cursor == 3 {
+                "▸ "
+            } else {
+                "  "
+            },
+            if app.settings_cursor == 3 {
+                accent
+            } else {
+                muted
+            },
+        ),
+        Span::styled(
+            format!("{}  ·  {}", theme_primary.0, theme_primary.1),
+            panel.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    ", text),
+        Span::styled(format!("{}  ·  {}", theme_alt.0, theme_alt.1), muted),
+    ]));
     let block = Block::default()
         .title(Line::from(Span::styled(" Settings ", accent)))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+        .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(block)

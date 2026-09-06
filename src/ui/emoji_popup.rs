@@ -1,7 +1,7 @@
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
@@ -15,7 +15,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|e| {
             let line = if e.is_custom {
-                let accent = Style::default().fg(crate::ui::theme::ACCENT);
+                let accent = Style::default().fg(crate::ui::theme::accent());
                 match e
                     .custom_id
                     .as_deref()
@@ -57,12 +57,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(crate::ui::theme::focused_border(true)),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::ui::theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::theme::highlight_style())
         .highlight_symbol("> ");
 
     let mut state = ListState::default().with_selected(Some(sel));

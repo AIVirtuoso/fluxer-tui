@@ -98,7 +98,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .split(popup);
 
     let content = body[0];
-    let text_style = Style::default().fg(crate::ui::theme::TEXT);
+    let text_style = Style::default().fg(crate::ui::theme::text());
     let lines: Vec<Line> = HELP
         .lines()
         .map(|l| Line::from(Span::styled(l.to_string(), text_style)))
@@ -119,11 +119,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .title(Line::from(Span::styled(
             " Keybindings ",
             Style::default()
-                .fg(crate::ui::theme::ACCENT)
+                .fg(crate::ui::theme::accent())
                 .add_modifier(Modifier::BOLD),
         )))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(crate::ui::theme::ACCENT_DIM));
+        .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
 
     let paragraph = Paragraph::new(help_text)
         .block(block)
@@ -141,7 +141,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let hint = Paragraph::new(Line::from(Span::styled(
         footer,
-        Style::default().fg(crate::ui::theme::TEXT_MUTED),
+        Style::default().fg(crate::ui::theme::text_muted()),
     )))
     .alignment(Alignment::Center);
     frame.render_widget(hint, body[1]);

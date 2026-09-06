@@ -32,7 +32,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Paragraph::new(format!(
                 "Terminal too small (need at least {MIN_W}×{MIN_H}). Enlarge the window or reduce font size."
             ))
-            .style(Style::default().fg(crate::ui::theme::TEXT)),
+            .style(Style::default().fg(crate::ui::theme::text())),
             area,
         );
         return;

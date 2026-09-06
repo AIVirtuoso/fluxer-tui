@@ -58,10 +58,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     name,
                     Style::default()
-                        .fg(crate::ui::theme::TEXT)
+                        .fg(crate::ui::theme::text())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(desc, Style::default().fg(crate::ui::theme::TEXT_MUTED)),
+                Span::styled(desc, Style::default().fg(crate::ui::theme::text_muted())),
             ]))
         })
         .collect();
@@ -85,12 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(crate::ui::theme::focused_border(true)),
         )
-        .highlight_style(
-            Style::default()
-                .fg(ratatui::style::Color::Black)
-                .bg(crate::ui::theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(crate::ui::theme::highlight_style())
         .highlight_symbol("> ");
 
     let mut state = ListState::default().with_selected(Some(sel));
