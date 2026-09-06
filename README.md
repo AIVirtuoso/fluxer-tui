@@ -16,6 +16,22 @@ cargo build --release
 cargo run --release
 ```
 
+## Trying a branch without a full rebuild
+
+`nix run github:AIVirtuoso/fluxer-tui/<branch>` builds the package in the
+Nix sandbox, where every new commit compiles all dependencies again. For
+quick tests use the `dev` app instead:
+
+```sh
+nix run --refresh github:AIVirtuoso/fluxer-tui/<branch>#dev
+```
+
+It builds with cargo in `~/.cache/fluxer-tui/target`, so only the crates
+that changed are recompiled (the first run compiles everything once, in
+release mode). `--refresh` makes Nix look the branch up again instead of
+reusing the commit it cached for an hour. From a checkout, `nix run .#dev`
+does the same.
+
 ## Community
    
    > *fluxer-tui running on a vintage Apple iBook - courtesy of @astromahdi#2602*
@@ -93,7 +109,10 @@ memory_cache_mb = 64
 ```
 
 Both `[ui]` switches are also in the settings overlay (**F2**). A block
-cut by the pane's edge draws nothing until it has scrolled fully in.
+cut by the pane's edge draws nothing until it has scrolled fully in, and
+while a held key scrolls, pictures are left out of the frames and put back
+once the scrolling settles: a terminal has to be sent every picture again
+each time it moves.
 
 ## Interface overview
 

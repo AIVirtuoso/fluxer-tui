@@ -247,6 +247,15 @@ pub fn circle_mask(img: &mut RgbaImage) {
     }
 }
 
+/// Sixel paints six pixel rows per band: a picture whose height is not a
+/// multiple of six ends in a partial band that the terminal paints past the
+/// picture's cells, a strip that nothing ever erases. Heights are cut down
+/// to whole bands; the few rows left at the bottom of the block show the
+/// background.
+pub fn sixel_rows(height: u32) -> u32 {
+    (height / 6 * 6).max(6)
+}
+
 /// Scale a picture to exactly `box_px`, ignoring its shape. Pictures in
 /// chat are laid out within half a cell of their shape, so the stretch is
 /// invisible; a protocol picture that does not fill its cells exactly would
@@ -424,6 +433,14 @@ mod tests {
         assert_eq!(img.get_pixel(0, 0).0[3], 0);
         assert_eq!(img.get_pixel(31, 31).0[3], 0);
         assert_eq!(img.get_pixel(16, 1).0[3], 255);
+    }
+
+    #[test]
+    fn sixel_heights_are_whole_bands() {
+        assert_eq!(sixel_rows(36), 36);
+        assert_eq!(sixel_rows(40), 36);
+        assert_eq!(sixel_rows(200), 198);
+        assert_eq!(sixel_rows(5), 6);
     }
 
     #[test]

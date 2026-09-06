@@ -280,11 +280,6 @@ impl PictureFrames {
         i
     }
 
-    #[cfg(test)]
-    pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &Picture {
-        self.current(elapsed, draw).1
-    }
-
     /// The frame to draw now: its index and its picture.
     pub fn current(&self, elapsed: Duration, draw: u64) -> (usize, &Picture) {
         let i = self
@@ -518,6 +513,10 @@ pub struct App {
     /// Per frame: the escape sequences to print at each picture's sentinel
     /// cell (shared with the terminal backend).
     pub terminal_pictures: crate::console::backend::SharedPictures,
+    /// When the message pane last scrolled, and until when pictures stay
+    /// out of the frames because keys are repeating.
+    pub last_scroll: Option<Instant>,
+    pub pictures_paused_until: Option<Instant>,
     /// Shared animation clock for custom emoji.
     pub animation_epoch: Instant,
     /// Counts UI draws; animated emoji decide their frame once per draw.
@@ -626,6 +625,8 @@ impl App {
             cell_px: (8, 16),
             disk_cache: None,
             terminal_pictures: std::rc::Rc::new(RefCell::new(HashMap::new())),
+            last_scroll: None,
+            pictures_paused_until: None,
             animation_epoch: Instant::now(),
             draw_serial: std::cell::Cell::new(0),
             show_settings: false,
@@ -1669,11 +1670,51 @@ impl App {
     }
 
     pub fn scroll_messages_up(&mut self, amount: u16) {
+        self.note_scroll();
         self.message_scroll_from_bottom = self.message_scroll_from_bottom.saturating_add(amount);
     }
 
     pub fn scroll_messages_down(&mut self, amount: u16) {
+        self.note_scroll();
         self.message_scroll_from_bottom = self.message_scroll_from_bottom.saturating_sub(amount);
+    }
+
+    /// A scroll step closer than this to the previous one is a key repeat.
+    pub const SCROLL_REPEAT_WINDOW: Duration = Duration::from_millis(150);
+    /// Pictures come back this long after the last repeated step.
+    pub const PICTURES_RESUME_AFTER: Duration = Duration::from_millis(180);
+
+    /// Pictures on a terminal have to be re-sent whenever they move, so
+    /// while a held key scrolls they are left out of the frames and put
+    /// back once the scrolling settles.
+    pub fn note_scroll(&mut self) {
+        let now = Instant::now();
+        if self
+            .last_scroll
+            .is_some_and(|t| now.duration_since(t) < Self::SCROLL_REPEAT_WINDOW)
+        {
+            self.pictures_paused_until = Some(now + Self::PICTURES_RESUME_AFTER);
+        }
+        self.last_scroll = Some(now);
+    }
+
+    pub fn terminal_pictures_paused(&self) -> bool {
+        !self.pixel_mode
+            && self
+                .pictures_paused_until
+                .is_some_and(|t| Instant::now() < t)
+    }
+
+    /// Tick: true when the pause has just ended, so a redraw puts the
+    /// pictures back.
+    pub fn resume_pictures_if_due(&mut self) -> bool {
+        match self.pictures_paused_until {
+            Some(t) if Instant::now() >= t => {
+                self.pictures_paused_until = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Whether the terminal can draw pictures inline (sixel, kitty, iTerm2);
@@ -1873,6 +1914,11 @@ impl App {
                 // exactly the cells' pixel size: anything smaller would be
                 // padded with black on sixel
                 let (cw, ch) = crate::media::block_px(CUSTOM_EMOJI_CELLS, 1, self.cell_px);
+                let ch = if picker.protocol_type() == ratatui_image::picker::ProtocolType::Sixel {
+                    crate::media::sixel_rows(ch)
+                } else {
+                    ch
+                };
                 for (img, delay) in frames.into_iter().take(CUSTOM_EMOJI_MAX_FRAMES) {
                     let img = img.resize_exact(cw, ch, image::imageops::FilterType::Triangle);
                     if let Ok(p) = picker.new_protocol(
@@ -2718,6 +2764,7 @@ impl App {
     // ms
 
     pub fn move_selected_message(&mut self, delta: i32) {
+        self.note_scroll();
         let count = self.active_messages().len();
         if count == 0 {
             self.selected_message_index = None;
@@ -3842,6 +3889,32 @@ mod custom_emoji_tests {
             custom_emoji_marker_slot(Style::default().underline_color(Color::Rgb(1, 2, 3))),
             None
         );
+    }
+
+    #[test]
+    fn repeated_scroll_steps_pause_pictures_single_steps_do_not() {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        app.scroll_messages_up(3);
+        assert!(!app.terminal_pictures_paused(), "one step is not a repeat");
+        app.scroll_messages_up(3);
+        assert!(app.terminal_pictures_paused(), "two steps at once are");
+        assert!(!app.resume_pictures_if_due(), "not due yet");
+        app.pictures_paused_until = Some(Instant::now() - Duration::from_millis(1));
+        assert!(app.resume_pictures_if_due());
+        assert!(!app.terminal_pictures_paused());
+        app.pixel_mode = true;
+        app.scroll_messages_down(3);
+        app.scroll_messages_down(3);
+        assert!(!app.terminal_pictures_paused(), "the console never pauses");
     }
 
     #[test]

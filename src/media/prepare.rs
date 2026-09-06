@@ -6,7 +6,7 @@ use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames, terminal_picture}
 use crate::media::gif_anim::decode_preview_animation;
 use crate::media::inline::{
     INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
-    parse_default_avatar_key, stretch_to, subsample,
+    parse_default_avatar_key, sixel_rows, stretch_to, subsample,
 };
 use image::DynamicImage;
 use ratatui::layout::Rect;
@@ -67,7 +67,14 @@ pub fn prepare_pictures(
     let round = slot.kind == MediaKind::Avatar && (alpha_ok || opaque_bg.is_some());
     // Exactly the block's pixel size: a protocol picture that does not fill
     // its cells would be padded with black by the encoder.
+    let sixel =
+        !pixel_mode && picker.is_some_and(|p| matches!(p.protocol_type(), ProtocolType::Sixel));
     let box_px = block_px(slot.cols, slot.rows, cell_px);
+    let box_px = if sixel {
+        (box_px.0, sixel_rows(box_px.1))
+    } else {
+        box_px
+    };
     let area = Rect::new(0, 0, slot.cols, slot.rows);
     let mut pictures = Vec::with_capacity(frames.len());
     let mut total = 0usize;
@@ -173,13 +180,32 @@ mod tests {
                     "sixel draws everything from the first row"
                 );
                 assert_eq!(tp.rows[0].0, 0);
-                assert!(tp.rows[0].1.starts_with("\x1bP"), "a sixel sequence");
+                let data = &*tp.rows[0].1;
+                assert!(data.starts_with("\x1bP"), "a sixel sequence");
+                // 3 rows of 20 px = 60 px = 10 whole bands: nothing spills below
+                assert!(data.contains("\"1;1;80;60"), "{data:?}");
+                assert_eq!(data.matches('-').count(), 9, "ten bands: {data:?}");
             }
             _ => panic!("terminal mode encodes a protocol"),
         }
+        // 2 rows of 20 px = 40 px would end in a partial band: cut to 36
+        let avatar = MediaSlot::new("https://x/me.png".to_string(), 4, 2, MediaKind::Avatar);
+        let (frames, _) = prepare_pictures(
+            Some(&png(100, 100)),
+            &avatar,
+            Some(&picker),
+            false,
+            (10, 20),
+            None,
+        )
+        .unwrap();
+        let Picture::Terminal(tp) = &frames.frames[0] else {
+            panic!()
+        };
+        assert!(tp.rows[0].1.contains("\"1;1;40;36"), "{:?}", tp.rows[0].1);
+        assert_eq!(tp.rows[0].1.matches('-').count(), 5);
         // sixel has no transparency: avatars stay square there unless the
         // theme's background is known to sit them on
-        let avatar = MediaSlot::new("https://x/me.png".to_string(), 4, 2, MediaKind::Avatar);
         for bg in [None, Some([1, 2, 3])] {
             let (frames, _) = prepare_pictures(
                 Some(&png(100, 100)),

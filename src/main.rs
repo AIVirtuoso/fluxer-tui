@@ -33,7 +33,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use crossterm::{execute, terminal};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
 use reqwest::StatusCode;
 use std::io;
@@ -266,7 +266,11 @@ async fn main() -> Result<()> {
         tokio::select! {
             maybe_event = reader.next() => {
                 needs_redraw = true;
-                if let Some(Ok(ev)) = maybe_event {
+                // A held key queues events faster than frames can be drawn:
+                // handle everything already waiting, then draw once.
+                let mut next = maybe_event;
+                let mut handled = 0usize;
+                while let Some(Ok(ev)) = next {
                     match ev {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
                             handle_key_event(
@@ -296,6 +300,11 @@ async fn main() -> Result<()> {
                         }
                         _ => {}
                     }
+                    handled += 1;
+                    if handled >= 64 {
+                        break;
+                    }
+                    next = reader.next().now_or_never().flatten();
                 }
             }
             Some(event) = event_rx.recv() => {
@@ -339,7 +348,12 @@ async fn main() -> Result<()> {
                     app.advance_image_preview_animation(Duration::from_millis(100));
                     needs_redraw = true;
                 }
-                if app.custom_emoji_animation_visible() || app.media_animation_visible() {
+                if app.resume_pictures_if_due() {
+                    needs_redraw = true;
+                }
+                if !app.terminal_pictures_paused()
+                    && (app.custom_emoji_animation_visible() || app.media_animation_visible())
+                {
                     needs_redraw = true;
                 }
                 let t_len_prev = app.typing_users.values().map(|m| m.len()).sum::<usize>();

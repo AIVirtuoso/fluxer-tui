@@ -1012,7 +1012,9 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
                 let rect = Rect::new(x, y, w, 1);
                 match picture {
                     crate::app::Picture::Terminal(tp) => {
-                        place_terminal_picture(app, buf, rect, serial, frame_idx, tp);
+                        if !app.terminal_pictures_paused() {
+                            place_terminal_picture(app, buf, rect, serial, frame_idx, tp);
+                        }
                     }
                     crate::app::Picture::Pixels(img) => {
                         app.pixel_placements
@@ -1129,16 +1131,18 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
                 if !whole {
                     continue;
                 }
-                let (frame_idx, picture) =
-                    if app.ui_settings.performance_mode || !frames.is_animated() {
-                        (0, &frames.frames[0])
-                    } else {
-                        app.media_animation_seen.set(true);
-                        frames.current(app.animation_epoch.elapsed(), draw)
-                    };
+                let animated = !app.ui_settings.performance_mode && frames.is_animated();
+                let (frame_idx, picture) = if animated {
+                    frames.current(app.animation_epoch.elapsed(), draw)
+                } else {
+                    (0, &frames.frames[0])
+                };
                 let rect = Rect::new(block.x, block.top, slot.cols, slot.rows);
                 match picture {
                     crate::app::Picture::Terminal(tp) => {
+                        if app.terminal_pictures_paused() {
+                            continue;
+                        }
                         place_terminal_picture(app, buf, rect, frames.serial, frame_idx, tp);
                     }
                     crate::app::Picture::Pixels(img) => {
@@ -1149,6 +1153,9 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
                                 image: img.clone(),
                             });
                     }
+                }
+                if animated {
+                    app.media_animation_seen.set(true);
                 }
             }
             crate::media::Lookup::Missing => {

@@ -44,6 +44,22 @@
       default = fluxer-tui;
     });
 
+    # `nix run .#dev` or `nix run github:AIVirtuoso/fluxer-tui/<branch>#dev`:
+    # build with cargo in a target directory under the cache directory, so
+    # trying a branch recompiles only what changed instead of every
+    # dependency, as the sandboxed package build must.
+    apps = forAllSystems (pkgs: {
+      dev = {
+        type = "app";
+        program = toString (pkgs.writeShellScript "fluxer-tui-dev" ''
+          set -eu
+          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/fluxer-tui/target}"
+          export PATH="${pkgs.lib.makeBinPath [pkgs.cargo pkgs.rustc pkgs.chafa]}:$PATH"
+          exec cargo run --release --locked --manifest-path "${self}/Cargo.toml" -- "$@"
+        '');
+      };
+    });
+
     devShells = forAllSystems (pkgs: {
       default = pkgs.mkShell {
         packages = with pkgs; [cargo rustc rustfmt clippy chafa wl-clipboard];
