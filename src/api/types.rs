@@ -573,6 +573,11 @@ pub struct MessageEmbedResponse {
     pub image: Option<EmbedMediaResponse>,
     #[serde(default)]
     pub thumbnail: Option<EmbedMediaResponse>,
+    /// GIF providers (type `gifv`) and video sites: the moving picture as
+    /// WebM/MP4 or a player page. For GIFs the animation itself is the
+    /// `thumbnail`.
+    #[serde(default)]
+    pub video: Option<EmbedMediaResponse>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -966,5 +971,44 @@ mod tests {
         assert_eq!(ready.read_state[0].id, "chan-1");
         assert_eq!(ready.read_state[0].last_message_id.as_deref(), Some("42"));
         assert_eq!(ready.read_state[0].mention_count, 3);
+    }
+
+    #[test]
+    fn gif_embed_carries_its_video_and_thumbnail() {
+        let embed: MessageEmbedResponse = serde_json::from_value(serde_json::json!({
+            "type": "gifv",
+            "url": "https://klipy.com/gifs/linux-kernel-tux",
+            "provider": {"name": "KLIPY", "url": "https://klipy.com/"},
+            "thumbnail": {
+                "url": "https://static.klipy.com/ii/9d/52/B9ynyBGO.webp",
+                "proxy_url": "https://fluxerusercontent.com/external/k/https/static.klipy.com/ii/9d/52/B9ynyBGO.webp",
+                "width": 312, "height": 312, "content_type": "image/webp", "flags": 32
+            },
+            "video": {
+                "url": "https://static.klipy.com/ii/9d/52/DkIvrEVx48Lh.webm",
+                "proxy_url": "https://fluxerusercontent.com/external/Z/https/static.klipy.com/ii/9d/52/DkIvrEVx48Lh.webm",
+                "width": 312, "height": 312, "duration": 2, "content_type": "video/webm", "flags": 0
+            },
+            "image": null,
+            "title": null
+        }))
+        .expect("gifv embed should deserialize");
+
+        assert_eq!(embed.embed_type, "gifv");
+        assert!(embed.image.is_none());
+        assert!(
+            embed
+                .thumbnail
+                .as_ref()
+                .and_then(|m| m.proxy_url.as_deref())
+                .is_some_and(|u| u.ends_with(".webp"))
+        );
+        assert!(
+            embed
+                .video
+                .as_ref()
+                .and_then(|m| m.url.as_deref())
+                .is_some_and(|u| u.ends_with(".webm"))
+        );
     }
 }

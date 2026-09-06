@@ -1,20 +1,26 @@
+mod attachments;
 mod chafa;
 mod gif_anim;
 mod open_external;
 
+pub use attachments::{StagedAttachment, from_clipboard, from_path};
 pub use chafa::chafa_from_bytes;
-pub use gif_anim::{decode_animation, decode_gif_animation};
+pub use gif_anim::{decode_animation, decode_preview_animation};
 pub use open_external::{open_file_path, write_temp_video_bytes};
 
 use crate::api::types::{
     EmbedMediaResponse, MessageAttachmentResponse, MessageEmbedResponse, MessageResponse,
 };
 
+fn is_http_url(u: &str) -> bool {
+    u.starts_with("http://") || u.starts_with("https://")
+}
+
 fn pick_media_url(m: &EmbedMediaResponse) -> Option<String> {
     m.proxy_url
         .clone()
         .or_else(|| m.url.clone())
-        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .filter(|u| is_http_url(u))
 }
 
 fn attachment_is_probably_image(a: &MessageAttachmentResponse) -> bool {
@@ -54,7 +60,7 @@ pub fn attachment_image_url(a: &MessageAttachmentResponse) -> Option<String> {
     a.proxy_url
         .clone()
         .or_else(|| a.url.clone())
-        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .filter(|u| is_http_url(u))
 }
 
 fn attachment_video_url(a: &MessageAttachmentResponse) -> Option<String> {
@@ -64,7 +70,7 @@ fn attachment_video_url(a: &MessageAttachmentResponse) -> Option<String> {
     a.proxy_url
         .clone()
         .or_else(|| a.url.clone())
-        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .filter(|u| is_http_url(u))
 }
 
 pub fn embed_image_url(embed: &MessageEmbedResponse) -> Option<String> {
@@ -75,17 +81,8 @@ pub fn embed_image_url(embed: &MessageEmbedResponse) -> Option<String> {
         .or_else(|| embed.thumbnail.as_ref().and_then(pick_media_url))
 }
 
-fn embed_direct_media_url(embed: &MessageEmbedResponse) -> Option<String> {
-    let t = embed.embed_type.as_str();
-    if matches!(t, "image" | "gifv" | "video") {
-        return embed
-            .image
-            .as_ref()
-            .and_then(|m| m.proxy_url.clone().or_else(|| m.url.clone()))
-            .or_else(|| embed.url.clone())
-            .filter(|u| u.starts_with("http://") || u.starts_with("https://"));
-    }
-    None
+fn embed_video_url(embed: &MessageEmbedResponse) -> Option<String> {
+    embed.video.as_ref().and_then(pick_media_url)
 }
 
 fn embed_label(embed: &MessageEmbedResponse, fallback: &str) -> String {
@@ -96,13 +93,81 @@ fn embed_label(embed: &MessageEmbedResponse, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Last path segment of a URL, percent-decoded: the slug of a GIF
+/// provider's page, `https://klipy.com/gifs/linux-kernel-tux` giving
+/// `linux-kernel-tux`.
+fn url_slug(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let (_, path) = rest.split_once('/')?;
+    let end = path.find(['?', '#']).unwrap_or(path.len());
+    let slug = path[..end].trim_end_matches('/').rsplit('/').next()?;
+    if slug.is_empty() {
+        return None;
+    }
+    Some(
+        urlencoding::decode(slug)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| slug.to_string()),
+    )
+}
+
+/// Name for a GIF embed: its title, else the slug of the provider page
+/// (GIF providers send no title), else just "GIF".
+fn gif_label(embed: &MessageEmbedResponse) -> String {
+    embed
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| embed.url.as_deref().and_then(url_slug))
+        .unwrap_or_else(|| "GIF".to_string())
+}
+
 #[derive(Debug, Clone)]
 pub enum MessagePreviewMedia {
     Image { url: String, label: String },
     Video { url: String, label: String },
 }
 
-/// First image or video suitable for Ctrl+O (images preview in-terminal; videos open externally).
+/// What Ctrl+O shows for one embed, if anything.
+fn embed_preview_media(embed: &MessageEmbedResponse) -> Option<MessagePreviewMedia> {
+    match embed.embed_type.as_str() {
+        // GIF providers (KLIPY, Tenor) send the animation itself as the
+        // thumbnail, an animated WebP or GIF, plus a WebM/MP4 copy as the
+        // video; the embed's own URL is only the provider's web page. Play
+        // the animation in the terminal like a GIF attachment, and reach
+        // for the video copy only when there is no animation.
+        "gifv" => {
+            let label = gif_label(embed);
+            if let Some(url) = embed_image_url(embed) {
+                return Some(MessagePreviewMedia::Image { url, label });
+            }
+            embed_video_url(embed).map(|url| MessagePreviewMedia::Video { url, label })
+        }
+        "video" => {
+            let video =
+                embed_video_url(embed).or_else(|| embed.url.clone().filter(|u| is_http_url(u)));
+            if let Some(url) = video {
+                return Some(MessagePreviewMedia::Video {
+                    url,
+                    label: embed_label(embed, "video"),
+                });
+            }
+            embed_image_url(embed).map(|url| MessagePreviewMedia::Image {
+                url,
+                label: embed_label(embed, "embed image"),
+            })
+        }
+        _ => embed_image_url(embed).map(|url| MessagePreviewMedia::Image {
+            url,
+            label: embed_label(embed, "embed image"),
+        }),
+    }
+}
+
+/// First image or video suitable for Ctrl+O (images and animations preview
+/// in-terminal; videos open externally).
 pub fn first_message_preview_media(msg: &MessageResponse) -> Option<MessagePreviewMedia> {
     for a in &msg.attachments {
         if let Some(u) = attachment_image_url(a) {
@@ -125,28 +190,7 @@ pub fn first_message_preview_media(msg: &MessageResponse) -> Option<MessagePrevi
         }
     }
 
-    for e in &msg.embeds {
-        let t = e.embed_type.as_str();
-        if matches!(t, "video" | "gifv") {
-            if let Some(u) = embed_direct_media_url(e) {
-                return Some(MessagePreviewMedia::Video {
-                    url: u,
-                    label: embed_label(e, "video"),
-                });
-            }
-        }
-    }
-
-    for e in &msg.embeds {
-        if let Some(u) = embed_image_url(e).or_else(|| embed_direct_media_url(e)) {
-            return Some(MessagePreviewMedia::Image {
-                url: u,
-                label: embed_label(e, "embed image"),
-            });
-        }
-    }
-
-    None
+    msg.embeds.iter().find_map(embed_preview_media)
 }
 
 // Caught you
@@ -156,5 +200,111 @@ pub fn first_message_preview_media(msg: &MessageResponse) -> Option<MessagePrevi
 // Like when Tom Cruise laughs
 // That's how your finger
 // Felt in my ass
-mod attachments;
-pub use attachments::{StagedAttachment, from_clipboard, from_path};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const THUMB: &str =
+        "https://fluxerusercontent.com/external/kZ0w/https/static.klipy.com/ii/9d/52/B9ynyBGO.webp";
+    const VIDEO: &str = "https://fluxerusercontent.com/external/Z1qO/https/static.klipy.com/ii/9d/52/DkIvrEVx48Lh.webm";
+
+    /// A KLIPY embed as the API sends it (trimmed).
+    fn klipy_embed() -> MessageEmbedResponse {
+        serde_json::from_value(json!({
+            "type": "gifv",
+            "url": "https://klipy.com/gifs/linux-kernel-tux",
+            "provider": {"name": "KLIPY", "url": "https://klipy.com/"},
+            "thumbnail": {
+                "url": "https://static.klipy.com/ii/9d/52/B9ynyBGO.webp",
+                "proxy_url": THUMB,
+                "width": 312, "height": 312,
+                "content_type": "image/webp", "flags": 32
+            },
+            "video": {
+                "url": "https://static.klipy.com/ii/9d/52/DkIvrEVx48Lh.webm",
+                "proxy_url": VIDEO,
+                "width": 312, "height": 312, "duration": 2,
+                "content_type": "video/webm", "flags": 0
+            },
+            "image": null,
+            "title": null
+        }))
+        .expect("embed deserialises")
+    }
+
+    fn message_with(embed: MessageEmbedResponse) -> MessageResponse {
+        MessageResponse {
+            embeds: vec![embed],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn klipy_gif_plays_its_animation_in_terminal() {
+        let msg = message_with(klipy_embed());
+        match first_message_preview_media(&msg) {
+            Some(MessagePreviewMedia::Image { url, label }) => {
+                assert_eq!(url, THUMB);
+                assert_eq!(label, "linux-kernel-tux");
+            }
+            other => panic!("expected the animated thumbnail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gif_without_animation_falls_back_to_its_video_copy() {
+        let mut embed = klipy_embed();
+        embed.thumbnail = None;
+        match embed_preview_media(&embed) {
+            Some(MessagePreviewMedia::Video { url, label }) => {
+                assert_eq!(url, VIDEO);
+                assert_eq!(label, "linux-kernel-tux");
+            }
+            other => panic!("expected the video copy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gif_page_url_alone_is_nothing_to_show() {
+        let mut embed = klipy_embed();
+        embed.thumbnail = None;
+        embed.video = None;
+        assert!(embed_preview_media(&embed).is_none());
+    }
+
+    #[test]
+    fn video_embed_prefers_its_video_media_over_the_page() {
+        let embed: MessageEmbedResponse = serde_json::from_value(json!({
+            "type": "video",
+            "url": "https://example.com/watch/1",
+            "title": "Clip",
+            "thumbnail": {"url": "https://example.com/1.jpg"},
+            "video": {"url": "https://example.com/1.mp4"}
+        }))
+        .unwrap();
+        match embed_preview_media(&embed) {
+            Some(MessagePreviewMedia::Video { url, label }) => {
+                assert_eq!(url, "https://example.com/1.mp4");
+                assert_eq!(label, "Clip");
+            }
+            other => panic!("expected the video, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gif_label_uses_title_then_slug() {
+        let mut embed = klipy_embed();
+        assert_eq!(gif_label(&embed), "linux-kernel-tux");
+        embed.title = Some(" Tux ".to_string());
+        assert_eq!(gif_label(&embed), "Tux");
+        embed.title = None;
+        embed.url = Some("https://klipy.com/gifs/happy%20cat/?utm=1#x".to_string());
+        assert_eq!(gif_label(&embed), "happy cat");
+        embed.url = Some("https://klipy.com/".to_string());
+        assert_eq!(gif_label(&embed), "GIF");
+        embed.url = None;
+        assert_eq!(gif_label(&embed), "GIF");
+    }
+}

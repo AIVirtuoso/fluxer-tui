@@ -1575,12 +1575,13 @@ fn spawn_open_video(
     tokio::spawn(async move {
         let result: anyhow::Result<()> = async {
             let bytes = client
-                .fetch_url_bytes(&url)
+                .fetch_media_bytes(&url)
                 .await
                 .with_context(|| format!("download video ({url})"))?;
             let label_for_tmp = label.clone();
+            let url_for_tmp = url.clone();
             let path = tokio::task::spawn_blocking(move || {
-                crate::media::write_temp_video_bytes(&label_for_tmp, &bytes)
+                crate::media::write_temp_video_bytes(&label_for_tmp, &url_for_tmp, &bytes)
             })
             .await
             .context("temp file task")??;
@@ -1606,7 +1607,7 @@ fn spawn_image_preview(
     title: String,
 ) {
     tokio::spawn(async move {
-        match client.fetch_url_bytes(&url).await {
+        match client.fetch_media_bytes(&url).await {
             Ok(bytes) => {
                 let _ = event_tx.send(AppEvent::ImagePreviewBytes { title, bytes });
             }

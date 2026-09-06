@@ -698,11 +698,61 @@ impl FluxerHttpClient {
             .to_vec())
     }
 
+    /// GET media: attachments, embed pictures, GIF providers' files. The
+    /// auth token only goes to the API host itself. The web app loads media
+    /// through plain <img>/<video> tags, so Fluxer's own CDN never sees the
+    /// token either, and third-party hosts such as static.klipy.com must not.
+    pub async fn fetch_media_bytes(&self, url_or_path: &str) -> Result<Vec<u8>> {
+        let target = self.url(url_or_path);
+        if url_host(&target) == url_host(&self.base_url) {
+            self.fetch_url_bytes(&target).await
+        } else {
+            self.fetch_public_bytes(&target).await
+        }
+    }
+
     fn url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             path.to_string()
         } else {
             format!("{}/{}", self.base_url, path.trim_start_matches('/'))
         }
+    }
+}
+
+/// Lower-cased host of an http(s) URL, without user info or port.
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit('@').next()?;
+    let host = if let Some(v6) = host_port.strip_prefix('[') {
+        v6.split(']').next()?
+    } else {
+        host_port.split(':').next()?
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::url_host;
+
+    #[test]
+    fn url_host_compares_hosts_only() {
+        assert_eq!(
+            url_host("https://api.fluxer.app/v1").as_deref(),
+            Some("api.fluxer.app")
+        );
+        assert_eq!(
+            url_host("https://User:pw@API.Fluxer.app:8443/v1?x#y").as_deref(),
+            Some("api.fluxer.app")
+        );
+        assert_eq!(url_host("http://[::1]:8080/x").as_deref(), Some("::1"));
+        assert_eq!(
+            url_host("https://static.klipy.com/ii/a.webp").as_deref(),
+            Some("static.klipy.com")
+        );
+        assert_eq!(url_host("/channels/1/messages"), None);
+        assert_eq!(url_host("https:///nohost"), None);
     }
 }

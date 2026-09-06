@@ -610,7 +610,7 @@ pub fn apply_event(
                     .name("image-decode".into())
                     .spawn(move || {
                         if let Some((frames, delays)) =
-                            crate::media::decode_gif_animation(&bytes_clone)
+                            crate::media::decode_preview_animation(&bytes_clone)
                         {
                             let _ = event_tx_clone.send(AppEvent::ImageDecodedGif {
                                 title: title_clone,
