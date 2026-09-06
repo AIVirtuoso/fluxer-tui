@@ -308,6 +308,22 @@ pub struct ConsoleBackend {
     rows: u16,
     width: u32,
     height: u32,
+    /// Cells changed since the last repaint, and whether the whole frame
+    /// has to be painted (first frame, after a clear or a VT switch).
+    dirty: Vec<bool>,
+    full: bool,
+    /// Where pictures and the cursor were last frame: painted over when
+    /// they move or go.
+    last_placements: Vec<Rect>,
+    last_cursor: Option<(u16, u16)>,
+}
+
+fn mark_rect(dirty: &mut [bool], cols: u16, rows: u16, rect: Rect) {
+    for y in rect.y..rect.bottom().min(rows) {
+        for x in rect.x..rect.right().min(cols) {
+            dirty[y as usize * cols as usize + x as usize] = true;
+        }
+    }
 }
 
 impl ConsoleBackend {
@@ -326,6 +342,10 @@ impl ConsoleBackend {
             rows,
             width,
             height,
+            dirty: vec![false; cols as usize * rows as usize],
+            full: true,
+            last_placements: Vec::new(),
+            last_cursor: None,
         }
     }
 
@@ -340,24 +360,55 @@ impl ConsoleBackend {
     }
 
     pub fn resume(&mut self) -> io::Result<()> {
+        self.full = true;
         self.repaint();
         self.out.resume(&self.frame)
     }
 
+    /// Paint the frame: everything after a clear, otherwise only the cells
+    /// that changed, plus where pictures and the cursor were and are.
     fn repaint(&mut self) {
         let placements = self.placements.borrow();
         let cursor = self
             .cursor_visible
             .then_some((self.cursor.x, self.cursor.y));
-        self.raster.render(
-            &self.buf,
-            &placements,
-            cursor,
-            &mut self.frame,
-            self.width,
-            self.height,
-            self.width,
-        );
+        if self.full {
+            self.raster.render(
+                &self.buf,
+                &placements,
+                cursor,
+                &mut self.frame,
+                self.width,
+                self.height,
+                self.width,
+            );
+            self.full = false;
+        } else {
+            for rect in self
+                .last_placements
+                .iter()
+                .copied()
+                .chain(placements.iter().map(|p| p.area))
+            {
+                mark_rect(&mut self.dirty, self.cols, self.rows, rect);
+            }
+            for (x, y) in [self.last_cursor, cursor].into_iter().flatten() {
+                mark_rect(&mut self.dirty, self.cols, self.rows, Rect::new(x, y, 1, 1));
+            }
+            self.raster.render_cells(
+                &self.buf,
+                &self.dirty,
+                &placements,
+                cursor,
+                &mut self.frame,
+                self.width,
+                self.height,
+                self.width,
+            );
+        }
+        self.dirty.fill(false);
+        self.last_placements = placements.iter().map(|p| p.area).collect();
+        self.last_cursor = cursor;
     }
 }
 
@@ -369,6 +420,7 @@ impl Backend for ConsoleBackend {
         for (x, y, cell) in content {
             if x < self.cols && y < self.rows {
                 self.buf[(x, y)] = cell.clone();
+                self.dirty[y as usize * self.cols as usize + x as usize] = true;
             }
         }
         Ok(())
@@ -395,6 +447,7 @@ impl Backend for ConsoleBackend {
 
     fn clear(&mut self) -> io::Result<()> {
         self.buf.reset();
+        self.full = true;
         Ok(())
     }
 

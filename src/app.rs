@@ -648,7 +648,11 @@ pub struct App {
     pub private_channels: Vec<ChannelResponse>,
     pub guild_channels: HashMap<Snowflake, Vec<ChannelResponse>>,
     pub guild_members: HashMap<Snowflake, Vec<GuildMemberResponse>>,
-    pub messages: HashMap<Snowflake, Vec<MessageResponse>>,
+    /// Per channel, sorted oldest first. Shared so that a draw can hold the
+    /// list without copying it; a write clones only while a draw holds it.
+    pub messages: HashMap<Snowflake, std::rc::Rc<Vec<MessageResponse>>>,
+    /// Bumped by every change to `messages`.
+    pub messages_version: u64,
     pub user_cache: HashMap<Snowflake, UserPartialResponse>,
     pub voice_states: HashMap<Snowflake, HashMap<Snowflake, VoiceStateResponse>>,
     pub guild_emojis: HashMap<Snowflake, Vec<crate::api::types::GuildEmojiResponse>>,
@@ -789,6 +793,7 @@ impl App {
             guild_channels: HashMap::new(),
             guild_members: HashMap::new(),
             messages: HashMap::new(),
+            messages_version: 0,
             user_cache,
             voice_states: HashMap::new(),
             guild_emojis: HashMap::new(),
@@ -1882,13 +1887,14 @@ impl App {
         p & crate::permissions::VIEW_CHANNEL != 0 && p & crate::permissions::SEND_MESSAGES != 0
     }
 
-    pub fn active_messages(&self) -> Vec<MessageResponse> {
-        let Some(channel_id) = self.selected_channel_id.as_deref() else {
-            return Vec::new();
-        };
-        let mut messages = self.messages.get(channel_id).cloned().unwrap_or_default();
-        messages.sort_by_key(|message| snowflake_sort_key(&message.id));
-        messages
+    /// The selected channel's messages, oldest first. Kept sorted on every
+    /// write, and shared rather than copied: a draw only borrows them.
+    pub fn active_messages(&self) -> std::rc::Rc<Vec<MessageResponse>> {
+        self.selected_channel_id
+            .as_deref()
+            .and_then(|id| self.messages.get(id))
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn active_oldest_message_id(&self) -> Option<String> {
@@ -2658,7 +2664,8 @@ impl App {
         merge_user_cache(&mut self.user_cache, message.mentions.iter().cloned());
 
         let channel_id = message.channel_id.clone();
-        let entries = self.messages.entry(channel_id).or_default();
+        self.messages_version = self.messages_version.wrapping_add(1);
+        let entries = std::rc::Rc::make_mut(self.messages.entry(channel_id).or_default());
         let was_new = if let Some(existing) = entries
             .iter_mut()
             .find(|existing| existing.id == message.id)
@@ -2666,10 +2673,15 @@ impl App {
             *existing = message;
             false
         } else {
-            entries.push(message);
+            // almost always the newest: put it where it belongs from the end
+            let key = snowflake_sort_key(&message.id);
+            let at = entries
+                .iter()
+                .rposition(|e| snowflake_sort_key(&e.id) <= key)
+                .map_or(0, |i| i + 1);
+            entries.insert(at, message);
             true
         };
-        entries.sort_by_key(|entry| snowflake_sort_key(&entry.id));
         was_new
     }
 
@@ -2688,7 +2700,9 @@ impl App {
         if messages.len() > MAX_MESSAGES {
             messages.drain(0..messages.len() - MAX_MESSAGES);
         }
-        self.messages.insert(channel_id.to_string(), messages);
+        self.messages_version = self.messages_version.wrapping_add(1);
+        self.messages
+            .insert(channel_id.to_string(), std::rc::Rc::new(messages));
         self.loading_messages.remove(channel_id);
         self.api_backoff_clear(&format!("messages:{channel_id}"));
         self.message_scroll_from_bottom = 0;
@@ -2699,7 +2713,8 @@ impl App {
             self.merge_message_embedded_members(message);
             merge_user_cache(&mut self.user_cache, [message.author.clone()]);
         }
-        let entry = self.messages.entry(channel_id.to_string()).or_default();
+        self.messages_version = self.messages_version.wrapping_add(1);
+        let entry = std::rc::Rc::make_mut(self.messages.entry(channel_id.to_string()).or_default());
         for m in older {
             if !entry.iter().any(|e| e.id == m.id) {
                 entry.push(m);
@@ -2711,7 +2726,8 @@ impl App {
 
     pub fn remove_message(&mut self, channel_id: &str, message_id: &str) {
         if let Some(messages) = self.messages.get_mut(channel_id) {
-            messages.retain(|message| message.id != message_id);
+            self.messages_version = self.messages_version.wrapping_add(1);
+            std::rc::Rc::make_mut(messages).retain(|message| message.id != message_id);
         }
     }
 
@@ -3303,7 +3319,7 @@ impl App {
         if let Some(channel_id) = self.selected_channel_id.as_deref() {
             let guild_id = self.guild_id_for_channel(channel_id);
             if let Some(msgs) = self.messages.get(channel_id) {
-                for msg in msgs {
+                for msg in msgs.iter() {
                     if msg.author.id.is_empty() || !seen_users.insert(msg.author.id.clone()) {
                         continue;
                     }
@@ -3792,7 +3808,7 @@ mod tests {
         let mut app = test_app(vec![channel]);
         app.messages.insert(
             "dm-1".to_string(),
-            vec![
+            std::rc::Rc::new(vec![
                 MessageResponse {
                     id: "100".to_string(),
                     channel_id: "dm-1".to_string(),
@@ -3803,7 +3819,7 @@ mod tests {
                     channel_id: "dm-1".to_string(),
                     ..MessageResponse::default()
                 },
-            ],
+            ]),
         );
 
         assert_eq!(app.channel_last_message_id("dm-1").as_deref(), Some("300"));

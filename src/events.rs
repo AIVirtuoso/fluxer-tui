@@ -359,8 +359,11 @@ pub fn apply_event(
             "MESSAGE_REACTION_ADD" => {
                 if let Ok(event) = serde_json::from_value::<MessageReactionAddEvent>(payload)
                     && let Some(msgs) = app.messages.get_mut(&event.channel_id)
-                    && let Some(msg) = msgs.iter_mut().find(|m| m.id == event.message_id)
+                    && let Some(msg) = std::rc::Rc::make_mut(msgs)
+                        .iter_mut()
+                        .find(|m| m.id == event.message_id)
                 {
+                    app.messages_version = app.messages_version.wrapping_add(1);
                     let is_me = event.user_id == app.me.id;
                     let emoji_key = reaction_emoji_key(&event.emoji);
                     if let Some(existing) = msg
@@ -385,8 +388,11 @@ pub fn apply_event(
             "MESSAGE_REACTION_REMOVE" => {
                 if let Ok(event) = serde_json::from_value::<MessageReactionRemoveEvent>(payload)
                     && let Some(msgs) = app.messages.get_mut(&event.channel_id)
-                    && let Some(msg) = msgs.iter_mut().find(|m| m.id == event.message_id)
+                    && let Some(msg) = std::rc::Rc::make_mut(msgs)
+                        .iter_mut()
+                        .find(|m| m.id == event.message_id)
                 {
+                    app.messages_version = app.messages_version.wrapping_add(1);
                     let is_me = event.user_id == app.me.id;
                     let emoji_key = reaction_emoji_key(&event.emoji);
                     if let Some(existing) = msg

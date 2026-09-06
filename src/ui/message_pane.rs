@@ -817,13 +817,25 @@ fn build_message_lines(
     (lines, line_ranges)
 }
 
+/// Rows each line takes at `text_w`. Lines are wrapped before they get
+/// here, so nearly all fit in one row and only a wider one is measured
+/// the slow way, by wrapping it as the paragraph would.
 fn paragraph_line_heights(lines: &[Line<'static>], text_w: u16) -> Vec<u16> {
     lines
         .iter()
         .map(|line| {
-            Paragraph::new(Text::from(vec![line.clone()]))
-                .wrap(Wrap { trim: false })
-                .line_count(text_w) as u16
+            let width: usize = line
+                .spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            if width <= text_w as usize {
+                1
+            } else {
+                Paragraph::new(Text::from(vec![line.clone()]))
+                    .wrap(Wrap { trim: false })
+                    .line_count(text_w) as u16
+            }
         })
         .collect()
 }
@@ -836,8 +848,9 @@ pub struct LayoutKey {
     text_w: u16,
     pane_rows: u16,
     selected: Option<usize>,
-    /// Hash of the messages: content, edits, reactions, embeds, members.
+    /// The message list's version: every change bumps it.
     messages: u64,
+    count: usize,
     clock_12h: bool,
     avatars: bool,
     inline: bool,
@@ -877,15 +890,13 @@ pub fn pane_layout(
     text_w: u16,
     pane_rows: u16,
 ) -> std::rc::Rc<PaneLayout> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    messages.hash(&mut hasher);
     let key = LayoutKey {
         channel: app.selected_channel_id.clone(),
         text_w,
         pane_rows,
         selected: app.selected_message_index,
-        messages: hasher.finish(),
+        messages: app.messages_version,
+        count: messages.len(),
         clock_12h: app.ui_settings.clock_12h,
         avatars: app.avatars_enabled(),
         inline: app.inline_media_enabled(),

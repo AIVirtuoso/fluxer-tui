@@ -354,81 +354,75 @@ impl Rasterizer {
         height: u32,
         stride: u32,
     ) {
-        let bg = self.bg;
-        let bgpx = pack(bg);
+        let bgpx = pack(self.bg);
         for row in 0..height {
             let start = (row * stride) as usize;
             frame[start..start + width as usize].fill(bgpx);
         }
         let area = buf.area;
-        let (cw, ch) = (self.cell_w, self.cell_h);
         for y in area.top()..area.bottom() {
             let mut x = area.left();
             while x < area.right() {
-                let cell = &buf[(x, y)];
-                let symbol = cell.symbol();
-                let wcells = symbol.width().max(1) as u32;
-                let px0 = x as u32 * cw;
-                let py0 = y as u32 * ch;
-                if px0 >= width || py0 >= height {
-                    x += wcells as u16;
-                    continue;
-                }
-                let (mut fg, mut cbg) = self.cell_colors(cell);
-                if cell.modifier.contains(Modifier::REVERSED) {
-                    std::mem::swap(&mut fg, &mut cbg);
-                }
-                if cell.modifier.contains(Modifier::DIM) {
-                    fg = mix(fg, cbg, 0.55);
-                }
-                // background
-                if cbg != bg {
-                    fill_rect(frame, stride, width, height, px0, py0, cw * wcells, ch, cbg);
-                }
-                // glyph
-                if !symbol.trim().is_empty() && !cell.modifier.contains(Modifier::HIDDEN) {
-                    let r = self.rendered(symbol, cell.modifier.contains(Modifier::BOLD));
-                    let synth_bold = cell.modifier.contains(Modifier::BOLD) && self.bold.is_none();
-                    for (gx, gy, img) in &r.parts {
-                        blit_glyph(
-                            frame,
-                            stride,
-                            width,
-                            height,
-                            px0 as i32 + gx,
-                            py0 as i32 + gy,
-                            img,
-                            fg,
-                        );
-                        if synth_bold && !img.color {
-                            blit_glyph(
-                                frame,
-                                stride,
-                                width,
-                                height,
-                                px0 as i32 + gx + 1,
-                                py0 as i32 + gy,
-                                img,
-                                fg,
-                            );
-                        }
-                    }
-                }
-                if cell.modifier.contains(Modifier::UNDERLINED) {
-                    let uy = py0 + (self.baseline as u32 + 2).min(ch - 1);
-                    fill_rect(frame, stride, width, height, px0, uy, cw * wcells, 1, fg);
-                }
-                if cell.modifier.contains(Modifier::CROSSED_OUT) {
-                    let sy = py0 + ch * 55 / 100;
-                    fill_rect(frame, stride, width, height, px0, sy, cw * wcells, 1, fg);
-                }
-                x += wcells as u16;
+                let w = self.paint_cell(&buf[(x, y)], x, y, frame, width, height, stride, false);
+                x += w as u16;
             }
         }
+        self.finish(placements, cursor, frame, width, height, stride);
+    }
+
+    /// Paint only the cells marked in `dirty` (one flag per cell of `buf`),
+    /// with their neighbours, since a glyph may reach into the next cell;
+    /// then the pictures and the cursor, over whatever they cover.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_cells(
+        &mut self,
+        buf: &Buffer,
+        dirty: &[bool],
+        placements: &[Placement],
+        cursor: Option<(u16, u16)>,
+        frame: &mut [u32],
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) {
+        let area = buf.area;
+        let cols = area.width as usize;
+        for y in area.top()..area.bottom() {
+            let Some(row) = dirty.get(y as usize * cols..(y as usize + 1) * cols) else {
+                break;
+            };
+            if !row.iter().any(|&d| d) {
+                continue;
+            }
+            let mut x = area.left();
+            while x < area.right() {
+                let cell = &buf[(x, y)];
+                let w = cell.symbol().width().max(1);
+                let lo = (x as usize).saturating_sub(1);
+                let hi = (x as usize + w + 1).min(cols);
+                if row[lo..hi].iter().any(|&d| d) {
+                    self.paint_cell(cell, x, y, frame, width, height, stride, true);
+                }
+                x += w as u16;
+            }
+        }
+        self.finish(placements, cursor, frame, width, height, stride);
+    }
+
+    fn finish(
+        &self,
+        placements: &[Placement],
+        cursor: Option<(u16, u16)>,
+        frame: &mut [u32],
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) {
         for p in placements {
             self.blit_placement(frame, width, height, stride, p);
         }
         if let Some((cx, cy)) = cursor {
+            let (cw, ch) = (self.cell_w, self.cell_h);
             let px0 = cx as u32 * cw;
             let py0 = cy as u32 * ch;
             // underline-style cursor, two pixels tall, in the default fg
@@ -444,6 +438,81 @@ impl Rasterizer {
                 self.fg,
             );
         }
+    }
+
+    /// Paint one cell: its background (always when `erase`, else only when
+    /// it differs from the frame's), the glyph, underline and strike-through.
+    /// Returns how many cells the symbol spans.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_cell(
+        &mut self,
+        cell: &Cell,
+        x: u16,
+        y: u16,
+        frame: &mut [u32],
+        width: u32,
+        height: u32,
+        stride: u32,
+        erase: bool,
+    ) -> u32 {
+        let bg = self.bg;
+        let (cw, ch) = (self.cell_w, self.cell_h);
+        let symbol = cell.symbol();
+        let wcells = symbol.width().max(1) as u32;
+        let px0 = x as u32 * cw;
+        let py0 = y as u32 * ch;
+        if px0 >= width || py0 >= height {
+            return wcells;
+        }
+        let (mut fg, mut cbg) = self.cell_colors(cell);
+        if cell.modifier.contains(Modifier::REVERSED) {
+            std::mem::swap(&mut fg, &mut cbg);
+        }
+        if cell.modifier.contains(Modifier::DIM) {
+            fg = mix(fg, cbg, 0.55);
+        }
+        // background
+        if erase || cbg != bg {
+            fill_rect(frame, stride, width, height, px0, py0, cw * wcells, ch, cbg);
+        }
+        // glyph
+        if !symbol.trim().is_empty() && !cell.modifier.contains(Modifier::HIDDEN) {
+            let r = self.rendered(symbol, cell.modifier.contains(Modifier::BOLD));
+            let synth_bold = cell.modifier.contains(Modifier::BOLD) && self.bold.is_none();
+            for (gx, gy, img) in &r.parts {
+                blit_glyph(
+                    frame,
+                    stride,
+                    width,
+                    height,
+                    px0 as i32 + gx,
+                    py0 as i32 + gy,
+                    img,
+                    fg,
+                );
+                if synth_bold && !img.color {
+                    blit_glyph(
+                        frame,
+                        stride,
+                        width,
+                        height,
+                        px0 as i32 + gx + 1,
+                        py0 as i32 + gy,
+                        img,
+                        fg,
+                    );
+                }
+            }
+        }
+        if cell.modifier.contains(Modifier::UNDERLINED) {
+            let uy = py0 + (self.baseline as u32 + 2).min(ch - 1);
+            fill_rect(frame, stride, width, height, px0, uy, cw * wcells, 1, fg);
+        }
+        if cell.modifier.contains(Modifier::CROSSED_OUT) {
+            let sy = py0 + ch * 55 / 100;
+            fill_rect(frame, stride, width, height, px0, sy, cw * wcells, 1, fg);
+        }
+        wcells
     }
 
     fn cell_colors(&self, cell: &Cell) -> ([u8; 3], [u8; 3]) {
@@ -629,6 +698,116 @@ mod tests {
     use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
     /// Render a sample frame to target/console-sample.png for eyeballing.
+    #[test]
+    fn painting_only_changed_cells_matches_a_full_repaint() {
+        let Ok(fonts) = super::super::fonts::resolve(&Default::default()) else {
+            eprintln!("no fonts via fc-match; skipping");
+            return;
+        };
+        let mut r = Rasterizer::new(&fonts, 20.0).expect("rasterizer");
+        let (cols, rows) = (24u16, 4u16);
+        let (w, h) = (cols as u32 * r.cell_w, rows as u32 * r.cell_h);
+        let area = Rect::new(0, 0, cols, rows);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(
+            1,
+            1,
+            "hello wide 漢字 text",
+            Style::default().fg(Color::Cyan),
+        );
+        buf.set_string(
+            1,
+            2,
+            "second row",
+            Style::default().add_modifier(Modifier::BOLD),
+        );
+        let picture = Placement {
+            area: Rect::new(14, 1, 4, 2),
+            image: Arc::new(RgbaImage::from_pixel(
+                4 * r.cell_w,
+                2 * r.cell_h,
+                image::Rgba([10, 200, 10, 255]),
+            )),
+        };
+        let mut frame = vec![0u32; (w * h) as usize];
+        r.render(
+            &buf,
+            std::slice::from_ref(&picture),
+            Some((3, 2)),
+            &mut frame,
+            w,
+            h,
+            w,
+        );
+
+        // the text changes, the picture moves, the cursor moves
+        let before = buf.clone();
+        buf.set_string(
+            1,
+            1,
+            "HELLO wide 漢字 text",
+            Style::default().fg(Color::Red),
+        );
+        buf.set_string(1, 2, "          ", Style::default());
+        let moved = Placement {
+            area: Rect::new(15, 2, 4, 2),
+            image: picture.image.clone(),
+        };
+        // the cells that changed, as the backend marks them from ratatui's diff
+        let mut dirty: Vec<bool> = before
+            .content
+            .iter()
+            .zip(&buf.content)
+            .map(|(a, b)| a != b)
+            .collect();
+        for rect in [
+            picture.area,
+            moved.area,
+            Rect::new(3, 2, 1, 1),
+            Rect::new(5, 3, 1, 1),
+        ] {
+            for y in rect.y..rect.bottom() {
+                for x in rect.x..rect.right() {
+                    dirty[y as usize * cols as usize + x as usize] = true;
+                }
+            }
+        }
+        r.render_cells(
+            &buf,
+            &dirty,
+            std::slice::from_ref(&moved),
+            Some((5, 3)),
+            &mut frame,
+            w,
+            h,
+            w,
+        );
+
+        let mut full = vec![0u32; (w * h) as usize];
+        r.render(
+            &buf,
+            std::slice::from_ref(&moved),
+            Some((5, 3)),
+            &mut full,
+            w,
+            h,
+            w,
+        );
+        let mut bad: Vec<(u32, u32)> = Vec::new();
+        for (i, (a, b)) in frame.iter().zip(&full).enumerate() {
+            if a != b {
+                let (px, py) = (i as u32 % w, i as u32 / w);
+                bad.push((px / r.cell_w, py / r.cell_h));
+            }
+        }
+        bad.sort();
+        bad.dedup();
+        assert!(
+            bad.is_empty(),
+            "cells that differ from a full repaint: {bad:?}"
+        );
+    }
+
     #[test]
     fn render_sample_frame() {
         let Ok(fonts) = super::super::fonts::resolve(&Default::default()) else {
