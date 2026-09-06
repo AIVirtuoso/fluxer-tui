@@ -26,9 +26,10 @@ quick tests use the `dev` app instead:
 nix run --refresh github:AIVirtuoso/fluxer-tui/<branch>#dev
 ```
 
-It builds with cargo in `~/.cache/fluxer-tui/target`, so only the crates
-that changed are recompiled (the first run compiles everything once, in
-release mode). `--refresh` makes Nix look the branch up again instead of
+It copies the snapshot to `~/.cache/fluxer-tui/src-…` (cargo tells fresh
+from stale by file dates, and store files have none) and builds it with
+cargo in `~/.cache/fluxer-tui/target`, so only the crates that changed are
+recompiled (the first run compiles everything once, in release mode). `--refresh` makes Nix look the branch up again instead of
 reusing the commit it cached for an hour. From a checkout, `nix run .#dev`
 does the same.
 

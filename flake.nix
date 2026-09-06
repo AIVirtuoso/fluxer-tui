@@ -53,9 +53,20 @@
         type = "app";
         program = toString (pkgs.writeShellScript "fluxer-tui-dev" ''
           set -eu
-          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/fluxer-tui/target}"
+          cache="''${XDG_CACHE_HOME:-$HOME/.cache}/fluxer-tui"
+          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$cache/target}"
+          # cargo tells fresh from stale by file dates, and every file in
+          # the store is dated 1970, so a new snapshot would never be
+          # rebuilt: work from a copy with real dates, one per snapshot
+          snap="$cache/src-$(basename ${self} | cut -c1-32)"
+          if [ ! -e "$snap/.complete" ]; then
+            rm -rf "$cache"/src-*
+            mkdir -p "$snap"
+            cp -r --no-preserve=mode,timestamps ${self}/. "$snap"/
+            touch "$snap/.complete"
+          fi
           export PATH="${pkgs.lib.makeBinPath [pkgs.cargo pkgs.rustc pkgs.chafa]}:$PATH"
-          exec cargo run --release --locked --manifest-path "${self}/Cargo.toml" -- "$@"
+          exec cargo run --release --locked --manifest-path "$snap/Cargo.toml" -- "$@"
         '');
       };
     });
