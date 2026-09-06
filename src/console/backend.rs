@@ -7,6 +7,7 @@ use super::raster::{Placement, Rasterizer};
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Print;
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
@@ -169,6 +170,11 @@ impl<W: Write> TermBackend<W> {
     }
 
     fn reconcile(&mut self, buf: &Buffer, scroll: Option<RegionScroll>) -> io::Result<()> {
+        // The frame goes out as one synchronized update: a terminal that
+        // scrolls its pictures along with the rows would otherwise show them
+        // past the pane's edge for an instant, before the rows outside are
+        // rewritten. The update ends in `flush`, after the cursor is placed.
+        queue!(self.inner, BeginSynchronizedUpdate)?;
         if self.shadow.area != buf.area {
             // a terminal of a new size: nothing is known about what it shows
             self.shadow = Shadow::new(buf.area, true);
@@ -250,6 +256,7 @@ impl<W: Write> Backend for TermBackend<W> {
                 // drawn without a frame from the app: pass it on, and treat
                 // the terminal as unknown from here
                 self.shadow = Shadow::new(self.shadow.area, true);
+                queue!(self.inner, BeginSynchronizedUpdate)?;
                 self.inner.draw(content)
             }
         }
@@ -284,6 +291,7 @@ impl<W: Write> Backend for TermBackend<W> {
         self.inner.window_size()
     }
     fn flush(&mut self) -> io::Result<()> {
+        queue!(self.inner, EndSynchronizedUpdate)?;
         Backend::flush(&mut self.inner)
     }
 }
@@ -538,6 +546,28 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_is_one_synchronized_update() {
+        let mut r = rig();
+        let out = r.draw(&["ab", "cd"], None);
+        assert!(out.starts_with("\x1b[?2026h"), "{out:?}");
+        assert!(out.ends_with("\x1b[?2026l"), "{out:?}");
+        let out = r.draw(
+            &["ab", "xd"],
+            Some(RegionScroll {
+                area: Rect::new(0, 0, 2, 2),
+                rows: 1,
+            }),
+        );
+        let begin = out.find("\x1b[?2026h").unwrap();
+        let scroll = out.find("\x1b[1;2r").unwrap();
+        let end = out.find("\x1b[?2026l").unwrap();
+        assert!(
+            begin < scroll && scroll < end,
+            "the scroll is inside the update: {out:?}"
+        );
+    }
+
+    #[test]
     fn only_changed_cells_are_written() {
         let mut r = rig();
         let first = r.draw(&["abcd", "efgh"], None);
@@ -546,8 +576,9 @@ mod tests {
             "{first:?}"
         );
         let second = r.draw(&["abcd", "efgh"], None);
+        // only the update markers and crossterm's colour resets go out
         assert!(
-            !second.contains('a') && !second.contains('h'),
+            !second.contains('a') && !second.contains('e'),
             "nothing changed: {second:?}"
         );
         let third = r.draw(&["abXd", "efgh"], None);
