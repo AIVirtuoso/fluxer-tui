@@ -1262,6 +1262,15 @@ fn handle_key_event(
             }
         }
         KeyCode::PageDown => app.scroll_messages_down(18),
+        // G = the newest message
+        KeyCode::Char('G')
+            if matches!(
+                app.focus,
+                Focus::Messages | Focus::Channels | Focus::Servers
+            ) =>
+        {
+            app.jump_to_latest_message();
+        }
         // s = select mode
         KeyCode::Char('s') if app.focus == Focus::Messages => {
             let count = app.active_messages().len();

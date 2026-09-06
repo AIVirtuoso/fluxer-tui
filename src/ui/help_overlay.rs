@@ -33,6 +33,7 @@ Channels (middle column)
 Messages
   Up / Down / j / k - scroll list, or move selection when a message is selected
   PgUp / PgDn - scroll message pane
+  G - jump to the newest message; while scrolled up, the view stays put as messages arrive
   Scroll up near the top - older messages load automatically
   s - select last message (selection mode)
   r - reply to selected message

@@ -300,6 +300,20 @@ impl std::fmt::Debug for PictureFrames {
     }
 }
 
+/// Where a reader scrolled up in the history is: the message under the
+/// pane's top row and how many rows into it the top row lies. When
+/// messages arrive or load while they read, the view is put back on that
+/// message instead of drifting with the bottom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneAnchor {
+    pub channel: Option<String>,
+    pub message_id: String,
+    pub offset: i64,
+    /// The content's rows when the anchor was taken: a change means the
+    /// content moved under the reader.
+    pub total_rows: u32,
+}
+
 /// The message pane's view in one draw: which channel, where on screen,
 /// how many rows its content had and how far it was scrolled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,6 +551,8 @@ pub struct App {
     pub custom_emoji_version: u64,
     /// The message pane as last drawn, to tell a plain scroll from a change.
     pub pane_last: Option<PaneView>,
+    /// Where the reader is while scrolled up, kept still as content changes.
+    pub pane_anchor: Option<PaneAnchor>,
     /// Set by the message pane when it merely scrolled since the last draw.
     pub pane_scroll_hint: Option<crate::console::backend::RegionScroll>,
     /// Per frame: the shortest frame delay of an animation drawn, which
@@ -653,6 +669,7 @@ impl App {
             roster_version: 0,
             custom_emoji_version: 0,
             pane_last: None,
+            pane_anchor: None,
             pane_scroll_hint: None,
             animation_delay_seen: std::cell::Cell::new(None),
             draw_serial: std::cell::Cell::new(0),
@@ -1697,6 +1714,17 @@ impl App {
             .get(channel_id)
             .and_then(|messages| messages.first())
             .map(|message| message.id.clone())
+    }
+
+    /// `G`: the newest message, at the bottom of the pane; in selection
+    /// mode it is selected as well.
+    pub fn jump_to_latest_message(&mut self) {
+        self.message_scroll_from_bottom = 0;
+        self.pane_anchor = None;
+        if self.selected_message_index.is_some() {
+            let count = self.active_messages().len();
+            self.selected_message_index = count.checked_sub(1);
+        }
     }
 
     pub fn scroll_messages_up(&mut self, amount: u16) {

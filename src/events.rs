@@ -521,8 +521,6 @@ pub fn apply_event(
             if n < 50 {
                 app.messages_older_exhausted.insert(channel_id.clone());
             }
-            let bump = (n as u16).saturating_mul(2).min(160);
-            app.message_scroll_from_bottom = app.message_scroll_from_bottom.saturating_add(bump);
             if n == 0 {
                 app.set_transient_status(
                     "Reached the beginning of message history.",

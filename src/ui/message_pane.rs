@@ -1065,6 +1065,95 @@ mod row_model_tests {
     }
 }
 
+/// The message whose block holds row `top` (else the first one below it),
+/// and how far into it `top` lies: where the reader is.
+fn anchor_at(
+    top: u32,
+    pre_rows: u32,
+    line_ranges: &[(usize, usize)],
+    cum: &[u32],
+    ids: &[&str],
+) -> Option<(String, i64)> {
+    for (i, &(b0, b1)) in line_ranges.iter().enumerate() {
+        let (Some(&start), Some(&end)) = (cum.get(b0), cum.get(b1)) else {
+            continue;
+        };
+        let (start, end) = (pre_rows + start, pre_rows + end);
+        if top < end || i + 1 == line_ranges.len() {
+            let id = ids.get(i)?;
+            return Some((id.to_string(), top as i64 - start as i64));
+        }
+    }
+    None
+}
+
+/// The top row that puts the anchored message back where it was, in a
+/// layout that may have changed around it.
+fn top_for_anchor(
+    message_id: &str,
+    offset: i64,
+    pre_rows: u32,
+    line_ranges: &[(usize, usize)],
+    cum: &[u32],
+    ids: &[&str],
+    max_scroll: u32,
+) -> Option<u32> {
+    let i = ids.iter().position(|id| *id == message_id)?;
+    let &(b0, _) = line_ranges.get(i)?;
+    let start = pre_rows as i64 + *cum.get(b0)? as i64;
+    Some((start + offset).clamp(0, max_scroll as i64) as u32)
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+
+    // three messages of 2, 3 and 1 rows after 4 rows of welcome
+    const RANGES: [(usize, usize); 3] = [(0, 2), (2, 5), (5, 6)];
+    const CUM: [u32; 7] = [0, 1, 2, 3, 4, 5, 6];
+    const IDS: [&str; 3] = ["a", "b", "c"];
+
+    #[test]
+    fn the_anchor_is_the_message_under_the_top_row() {
+        assert_eq!(anchor_at(0, 4, &RANGES, &CUM, &IDS), Some(("a".into(), -4)));
+        assert_eq!(anchor_at(5, 4, &RANGES, &CUM, &IDS), Some(("a".into(), 1)));
+        assert_eq!(anchor_at(6, 4, &RANGES, &CUM, &IDS), Some(("b".into(), 0)));
+        assert_eq!(anchor_at(8, 4, &RANGES, &CUM, &IDS), Some(("b".into(), 2)));
+        assert_eq!(anchor_at(9, 4, &RANGES, &CUM, &IDS), Some(("c".into(), 0)));
+        assert_eq!(
+            anchor_at(30, 4, &RANGES, &CUM, &IDS),
+            Some(("c".into(), 21))
+        );
+    }
+
+    #[test]
+    fn a_new_message_below_does_not_move_the_reader() {
+        // the reader is 1 row into "a"; a 4-row message "d" arrives below
+        let (id, offset) = anchor_at(5, 4, &RANGES, &CUM, &IDS).unwrap();
+        let ranges = [(0, 2), (2, 5), (5, 6), (6, 10)];
+        let cum = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let ids = ["a", "b", "c", "d"];
+        assert_eq!(
+            top_for_anchor(&id, offset, 4, &ranges, &cum, &ids, 100),
+            Some(5)
+        );
+        // older messages loaded above push the anchor down the pane by their rows
+        let ranges = [(0, 3), (3, 5), (5, 8), (8, 9)];
+        let cum = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let ids = ["old", "a", "b", "c"];
+        assert_eq!(
+            top_for_anchor(&id, offset, 4, &ranges, &cum, &ids, 100),
+            Some(8)
+        );
+        // never past the end of the content
+        assert_eq!(
+            top_for_anchor(&id, offset, 4, &ranges, &cum, &ids, 6),
+            Some(6)
+        );
+        assert_eq!(top_for_anchor("gone", 0, 4, &ranges, &cum, &ids, 6), None);
+    }
+}
+
 /// When a message is selected, adjust `message_scroll_from_bottom` so the selection stays in view.
 pub fn scroll_for_selected_message(
     app: &App,
@@ -1181,8 +1270,40 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let max_scroll = total.saturating_sub(pane);
     app.message_scroll_max = max_scroll.min(u16::MAX as u32) as u16;
-    let scroll_from_bottom = (app.message_scroll_from_bottom as u32).min(max_scroll);
+    let mut scroll_from_bottom = (app.message_scroll_from_bottom as u32).min(max_scroll);
+    let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+    let pre_rows = model.pre_rows();
+    // Scrolled up, and the content changed since the last draw (a message
+    // arrived, history loaded, an edit): put the reader back on the same
+    // message rather than let the bottom drag the view.
+    if scroll_from_bottom > 0
+        && let (Some(anchor), Some(layout)) = (&app.pane_anchor, &layout)
+        && anchor.channel == app.selected_channel_id
+        && anchor.total_rows != total
+        && let Some(new_top) = top_for_anchor(
+            &anchor.message_id,
+            anchor.offset,
+            pre_rows,
+            &layout.line_ranges,
+            &layout.cum,
+            &ids,
+            max_scroll,
+        )
+    {
+        scroll_from_bottom = max_scroll - new_top;
+        app.message_scroll_from_bottom = scroll_from_bottom.min(u16::MAX as u32) as u16;
+    }
     let top = max_scroll - scroll_from_bottom;
+    app.pane_anchor = layout.as_ref().and_then(|layout| {
+        let (message_id, offset) =
+            anchor_at(top, pre_rows, &layout.line_ranges, &layout.cum, &ids)?;
+        Some(crate::app::PaneAnchor {
+            channel: app.selected_channel_id.clone(),
+            message_id,
+            offset,
+            total_rows: total,
+        })
+    });
 
     // The same content in the same place, just scrolled: the terminal can
     // shift the rows itself and keep the pictures in them.
