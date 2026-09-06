@@ -11,7 +11,6 @@ pub const CHANGE_NICKNAME: u64 = 0x4000000;
 /// Kept in sync with the API
 #[allow(dead_code)]
 pub const READ_MESSAGE_HISTORY: u64 = 0x10000;
-pub const MENTION_EVERYONE: u64 = 0x20000;
 
 const OVERWRITE_ROLE: i32 = 0;
 const OVERWRITE_MEMBER: i32 = 1;

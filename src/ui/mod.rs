@@ -43,6 +43,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.media_slots.borrow_mut().clear();
     app.media_animation_seen.set(false);
     app.terminal_pictures.borrow_mut().clear();
+    app.pane_scroll_hint = None;
     app.pixel_placements.borrow_mut().clear();
     app.draw_serial.set(app.draw_serial.get().wrapping_add(1));
     let inner_w = area.width.saturating_sub(2).max(1);
@@ -112,6 +113,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Pictures under messages and avatars: the blocks of marker cells the
     // message pane laid out this frame.
     message_pane::overlay_media(frame, area, app);
+
+    // The terminal backend reconciles this frame against what the terminal
+    // shows. A scroll of the pane is only worth doing when nothing is drawn
+    // over it.
+    if !app.pixel_mode {
+        let popup = app.show_help
+            || app.show_settings
+            || app.show_server_notifications
+            || app.image_preview.is_some()
+            || app.channel_picker.is_some()
+            || app.emoji_autocomplete.is_some()
+            || app.mention_autocomplete.is_some()
+            || app.command_autocomplete.is_some();
+        let scroll = if popup {
+            None
+        } else {
+            app.pane_scroll_hint.take()
+        };
+        *app.terminal_frame.borrow_mut() = crate::console::backend::FrameInfo {
+            buffer: Some(frame.buffer_mut().clone()),
+            scroll,
+        };
+    }
 }
 
 fn sidebar_width(terminal_width: u16) -> u16 {

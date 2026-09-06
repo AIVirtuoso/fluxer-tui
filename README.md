@@ -109,10 +109,13 @@ memory_cache_mb = 64
 ```
 
 Both `[ui]` switches are also in the settings overlay (**F2**). A block
-cut by the pane's edge draws nothing until it has scrolled fully in, and
-while a held key scrolls, pictures are left out of the frames and put back
-once the scrolling settles: a terminal has to be sent every picture again
-each time it moves.
+cut by the pane's edge draws nothing until it has scrolled fully in.
+
+Scrolling is cheap on a terminal: when the pane merely scrolled, the
+terminal is asked to shift those rows itself (pictures move with them, as
+foot, kitty and xterm do), and only the rows that came into view are
+sent. Keys that arrive while a frame is drawn are handled together, so a
+held key scrolls as fast as the terminal keeps up.
 
 ## Interface overview
 

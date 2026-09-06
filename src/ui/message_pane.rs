@@ -975,6 +975,30 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
     let scroll_from_bottom = app.message_scroll_from_bottom.min(max_scroll);
     let top = total_display_rows.saturating_sub(pane_visible.saturating_add(scroll_from_bottom));
 
+    // The same content in the same place, just scrolled: the terminal can
+    // shift the rows itself and keep the pictures in them.
+    let view = crate::app::PaneView {
+        channel: app.selected_channel_id.clone(),
+        inner,
+        total_rows: total_display_rows,
+        top,
+    };
+    app.pane_scroll_hint = match &app.pane_last {
+        Some(last)
+            if last.channel == view.channel
+                && last.inner == view.inner
+                && last.total_rows == view.total_rows
+                && last.top != view.top =>
+        {
+            Some(crate::console::backend::RegionScroll {
+                area: inner,
+                rows: view.top as i32 - last.top as i32,
+            })
+        }
+        _ => None,
+    };
+    app.pane_last = Some(view);
+
     let paragraph = Paragraph::new(Text::from(lines))
         .block(block.clone())
         .wrap(Wrap { trim: false })
@@ -1012,9 +1036,7 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
                 let rect = Rect::new(x, y, w, 1);
                 match picture {
                     crate::app::Picture::Terminal(tp) => {
-                        if !app.terminal_pictures_paused() {
-                            place_terminal_picture(app, buf, rect, serial, frame_idx, tp);
-                        }
+                        place_terminal_picture(app, buf, rect, serial, frame_idx, tp);
                     }
                     crate::app::Picture::Pixels(img) => {
                         app.pixel_placements
@@ -1066,7 +1088,13 @@ fn place_terminal_picture(
             cell.set_skip(false);
             cell.set_style(style);
         }
-        pictures.insert((rect.x, y), data.clone());
+        pictures.insert(
+            (rect.x, y),
+            crate::console::backend::PicturePrint {
+                data: data.clone(),
+                area: rect,
+            },
+        );
     }
 }
 
@@ -1140,9 +1168,6 @@ pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
                 let rect = Rect::new(block.x, block.top, slot.cols, slot.rows);
                 match picture {
                     crate::app::Picture::Terminal(tp) => {
-                        if app.terminal_pictures_paused() {
-                            continue;
-                        }
                         place_terminal_picture(app, buf, rect, frames.serial, frame_idx, tp);
                     }
                     crate::app::Picture::Pixels(img) => {

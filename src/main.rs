@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
         &config.console,
         app.pixel_placements.clone(),
         app.terminal_pictures.clone(),
+        app.terminal_frame.clone(),
     ) {
         Ok(v) => v,
         Err(e) if console_mode => {
@@ -169,6 +170,7 @@ async fn main() -> Result<()> {
                 &config.console,
                 app.pixel_placements.clone(),
                 app.terminal_pictures.clone(),
+                app.terminal_frame.clone(),
             )?
         }
         Err(e) => return Err(e),
@@ -348,12 +350,7 @@ async fn main() -> Result<()> {
                     app.advance_image_preview_animation(Duration::from_millis(100));
                     needs_redraw = true;
                 }
-                if app.resume_pictures_if_due() {
-                    needs_redraw = true;
-                }
-                if !app.terminal_pictures_paused()
-                    && (app.custom_emoji_animation_visible() || app.media_animation_visible())
-                {
+                if app.custom_emoji_animation_visible() || app.media_animation_visible() {
                     needs_redraw = true;
                 }
                 let t_len_prev = app.typing_users.values().map(|m| m.len()).sum::<usize>();
@@ -1998,6 +1995,7 @@ fn init_terminal(
     console_cfg: &config::ConsoleSettings,
     placements: console::backend::SharedPlacements,
     pictures: console::backend::SharedPictures,
+    frame: console::backend::SharedFrame,
 ) -> Result<(
     Terminal<console::backend::AnyBackend>,
     Option<console::ConsoleSession>,
@@ -2008,7 +2006,7 @@ fn init_terminal(
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
             .context("failed to enter alternate screen")?;
         let backend = console::backend::AnyBackend::Crossterm(console::backend::TermBackend::new(
-            stdout, pictures,
+            stdout, pictures, frame,
         ));
         return Ok((
             Terminal::new(backend).context("failed to create terminal")?,
