@@ -602,7 +602,7 @@ pub fn apply_event(
             if !matches!(app.image_preview, Some(ImagePreviewState::Loading { .. })) {
                 return effects;
             }
-            if app.image_picker.is_some() {
+            if app.image_picker.is_some() || app.pixel_mode {
                 let title_clone = title.clone();
                 let bytes_clone = bytes.clone();
                 let event_tx_clone = event_tx.clone();
@@ -648,7 +648,18 @@ pub fn apply_event(
             if !matches!(app.image_preview, Some(ImagePreviewState::Loading { .. })) {
                 return effects;
             }
-            if let Some(ref picker) = app.image_picker {
+            if app.pixel_mode {
+                app.image_preview = Some(ImagePreviewState::ReadyPixels {
+                    title,
+                    frames: frames
+                        .iter()
+                        .map(|f| std::sync::Arc::new(f.to_rgba8()))
+                        .collect(),
+                    delays,
+                    frame_idx: 0,
+                    elapsed: std::time::Duration::ZERO,
+                });
+            } else if let Some(ref picker) = app.image_picker {
                 let current_protocol = picker.new_resize_protocol(frames[0].clone());
                 app.image_preview = Some(ImagePreviewState::ReadyAnimatedGif {
                     title,
@@ -664,7 +675,15 @@ pub fn apply_event(
             if !matches!(app.image_preview, Some(ImagePreviewState::Loading { .. })) {
                 return effects;
             }
-            if let Some(ref picker) = app.image_picker {
+            if app.pixel_mode {
+                app.image_preview = Some(ImagePreviewState::ReadyPixels {
+                    title,
+                    frames: vec![std::sync::Arc::new(image.to_rgba8())],
+                    delays: Vec::new(),
+                    frame_idx: 0,
+                    elapsed: std::time::Duration::ZERO,
+                });
+            } else if let Some(ref picker) = app.image_picker {
                 let protocol = picker.new_resize_protocol(image);
                 app.image_preview = Some(ImagePreviewState::ReadyBitmap { title, protocol });
             }

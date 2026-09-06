@@ -155,8 +155,15 @@ pub enum CustomEmojiState {
 /// One encoded picture per animation frame (a single frame for still
 /// emoji). Animated emoji all run on the app's shared clock, see
 /// [`App::custom_emoji_frame`].
+/// A picture of a custom emoji, encoded for a terminal protocol or kept as
+/// pixels for console mode.
+pub enum EmojiPicture {
+    Protocol(Protocol),
+    Pixels(std::sync::Arc<image::RgbaImage>),
+}
+
 pub struct CustomEmojiFrames {
-    pub frames: Vec<Protocol>,
+    pub frames: Vec<EmojiPicture>,
     pub delays: Vec<Duration>,
     pub total: Duration,
     /// Frame index drawn last, when it first appeared, and the draw (frame
@@ -173,7 +180,7 @@ pub struct CustomEmojiFrames {
 const CUSTOM_EMOJI_FORCE_ADVANCE_AFTER: Duration = Duration::from_millis(90);
 
 impl CustomEmojiFrames {
-    pub fn new(frames: Vec<Protocol>, delays: Vec<Duration>) -> Self {
+    pub fn new(frames: Vec<EmojiPicture>, delays: Vec<Duration>) -> Self {
         let total = delays.iter().sum();
         Self {
             frames,
@@ -230,7 +237,7 @@ impl CustomEmojiFrames {
         i
     }
 
-    pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &Protocol {
+    pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &EmojiPicture {
         let i = self
             .index_at(elapsed, Instant::now(), draw)
             .min(self.frames.len() - 1);
@@ -314,6 +321,14 @@ pub enum ImagePreviewState {
         lines: Vec<String>,
         scroll: usize,
     },
+    /// Console mode: the frames are blitted by our own renderer.
+    ReadyPixels {
+        title: String,
+        frames: Vec<std::sync::Arc<image::RgbaImage>>,
+        delays: Vec<Duration>,
+        frame_idx: usize,
+        elapsed: Duration,
+    },
     Failed {
         message: String,
     },
@@ -321,35 +336,14 @@ pub enum ImagePreviewState {
 
 impl std::fmt::Debug for ImagePreviewState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Loading { title } => f.debug_struct("Loading").field("title", title).finish(),
-            Self::ReadyBitmap { title, .. } => f
-                .debug_struct("ReadyBitmap")
-                .field("title", title)
-                .finish_non_exhaustive(),
-            Self::ReadyAnimatedGif {
-                title,
-                frames,
-                frame_idx,
-                ..
-            } => f
-                .debug_struct("ReadyAnimatedGif")
-                .field("title", title)
-                .field("frames", &frames.len())
-                .field("frame_idx", frame_idx)
-                .finish_non_exhaustive(),
-            Self::ReadyChafa {
-                title,
-                lines,
-                scroll,
-            } => f
-                .debug_struct("ReadyChafa")
-                .field("title", title)
-                .field("lines_len", &lines.len())
-                .field("scroll", scroll)
-                .finish(),
-            Self::Failed { message } => f.debug_struct("Failed").field("message", message).finish(),
-        }
+        f.write_str(match self {
+            ImagePreviewState::Loading { .. } => "Loading",
+            ImagePreviewState::ReadyBitmap { .. } => "ReadyBitmap",
+            ImagePreviewState::ReadyAnimatedGif { .. } => "ReadyAnimatedGif",
+            ImagePreviewState::ReadyChafa { .. } => "ReadyChafa",
+            ImagePreviewState::ReadyPixels { .. } => "ReadyPixels",
+            ImagePreviewState::Failed { .. } => "Failed",
+        })
     }
 }
 
@@ -411,6 +405,11 @@ pub struct App {
     pub chafa_viewport: (u16, u16),
     pub chafa_preview_cells: (u16, u16),
     pub image_picker: Option<Picker>,
+    /// Console mode: pictures are blitted by our own renderer instead of a
+    /// terminal graphics protocol.
+    pub pixel_mode: bool,
+    /// Console mode: where this frame's pictures go (shared with the backend).
+    pub pixel_placements: crate::console::backend::SharedPlacements,
     /// Custom (guild) emoji images by id, encoded for the terminal's protocol.
     pub custom_emojis: HashMap<String, CustomEmojiState>,
     /// Per frame: which emoji id each marker slot in the message pane refers to.
@@ -513,6 +512,8 @@ impl App {
             chafa_viewport: (80, 22),
             chafa_preview_cells: (100, 40),
             image_picker: None,
+            pixel_mode: false,
+            pixel_placements: std::rc::Rc::new(RefCell::new(Vec::new())),
             custom_emojis: HashMap::new(),
             custom_emoji_slots: RefCell::new(Vec::new()),
             custom_emoji_wanted: RefCell::new(Vec::new()),
@@ -1563,6 +1564,9 @@ impl App {
     /// Whether the terminal can draw pictures inline (sixel, kitty, iTerm2);
     /// half-block "pictures" two cells wide are not worth it.
     pub fn custom_emoji_inline_supported(&self) -> bool {
+        if self.pixel_mode {
+            return true;
+        }
         self.image_picker
             .as_ref()
             .map(|p| p.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks)
@@ -1586,7 +1590,7 @@ impl App {
     }
 
     /// The picture to draw for a custom emoji right now.
-    pub fn custom_emoji_frame(&self, id: &str) -> Option<&Protocol> {
+    pub fn custom_emoji_frame(&self, id: &str) -> Option<&EmojiPicture> {
         match self.custom_emojis.get(id)? {
             CustomEmojiState::Ready(frames) => Some(frames.frame_at(
                 self.custom_emoji_epoch.elapsed(),
@@ -1732,6 +1736,25 @@ impl App {
     /// an empty list when the fetch or decode failed).
     pub fn set_custom_emoji_frames(&mut self, id: String, frames: Vec<(DynamicImage, Duration)>) {
         let state = match self.image_picker.as_ref() {
+            _ if self.pixel_mode && !frames.is_empty() => {
+                let mut encoded = Vec::with_capacity(frames.len());
+                let mut delays = Vec::with_capacity(frames.len());
+                for (img, delay) in frames.into_iter().take(CUSTOM_EMOJI_MAX_FRAMES) {
+                    // keep them small: they are drawn one text row tall
+                    let img = if img.height() > 96 {
+                        img.resize(96 * 2, 96, image::imageops::FilterType::Triangle)
+                    } else {
+                        img
+                    };
+                    encoded.push(EmojiPicture::Pixels(std::sync::Arc::new(img.to_rgba8())));
+                    delays.push(delay.max(Duration::from_millis(20)));
+                }
+                if encoded.is_empty() {
+                    CustomEmojiState::Failed
+                } else {
+                    CustomEmojiState::Ready(CustomEmojiFrames::new(encoded, delays))
+                }
+            }
             Some(picker) if !frames.is_empty() => {
                 let mut encoded = Vec::with_capacity(frames.len());
                 let mut delays = Vec::with_capacity(frames.len());
@@ -1741,7 +1764,7 @@ impl App {
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
                     ) {
-                        encoded.push(p);
+                        encoded.push(EmojiPicture::Protocol(p));
                         delays.push(delay.max(Duration::from_millis(20)));
                     }
                 }
@@ -1825,6 +1848,23 @@ impl App {
         let Some(ref mut prev) = self.image_preview else {
             return;
         };
+        if let ImagePreviewState::ReadyPixels {
+            frames,
+            delays,
+            frame_idx,
+            elapsed,
+            ..
+        } = prev
+        {
+            if frames.len() > 1 && !delays.is_empty() {
+                *elapsed += dt;
+                while *elapsed >= delays[*frame_idx % delays.len()] {
+                    *elapsed -= delays[*frame_idx % delays.len()];
+                    *frame_idx = (*frame_idx + 1) % frames.len();
+                }
+            }
+            return;
+        }
         let ImagePreviewState::ReadyAnimatedGif {
             frames,
             delays,

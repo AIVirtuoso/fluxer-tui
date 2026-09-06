@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod auth;
 mod config;
+mod console;
 mod emoji;
 mod events;
 mod media;
@@ -36,7 +37,7 @@ use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use reqwest::StatusCode;
-use std::io::{self, Stdout};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -139,9 +140,52 @@ async fn main() -> Result<()> {
 
     schedule_needed_fetches(&mut app, authed_client.clone(), event_tx.clone());
 
-    let mut terminal = init_terminal()?;
-    let _guard = TerminalGuard;
-    app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+    let console_selection = console::select(config.console.mode, &config.console.drm_device);
+    let console_mode = console_selection != console::Selection::Terminal;
+    if console_mode {
+        // a crash must not leave the VT in graphics mode
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            console::vt::emergency_restore();
+            default_hook(info);
+        }));
+    }
+    // Console mode that cannot start (no DRM master, no fonts) falls back to
+    // the plain terminal so the client still works; the reason goes in the
+    // status bar since stderr is hidden behind the UI.
+    let mut console_fallback: Option<String> = None;
+    let (mut terminal, console_session) = match init_terminal(
+        &console_selection,
+        &config.console,
+        app.pixel_placements.clone(),
+    ) {
+        Ok(v) => v,
+        Err(e) if console_mode => {
+            console_fallback = Some(format!(
+                "Console mode unavailable, using the terminal: {e:#}"
+            ));
+            init_terminal(
+                &console::Selection::Terminal,
+                &config.console,
+                app.pixel_placements.clone(),
+            )?
+        }
+        Err(e) => return Err(e),
+    };
+    let console_mode = console_session.is_some();
+    if let Some(msg) = console_fallback {
+        app.set_status(msg);
+    }
+    let _guard = TerminalGuard {
+        console: console_mode,
+    };
+    if console_mode {
+        // our own renderer draws pictures; no terminal protocol involved
+        app.pixel_mode = true;
+        app.image_picker = None;
+    } else {
+        app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+    }
     let mut reader = EventStream::new();
     let mut tick = interval(Duration::from_millis(100));
     let mut needs_redraw = true;
@@ -224,7 +268,29 @@ async fn main() -> Result<()> {
                 ensure_lazy_guild_subscription(&mut app, &gateway_cmd_tx);
             }
             _ = tick.tick() => {
-                if matches!(app.image_preview, Some(ImagePreviewState::ReadyAnimatedGif { .. })) {
+                // VT switching in console mode: hand the display over and back
+                if let Some(session) = console_session.as_ref()
+                    && let Some(vt) = session.vt.as_ref()
+                {
+                    if console::vt::VtGuard::take_release_request()
+                        && let console::backend::AnyBackend::Console(b) = terminal.backend_mut()
+                    {
+                        let _ = b.suspend();
+                        vt.ack_release();
+                    }
+                    if console::vt::VtGuard::take_acquire_request()
+                        && let console::backend::AnyBackend::Console(b) = terminal.backend_mut()
+                    {
+                        vt.ack_acquire();
+                        let _ = b.resume();
+                        needs_redraw = true;
+                    }
+                }
+                if matches!(
+                    app.image_preview,
+                    Some(ImagePreviewState::ReadyAnimatedGif { .. })
+                        | Some(ImagePreviewState::ReadyPixels { .. })
+                ) {
                     app.advance_image_preview_animation(Duration::from_millis(100));
                     needs_redraw = true;
                 }
@@ -1794,13 +1860,35 @@ fn ack_channel_if_unread(app: &mut App, client: &FluxerHttpClient, channel_id: O
     }
 }
 
-fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn init_terminal(
+    selection: &console::Selection,
+    console_cfg: &config::ConsoleSettings,
+    placements: console::backend::SharedPlacements,
+) -> Result<(
+    Terminal<console::backend::AnyBackend>,
+    Option<console::ConsoleSession>,
+)> {
     enable_raw_mode().context("failed to enable raw mode")?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
-        .context("failed to enter alternate screen")?;
-    let backend = CrosstermBackend::new(stdout);
-    Terminal::new(backend).context("failed to create terminal")
+    if *selection == console::Selection::Terminal {
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
+            .context("failed to enter alternate screen")?;
+        let backend = console::backend::AnyBackend::Crossterm(CrosstermBackend::new(stdout));
+        return Ok((
+            Terminal::new(backend).context("failed to create terminal")?,
+            None,
+        ));
+    }
+    let (backend, session) = match console::build_backend(selection, console_cfg, placements) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = disable_raw_mode();
+            return Err(e);
+        }
+    };
+    let terminal = Terminal::new(console::backend::AnyBackend::Console(backend))
+        .context("failed to create console terminal")?;
+    Ok((terminal, Some(session)))
 }
 
 fn open_url_background(url: &str) {
@@ -1818,13 +1906,17 @@ fn open_url_background(url: &str) {
         .spawn();
 }
 
-struct TerminalGuard;
+struct TerminalGuard {
+    console: bool,
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let mut stdout = io::stdout();
-        let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+        if !self.console {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+        }
         let _ = terminal::disable_raw_mode();
     }
 }

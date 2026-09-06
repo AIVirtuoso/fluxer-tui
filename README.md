@@ -172,6 +172,36 @@ Plain letters (without **Ctrl**) are inserted into the message, except where aut
 - **Capital R** is refresh; **lowercase r** in message select mode is reply.
 - Message **select mode** is only active after **s** in the **Messages** focus.
 
+## Console mode (Linux VT, no terminal emulator)
+
+On a plain Linux virtual console there is no terminal emulator to draw
+pictures, so fluxer-tui paints its own screen through DRM/KMS: text with a
+real font, colour emoji, custom emoji, animated emoji, image previews and
+GIFs, all on the console. It switches on by itself when `TERM=linux` and
+stdin is a VT (a getty login on tty7, say), and needs:
+
+- access to the DRM device: membership of the `video` group, or an active
+  logind session on that VT (which grants it);
+- a text font and an emoji font, found through `fc-match monospace` and
+  `fc-match emoji` unless set explicitly.
+
+Keys come from the VT as usual. Switching VTs (Alt+Fn) hands the display
+over and back. Settings, all optional:
+
+```toml
+[console]
+mode = "auto"        # auto | always | never
+drm_device = ""      # default /dev/dri/card0
+font = ""            # path to a TTF/OTF; default: fc-match monospace
+bold_font = ""       # default: fc-match monospace:bold
+emoji_font = ""      # default: fc-match emoji (e.g. Noto Color Emoji)
+font_px = 28         # text size in pixels
+```
+
+`FLUXER_TUI_CONSOLE=never|always` overrides the mode for one run, and
+`FLUXER_TUI_CONSOLE=dump:/some/dir:1280x720` renders frames to PPM files
+instead of a display, which is how the console renderer is tested.
+
 ## Known issues & TODOs
 
 - **Markdown** parser is still hand-crafted with duct-tape and incomplete.

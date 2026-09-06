@@ -844,9 +844,21 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
             });
             if whole
                 && let Some(id) = slots.get(k)
-                && let Some(protocol) = app.custom_emoji_frame(id)
+                && let Some(picture) = app.custom_emoji_frame(id)
             {
-                Image::new(protocol).render(Rect::new(x, y, w, 1), buf);
+                match picture {
+                    crate::app::EmojiPicture::Protocol(protocol) => {
+                        Image::new(protocol).render(Rect::new(x, y, w, 1), buf);
+                    }
+                    crate::app::EmojiPicture::Pixels(img) => {
+                        app.pixel_placements
+                            .borrow_mut()
+                            .push(crate::console::raster::Placement {
+                                area: Rect::new(x, y, w, 1),
+                                image: img.clone(),
+                            });
+                    }
+                }
             }
             x += w;
         }

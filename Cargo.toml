@@ -33,6 +33,10 @@ urlencoding = "2"
 chrono = "0.4"
 tempfile = "3"
 ansi-to-tui = "7"
+# console mode: draw the whole UI ourselves through DRM on a Linux VT
+drm = "0.15"
+swash = "0.2"
+libc = "0.2"
 
 [lints.rust]
 non_snake_case = "allow"

@@ -198,6 +198,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 true,
             );
         }
+        ImagePreviewState::ReadyPixels {
+            title,
+            frames,
+            frame_idx,
+            ..
+        } => {
+            let animated = frames.len() > 1;
+            let block = Block::default()
+                .title(Line::from(Span::styled(
+                    format!(" {title}{} ", if animated { " (animated)" } else { "" }),
+                    accent,
+                )))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
+            let inner = block.inner(content);
+            frame.render_widget(block, content);
+            if let Some(img) = frames.get(*frame_idx % frames.len().max(1)) {
+                app.pixel_placements
+                    .borrow_mut()
+                    .push(crate::console::raster::Placement {
+                        area: inner,
+                        image: img.clone(),
+                    });
+            }
+            let hint = Paragraph::new(Line::from(Span::styled(
+                " Esc / q - close ",
+                crate::ui::theme::muted_style(),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(hint, footer_row);
+        }
         ImagePreviewState::ReadyChafa {
             title,
             lines,

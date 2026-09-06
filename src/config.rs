@@ -17,6 +17,46 @@ pub enum Theme {
     Fluxer,
 }
 
+/// When to paint the screen ourselves through DRM instead of using the
+/// terminal (see src/console).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsoleMode {
+    /// On a Linux virtual console (TERM=linux on a VT); a terminal otherwise.
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConsoleSettings {
+    pub mode: ConsoleMode,
+    /// DRM device; /dev/dri/card0 when empty.
+    pub drm_device: String,
+    /// Font files; fontconfig's "monospace", "monospace:bold" and "emoji"
+    /// matches when unset.
+    pub font: Option<String>,
+    pub bold_font: Option<String>,
+    pub emoji_font: Option<String>,
+    /// Text size in pixels (cell height follows the font's line height).
+    pub font_px: f32,
+}
+
+impl Default for ConsoleSettings {
+    fn default() -> Self {
+        Self {
+            mode: ConsoleMode::Auto,
+            drm_device: String::new(),
+            font: None,
+            bold_font: None,
+            emoji_font: None,
+            font_px: 28.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSettings {
@@ -57,6 +97,8 @@ pub struct AppConfig {
     pub last_channel_id: Option<String>,
     #[serde(default)]
     pub ui: UiSettings,
+    #[serde(default)]
+    pub console: ConsoleSettings,
 }
 
 impl Default for AppConfig {
@@ -67,6 +109,7 @@ impl Default for AppConfig {
             last_server_id: None,
             last_channel_id: None,
             ui: UiSettings::default(),
+            console: ConsoleSettings::default(),
         }
     }
 }
