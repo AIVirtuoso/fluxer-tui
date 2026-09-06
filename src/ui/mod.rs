@@ -39,6 +39,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     app.custom_emoji_slots.borrow_mut().clear();
+    app.custom_emoji_draw
+        .set(app.custom_emoji_draw.get().wrapping_add(1));
     let inner_w = area.width.saturating_sub(2).max(1);
     let input_lines = input_bar::input_display_row_count(app, inner_w);
     let input_block_h = input_lines.saturating_add(2).clamp(3, 40);

@@ -159,9 +159,12 @@ pub struct CustomEmojiFrames {
     pub frames: Vec<Protocol>,
     pub delays: Vec<Duration>,
     pub total: Duration,
-    /// Frame index drawn last, and when it first appeared.
+    /// Frame index drawn last, when it first appeared, and the draw (frame
+    /// of the UI) it was decided in: every instance of the emoji on screen
+    /// in one draw shows the same frame.
     shown: std::cell::Cell<usize>,
     shown_at: std::cell::Cell<Option<Instant>>,
+    decided_in_draw: std::cell::Cell<u64>,
 }
 
 /// A frame that the clock would repeat is advanced by hand once it has been
@@ -178,6 +181,7 @@ impl CustomEmojiFrames {
             total,
             shown: std::cell::Cell::new(0),
             shown_at: std::cell::Cell::new(None),
+            decided_in_draw: std::cell::Cell::new(0),
         }
     }
 
@@ -197,11 +201,17 @@ impl CustomEmojiFrames {
         self.delays.len() - 1
     }
 
-    /// The frame to draw at `elapsed`, drawn at instant `now`.
-    pub fn index_at(&self, elapsed: Duration, now: Instant) -> usize {
+    /// The frame to draw at `elapsed`, drawn at instant `now` in UI draw
+    /// number `draw`. Decided once per draw: a second instance of the same
+    /// emoji in the same draw gets the same frame.
+    pub fn index_at(&self, elapsed: Duration, now: Instant, draw: u64) -> usize {
         if !self.is_animated() {
             return 0;
         }
+        if self.shown_at.get().is_some() && self.decided_in_draw.get() == draw {
+            return self.shown.get();
+        }
+        self.decided_in_draw.set(draw);
         let n = self.delays.len();
         let mut i = self.timeline_index(elapsed);
         let shown = self.shown.get();
@@ -220,9 +230,9 @@ impl CustomEmojiFrames {
         i
     }
 
-    pub fn frame_at(&self, elapsed: Duration) -> &Protocol {
+    pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &Protocol {
         let i = self
-            .index_at(elapsed, Instant::now())
+            .index_at(elapsed, Instant::now(), draw)
             .min(self.frames.len() - 1);
         &self.frames[i]
     }
@@ -409,6 +419,8 @@ pub struct App {
     pub custom_emoji_wanted: RefCell<Vec<(String, bool)>>,
     /// Shared animation clock for custom emoji.
     pub custom_emoji_epoch: Instant,
+    /// Counts UI draws; animated emoji decide their frame once per draw.
+    pub custom_emoji_draw: std::cell::Cell<u64>,
     pub show_settings: bool,
     pub settings_cursor: usize,
     pub show_server_notifications: bool,
@@ -505,6 +517,7 @@ impl App {
             custom_emoji_slots: RefCell::new(Vec::new()),
             custom_emoji_wanted: RefCell::new(Vec::new()),
             custom_emoji_epoch: Instant::now(),
+            custom_emoji_draw: std::cell::Cell::new(0),
             show_settings: false,
             settings_cursor: 0,
             show_server_notifications: false,
@@ -1575,9 +1588,10 @@ impl App {
     /// The picture to draw for a custom emoji right now.
     pub fn custom_emoji_frame(&self, id: &str) -> Option<&Protocol> {
         match self.custom_emojis.get(id)? {
-            CustomEmojiState::Ready(frames) => {
-                Some(frames.frame_at(self.custom_emoji_epoch.elapsed()))
-            }
+            CustomEmojiState::Ready(frames) => Some(frames.frame_at(
+                self.custom_emoji_epoch.elapsed(),
+                self.custom_emoji_draw.get(),
+            )),
             _ => None,
         }
     }
@@ -3565,11 +3579,13 @@ mod custom_emoji_tests {
         let t0 = Instant::now();
         // time-based picks, each a fresh draw well after the previous one
         let mut now = t0;
+        let mut draw = 0u64;
         // (consecutive picks differ, so the progress rule never kicks in here)
         for (ms, want) in [(0u64, 0usize), (100, 1), (150, 2), (300, 0), (1000, 1)] {
             now += Duration::from_millis(200);
+            draw += 1;
             assert_eq!(
-                f.index_at(Duration::from_millis(ms), now),
+                f.index_at(Duration::from_millis(ms), now, draw),
                 want,
                 "at {ms} ms"
             );
@@ -3588,14 +3604,41 @@ mod custom_emoji_tests {
         let mut seen = Vec::new();
         for tick in 0..6u64 {
             let now = t0 + Duration::from_millis(100 * tick);
-            seen.push(f.index_at(Duration::from_millis(100 * tick), now));
+            seen.push(f.index_at(Duration::from_millis(100 * tick), now, tick + 1));
         }
         assert_eq!(seen, vec![0, 1, 0, 1, 0, 1]);
         // redraws inside the same tick (typing, cursor blink) do not advance
         let now = t0 + Duration::from_millis(520);
-        let a = f.index_at(Duration::from_millis(520), now);
-        let b = f.index_at(Duration::from_millis(525), now + Duration::from_millis(5));
+        let a = f.index_at(Duration::from_millis(520), now, 10);
+        let b = f.index_at(
+            Duration::from_millis(525),
+            now + Duration::from_millis(5),
+            11,
+        );
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn several_instances_in_one_draw_share_a_frame() {
+        let f = CustomEmojiFrames::new(
+            Vec::new(),
+            vec![Duration::from_millis(50), Duration::from_millis(50)],
+        );
+        let t0 = Instant::now();
+        let mut per_draw = Vec::new();
+        for draw in 1..=6u64 {
+            let now = t0 + Duration::from_millis(100 * draw);
+            let elapsed = Duration::from_millis(100 * draw);
+            // the same emoji drawn three times in this draw
+            let a = f.index_at(elapsed, now, draw);
+            let b = f.index_at(elapsed, now, draw);
+            let c = f.index_at(elapsed, now, draw);
+            assert_eq!(b, a);
+            assert_eq!(c, a);
+            per_draw.push(a);
+        }
+        // and it still moves from draw to draw
+        assert!(per_draw.windows(2).all(|w| w[0] != w[1]), "{per_draw:?}");
     }
 
     #[test]
