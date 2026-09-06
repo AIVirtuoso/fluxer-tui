@@ -46,6 +46,11 @@ impl ConsoleBackend {
         }
     }
 
+    /// Pixel size of one cell, for sizing pictures.
+    pub fn cell_size(&self) -> (u32, u32) {
+        (self.raster.cell_w, self.raster.cell_h)
+    }
+
     /// VT switch handling, called from the main loop.
     pub fn suspend(&mut self) -> io::Result<()> {
         self.out.suspend()

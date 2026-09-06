@@ -186,6 +186,26 @@ async fn main() -> Result<()> {
     } else {
         app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
     }
+    // Pictures in chat are prepared for exact cell sizes, so the pixel size
+    // of a cell has to be known; the caches are sized from the config.
+    app.cell_px = match terminal.backend() {
+        console::backend::AnyBackend::Console(b) => b.cell_size(),
+        _ => app
+            .image_picker
+            .as_ref()
+            .map(|p| {
+                let (w, h) = p.font_size();
+                (w as u32, h as u32)
+            })
+            .unwrap_or((8, 16)),
+    };
+    app.media = crate::media::MediaCache::new((config.media.memory_cache_mb.max(1) as usize) << 20);
+    app.disk_cache = dirs::cache_dir()
+        .map(|d| d.join("fluxer-tui").join("media"))
+        .and_then(|dir| {
+            crate::media::DiskCache::open(dir, (config.media.disk_cache_mb as u64) << 20)
+        })
+        .map(std::sync::Arc::new);
     let mut reader = EventStream::new();
     let mut tick = interval(Duration::from_millis(100));
     let mut needs_redraw = true;
@@ -198,6 +218,17 @@ async fn main() -> Result<()> {
             }
             for (id, url) in app.take_custom_emoji_wants() {
                 spawn_custom_emoji_fetch(authed_client.clone(), event_tx.clone(), id, url);
+            }
+            for slot in app.take_media_wants() {
+                spawn_media_fetch(
+                    authed_client.clone(),
+                    event_tx.clone(),
+                    slot,
+                    app.image_picker.clone(),
+                    app.pixel_mode,
+                    app.cell_px,
+                    app.disk_cache.clone(),
+                );
             }
             needs_redraw = false;
         }
@@ -294,7 +325,7 @@ async fn main() -> Result<()> {
                     app.advance_image_preview_animation(Duration::from_millis(100));
                     needs_redraw = true;
                 }
-                if app.custom_emoji_animation_visible() {
+                if app.custom_emoji_animation_visible() || app.media_animation_visible() {
                     needs_redraw = true;
                 }
                 let t_len_prev = app.typing_users.values().map(|m| m.len()).sum::<usize>();
@@ -1757,6 +1788,77 @@ fn spawn_custom_emoji_fetch(
             Err(_) => Vec::new(),
         };
         let _ = event_tx.send(AppEvent::CustomEmojiLoaded { id, frames });
+    });
+}
+
+/// Fetch and prepare the picture of one block of cells: from the disk
+/// cache, else the media proxy (which delivers it already scaled); decoded
+/// and encoded off the UI thread. Avatars without a picture are drawn
+/// locally and never touch the network.
+fn spawn_media_fetch(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    slot: crate::app::MediaSlot,
+    picker: Option<ratatui_image::picker::Picker>,
+    pixel_mode: bool,
+    cell_px: (u32, u32),
+    disk: Option<std::sync::Arc<crate::media::DiskCache>>,
+) {
+    tokio::spawn(async move {
+        let key = slot.key.clone();
+        let local = crate::media::parse_default_avatar_key(&slot.url).is_some();
+        let bytes: Option<Vec<u8>> = if local {
+            None
+        } else {
+            let url = slot.url.clone();
+            let cached = match disk.clone() {
+                Some(d) => {
+                    let u = url.clone();
+                    tokio::task::spawn_blocking(move || d.read(&u))
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                None => None,
+            };
+            match cached {
+                Some(b) => Some(b),
+                None => match client.fetch_media_bytes(&url).await {
+                    Ok(b) => {
+                        if let Some(d) = disk.clone() {
+                            let copy = b.clone();
+                            let _ = tokio::task::spawn_blocking(move || d.write(&url, &copy)).await;
+                        }
+                        Some(b)
+                    }
+                    Err(_) => {
+                        let _ = event_tx.send(AppEvent::MediaLoaded {
+                            key,
+                            frames: None,
+                            bytes: 0,
+                        });
+                        return;
+                    }
+                },
+            }
+        };
+        let prepared = tokio::task::spawn_blocking(move || {
+            crate::media::prepare_pictures(
+                bytes.as_deref(),
+                &slot,
+                picker.as_ref(),
+                pixel_mode,
+                cell_px,
+            )
+        })
+        .await
+        .ok()
+        .flatten();
+        let (frames, bytes) = match prepared {
+            Some((f, b)) => (Some(f), b),
+            None => (None, 0),
+        };
+        let _ = event_tx.send(AppEvent::MediaLoaded { key, frames, bytes });
     });
 }
 

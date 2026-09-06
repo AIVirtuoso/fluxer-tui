@@ -148,7 +148,7 @@ pub const CUSTOM_EMOJI_PLACEHOLDER: &str = "\u{2800}\u{2800}";
 /// A guild emoji as it is known to the message renderer.
 pub enum CustomEmojiState {
     Loading,
-    Ready(CustomEmojiFrames),
+    Ready(PictureFrames),
     Failed,
 }
 
@@ -157,13 +157,15 @@ pub enum CustomEmojiState {
 /// [`App::custom_emoji_frame`].
 /// A picture of a custom emoji, encoded for a terminal protocol or kept as
 /// pixels for console mode.
-pub enum EmojiPicture {
+#[derive(Clone)]
+pub enum Picture {
     Protocol(Protocol),
     Pixels(std::sync::Arc<image::RgbaImage>),
 }
 
-pub struct CustomEmojiFrames {
-    pub frames: Vec<EmojiPicture>,
+#[derive(Clone)]
+pub struct PictureFrames {
+    pub frames: Vec<Picture>,
     pub delays: Vec<Duration>,
     pub total: Duration,
     /// Frame index drawn last, when it first appeared, and the draw (frame
@@ -179,8 +181,8 @@ pub struct CustomEmojiFrames {
 /// tick still visibly move instead of freezing on one frame.
 const CUSTOM_EMOJI_FORCE_ADVANCE_AFTER: Duration = Duration::from_millis(90);
 
-impl CustomEmojiFrames {
-    pub fn new(frames: Vec<EmojiPicture>, delays: Vec<Duration>) -> Self {
+impl PictureFrames {
+    pub fn new(frames: Vec<Picture>, delays: Vec<Duration>) -> Self {
         let total = delays.iter().sum();
         Self {
             frames,
@@ -237,7 +239,7 @@ impl CustomEmojiFrames {
         i
     }
 
-    pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &EmojiPicture {
+    pub fn frame_at(&self, elapsed: Duration, draw: u64) -> &Picture {
         let i = self
             .index_at(elapsed, Instant::now(), draw)
             .min(self.frames.len() - 1);
@@ -247,6 +249,44 @@ impl CustomEmojiFrames {
 
 /// Animation frames kept per custom emoji; enough for the usual short loops.
 pub const CUSTOM_EMOJI_MAX_FRAMES: usize = 48;
+
+impl std::fmt::Debug for PictureFrames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PictureFrames({} frames)", self.frames.len())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    /// A preview under a message.
+    Picture,
+    /// A profile picture beside a message.
+    Avatar,
+}
+
+/// A block of cells showing a picture: what to fetch, at what size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaSlot {
+    /// Cache key: the URL and the block size, since pictures are prepared
+    /// for one exact size.
+    pub key: String,
+    pub url: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub kind: MediaKind,
+}
+
+impl MediaSlot {
+    pub fn new(url: String, cols: u16, rows: u16, kind: MediaKind) -> Self {
+        Self {
+            key: format!("{url}@{cols}x{rows}"),
+            url,
+            cols,
+            rows,
+            kind,
+        }
+    }
+}
 
 impl std::fmt::Debug for CustomEmojiState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -416,10 +456,22 @@ pub struct App {
     pub custom_emoji_slots: RefCell<Vec<String>>,
     /// Per frame: (id, animated) the renderer met but has no image for yet.
     pub custom_emoji_wanted: RefCell<Vec<(String, bool)>>,
+    /// Pictures under messages and avatars, ready to draw, within a byte budget.
+    pub media: crate::media::MediaCache,
+    /// Per frame: the block behind each media marker slot.
+    pub media_slots: RefCell<Vec<MediaSlot>>,
+    /// Per frame: blocks on screen with nothing loaded for them yet.
+    pub media_wanted: RefCell<Vec<MediaSlot>>,
+    /// Per frame: whether an animated block was drawn (so the next tick redraws).
+    pub media_animation_seen: std::cell::Cell<bool>,
+    /// Pixel size of one cell: the terminal's font size or the console glyph size.
+    pub cell_px: (u32, u32),
+    /// Downloaded pictures kept between runs.
+    pub disk_cache: Option<std::sync::Arc<crate::media::DiskCache>>,
     /// Shared animation clock for custom emoji.
-    pub custom_emoji_epoch: Instant,
+    pub animation_epoch: Instant,
     /// Counts UI draws; animated emoji decide their frame once per draw.
-    pub custom_emoji_draw: std::cell::Cell<u64>,
+    pub draw_serial: std::cell::Cell<u64>,
     pub show_settings: bool,
     pub settings_cursor: usize,
     pub show_server_notifications: bool,
@@ -517,8 +569,14 @@ impl App {
             custom_emojis: HashMap::new(),
             custom_emoji_slots: RefCell::new(Vec::new()),
             custom_emoji_wanted: RefCell::new(Vec::new()),
-            custom_emoji_epoch: Instant::now(),
-            custom_emoji_draw: std::cell::Cell::new(0),
+            media: crate::media::MediaCache::new(64 << 20),
+            media_slots: RefCell::new(Vec::new()),
+            media_wanted: RefCell::new(Vec::new()),
+            media_animation_seen: std::cell::Cell::new(false),
+            cell_px: (8, 16),
+            disk_cache: None,
+            animation_epoch: Instant::now(),
+            draw_serial: std::cell::Cell::new(0),
             show_settings: false,
             settings_cursor: 0,
             show_server_notifications: false,
@@ -530,7 +588,7 @@ impl App {
         app
     }
 
-    pub const UI_SETTINGS_LAST_ROW: usize = 3;
+    pub const UI_SETTINGS_LAST_ROW: usize = 5;
     pub const SERVER_NOTIFICATION_LAST_ROW: usize = 5;
     pub const HISTORY_AUTOLOAD_THRESHOLD_ROWS: u16 = 3;
     pub const TRANSIENT_STATUS_DURATION: Duration = Duration::from_millis(1800);
@@ -810,6 +868,12 @@ impl App {
                     Theme::Fluxer => Theme::Terminal,
                 };
                 crate::ui::theme::set_terminal_theme(self.ui_settings.theme == Theme::Terminal);
+            }
+            4 => {
+                self.ui_settings.inline_media = !self.ui_settings.inline_media;
+            }
+            5 => {
+                self.ui_settings.avatars = !self.ui_settings.avatars;
             }
             _ => {}
         }
@@ -1576,12 +1640,7 @@ impl App {
     /// The media-proxy URL of a custom emoji, as the web app builds it.
     /// Animated ones are asked for with their animation, as animated WebP.
     pub fn custom_emoji_url(&self, id: &str, animated: bool) -> String {
-        let media = self.discovery.endpoints.media.trim_end_matches('/');
-        let base = if media.is_empty() {
-            "https://fluxerusercontent.com"
-        } else {
-            media
-        };
+        let base = self.media_base_url();
         if animated {
             format!("{base}/emojis/{id}.webp?size=128&animated=true")
         } else {
@@ -1590,12 +1649,11 @@ impl App {
     }
 
     /// The picture to draw for a custom emoji right now.
-    pub fn custom_emoji_frame(&self, id: &str) -> Option<&EmojiPicture> {
+    pub fn custom_emoji_frame(&self, id: &str) -> Option<&Picture> {
         match self.custom_emojis.get(id)? {
-            CustomEmojiState::Ready(frames) => Some(frames.frame_at(
-                self.custom_emoji_epoch.elapsed(),
-                self.custom_emoji_draw.get(),
-            )),
+            CustomEmojiState::Ready(frames) => {
+                Some(frames.frame_at(self.animation_epoch.elapsed(), self.draw_serial.get()))
+            }
             _ => None,
         }
     }
@@ -1746,13 +1804,13 @@ impl App {
                     } else {
                         img
                     };
-                    encoded.push(EmojiPicture::Pixels(std::sync::Arc::new(img.to_rgba8())));
+                    encoded.push(Picture::Pixels(std::sync::Arc::new(img.to_rgba8())));
                     delays.push(delay.max(Duration::from_millis(20)));
                 }
                 if encoded.is_empty() {
                     CustomEmojiState::Failed
                 } else {
-                    CustomEmojiState::Ready(CustomEmojiFrames::new(encoded, delays))
+                    CustomEmojiState::Ready(PictureFrames::new(encoded, delays))
                 }
             }
             Some(picker) if !frames.is_empty() => {
@@ -1764,19 +1822,100 @@ impl App {
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
                     ) {
-                        encoded.push(EmojiPicture::Protocol(p));
+                        encoded.push(Picture::Protocol(p));
                         delays.push(delay.max(Duration::from_millis(20)));
                     }
                 }
                 if encoded.is_empty() {
                     CustomEmojiState::Failed
                 } else {
-                    CustomEmojiState::Ready(CustomEmojiFrames::new(encoded, delays))
+                    CustomEmojiState::Ready(PictureFrames::new(encoded, delays))
                 }
             }
             _ => CustomEmojiState::Failed,
         };
         self.custom_emojis.insert(id, state);
+    }
+
+    /// The media proxy the web app uses, from discovery.
+    pub fn media_base_url(&self) -> String {
+        let media = self.discovery.endpoints.media.trim_end_matches('/');
+        if media.is_empty() {
+            "https://fluxerusercontent.com".to_string()
+        } else {
+            media.to_string()
+        }
+    }
+
+    /// Previews under messages: wanted, and drawable on this terminal.
+    pub fn inline_media_enabled(&self) -> bool {
+        self.ui_settings.inline_media && self.custom_emoji_inline_supported()
+    }
+
+    /// Profile pictures beside messages: wanted, and drawable here.
+    pub fn avatars_enabled(&self) -> bool {
+        self.ui_settings.avatars && self.custom_emoji_inline_supported()
+    }
+
+    /// Claim a marker slot for a block of cells this draw.
+    pub fn register_media_slot(&self, slot: MediaSlot) -> usize {
+        let mut slots = self.media_slots.borrow_mut();
+        slots.push(slot);
+        slots.len() - 1
+    }
+
+    /// The avatar block of a message author: their guild avatar, their own
+    /// avatar, or a disc in their colour drawn locally.
+    pub fn avatar_slot(
+        &self,
+        guild_id: Option<&str>,
+        user: &UserPartialResponse,
+        member_avatar: Option<&str>,
+    ) -> MediaSlot {
+        let base = self.media_base_url();
+        let url = match (guild_id, member_avatar, user.avatar.as_deref()) {
+            (Some(_), Some(hash), _) if !hash.is_empty() => {
+                crate::media::avatar_url(&base, guild_id, &user.id, hash)
+            }
+            (_, _, Some(hash)) if !hash.is_empty() => {
+                crate::media::avatar_url(&base, None, &user.id, hash)
+            }
+            _ => crate::media::default_avatar_key(crate::media::default_avatar_color(user)),
+        };
+        MediaSlot::new(
+            url,
+            crate::media::AVATAR_COLS,
+            crate::media::AVATAR_ROWS,
+            MediaKind::Avatar,
+        )
+    }
+
+    /// Blocks on screen with nothing loaded yet, marked loading here so
+    /// each is fetched once; a few at a time, the rest on a later draw.
+    pub fn take_media_wants(&mut self) -> Vec<MediaSlot> {
+        let wanted = std::mem::take(&mut *self.media_wanted.borrow_mut());
+        let mut out: Vec<MediaSlot> = Vec::new();
+        for slot in wanted {
+            if out.iter().any(|s| s.key == slot.key) {
+                continue;
+            }
+            if self.media.start(&slot.key) {
+                out.push(slot);
+            }
+        }
+        out
+    }
+
+    /// Store what a media download produced (None: it failed).
+    pub fn set_media_frames(&mut self, key: String, frames: Option<PictureFrames>, bytes: usize) {
+        self.media
+            .finish(key, frames, bytes, self.draw_serial.get());
+    }
+
+    /// Whether the last draw showed an animated picture, so the next tick
+    /// should redraw to advance it.
+    pub fn media_animation_visible(&self) -> bool {
+        self.media_animation_seen.get()
     }
 
     /// Short label for the input title: "2 files: a.png, b.jpg".
@@ -3205,6 +3344,7 @@ pub fn me_as_partial(me: &UserPrivateResponse) -> UserPartialResponse {
         discriminator: me.discriminator.clone(),
         global_name: me.global_name.clone(),
         avatar: me.avatar.clone(),
+        avatar_color: me.avatar_color,
         bot: me.bot,
         system: me.system,
     }
@@ -3572,6 +3712,26 @@ pub fn custom_emoji_marker_slot(style: Style) -> Option<usize> {
     }
 }
 
+/// Media block cells carry their row within the block in the red channel
+/// (0xD0 + row, so 16 rows at most) and the slot in green and blue.
+pub fn media_marker_style(slot: usize, row: u16) -> Style {
+    let k = slot.min(u16::MAX as usize) as u16;
+    Style::default().underline_color(Color::Rgb(
+        0xD0 | (row.min(15) as u8),
+        (k >> 8) as u8,
+        k as u8,
+    ))
+}
+
+pub fn media_marker(style: Style) -> Option<(usize, u16)> {
+    match style.underline_color {
+        Some(Color::Rgb(r, hi, lo)) if r & 0xF0 == 0xD0 => {
+            Some((((hi as usize) << 8) | lo as usize, (r & 0x0F) as u16))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod custom_emoji_tests {
     use super::*;
@@ -3592,6 +3752,16 @@ mod custom_emoji_tests {
     }
 
     #[test]
+    fn media_marker_round_trips_slot_and_row() {
+        for (k, r) in [(0usize, 0u16), (1, 1), (300, 11), (65535, 15)] {
+            assert_eq!(media_marker(media_marker_style(k, r)), Some((k, r)));
+        }
+        assert_eq!(media_marker(Style::default()), None);
+        assert_eq!(media_marker(custom_emoji_marker_style(3)), None);
+        assert_eq!(custom_emoji_marker_slot(media_marker_style(3, 0)), None);
+    }
+
+    #[test]
     fn custom_emoji_tokens_parse() {
         let t = parse_custom_emoji_token("<:blob:123> tail").unwrap();
         assert_eq!(
@@ -3608,7 +3778,7 @@ mod custom_emoji_tests {
 
     #[test]
     fn animation_timeline_loops() {
-        let f = CustomEmojiFrames::new(
+        let f = PictureFrames::new(
             Vec::new(),
             vec![
                 Duration::from_millis(100),
@@ -3636,7 +3806,7 @@ mod custom_emoji_tests {
     fn fast_loops_still_advance() {
         // two 50 ms frames: a 100 ms loop that a 100 ms tick would always
         // sample at the same frame
-        let f = CustomEmojiFrames::new(
+        let f = PictureFrames::new(
             Vec::new(),
             vec![Duration::from_millis(50), Duration::from_millis(50)],
         );
@@ -3660,7 +3830,7 @@ mod custom_emoji_tests {
 
     #[test]
     fn several_instances_in_one_draw_share_a_frame() {
-        let f = CustomEmojiFrames::new(
+        let f = PictureFrames::new(
             Vec::new(),
             vec![Duration::from_millis(50), Duration::from_millis(50)],
         );

@@ -12,6 +12,7 @@ pub mod message_pane;
 pub mod server_notifications_overlay;
 pub mod settings_overlay;
 pub mod sidebar;
+pub(crate) mod span_wrap;
 pub mod status_bar;
 pub mod theme;
 
@@ -39,9 +40,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     app.custom_emoji_slots.borrow_mut().clear();
+    app.media_slots.borrow_mut().clear();
+    app.media_animation_seen.set(false);
     app.pixel_placements.borrow_mut().clear();
-    app.custom_emoji_draw
-        .set(app.custom_emoji_draw.get().wrapping_add(1));
+    app.draw_serial.set(app.draw_serial.get().wrapping_add(1));
     let inner_w = area.width.saturating_sub(2).max(1);
     let input_lines = input_bar::input_display_row_count(app, inner_w);
     let input_block_h = input_lines.saturating_add(2).clamp(3, 40);
@@ -106,6 +108,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Custom emoji pictures go on top of whatever placed their marker cells
     // this frame: message pane, compose box, emoji popup.
     message_pane::overlay_custom_emojis(frame, area, app);
+    // Pictures under messages and avatars: the blocks of marker cells the
+    // message pane laid out this frame.
+    message_pane::overlay_media(frame, area, app);
 }
 
 fn sidebar_width(terminal_width: u16) -> u16 {

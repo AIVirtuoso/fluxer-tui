@@ -122,6 +122,13 @@ pub enum AppEvent {
         id: String,
         frames: Vec<(DynamicImage, Duration)>,
     },
+    /// A picture for a block of cells is ready (None: it could not be
+    /// fetched or decoded); `bytes` is what it holds in memory.
+    MediaLoaded {
+        key: String,
+        frames: Option<crate::app::PictureFrames>,
+        bytes: usize,
+    },
     /// An upload failed before the message was posted: give the text and
     /// the staged files back to the compose box.
     SendRestore {
@@ -145,6 +152,9 @@ pub fn apply_event(
     match event {
         AppEvent::CustomEmojiLoaded { id, frames } => {
             app.set_custom_emoji_frames(id, frames);
+        }
+        AppEvent::MediaLoaded { key, frames, bytes } => {
+            app.set_media_frames(key, frames, bytes);
         }
         AppEvent::AttachmentStaged { attachment } => {
             if app.pending_attachments.len() >= crate::app::MAX_ATTACHMENTS_PER_MESSAGE {

@@ -57,7 +57,40 @@ Or you can CTRL + L (see below)
 
 Default path (unless you pass `--config`): **`…/fluxer-tui/config.toml`** under the OS config directory (on Linux this is usually **`~/.config/fluxer-tui/config.toml`**).
 
-It stores `api_base_url`, `token`, `last_server_id`, and `last_channel_id` so the client can restore your last place.
+It stores `api_base_url`, `token`, `last_server_id`, and `last_channel_id` so the client can restore your last place, plus the `[ui]`, `[media]` and `[console]` settings described below.
+
+## Pictures in chat
+
+On a terminal that can draw pictures (sixel, kitty, iTerm2) and on the
+console, the message pane looks like the web app:
+
+- **Profile pictures** sit to the left of each message, two rows tall; a
+  user without one gets a disc in their colour, drawn locally.
+- **Pictures, GIFs and video posters** are shown under the message as
+  previews: scaled to fit about a third of the pane, never larger than the
+  original. GIFs from the picker (KLIPY, Tenor) and animated WebP play; in
+  performance mode they stay on their first frame. **Ctrl+O** on a selected
+  message still opens the full-size picture or GIF, and videos externally.
+
+Previews are asked from Fluxer's media proxy already scaled to the size
+they are drawn at, so a 4000-pixel photo costs a few kilobytes. Only the
+pictures on screen are fetched (a few at a time); what is decoded stays in
+memory within a budget and the least recently drawn go first; the
+downloaded bytes are kept on disk under `~/.cache/fluxer-tui/media` within
+a size cap, the oldest files evicted first. Nothing else is written.
+
+```toml
+[ui]
+inline_media = true   # pictures and GIFs under messages
+avatars = true        # profile pictures beside messages
+
+[media]
+disk_cache_mb = 64    # 0 turns the disk cache off
+memory_cache_mb = 64
+```
+
+Both `[ui]` switches are also in the settings overlay (**F2**). A block
+cut by the pane's edge draws nothing until it has scrolled fully in.
 
 ## Interface overview
 

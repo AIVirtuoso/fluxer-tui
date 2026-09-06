@@ -67,6 +67,12 @@ pub struct UiSettings {
     #[serde(default = "default_true")]
     pub show_typing_indicators: bool,
     pub performance_mode: bool,
+    /// Pictures and GIFs shown under messages (Ctrl+O still opens them full size).
+    #[serde(default = "default_true")]
+    pub inline_media: bool,
+    /// Profile pictures beside messages.
+    #[serde(default = "default_true")]
+    pub avatars: bool,
 }
 
 const fn default_true() -> bool {
@@ -81,6 +87,27 @@ impl Default for UiSettings {
             legacy_image_display: None,
             show_typing_indicators: true,
             performance_mode: false,
+            inline_media: true,
+            avatars: true,
+        }
+    }
+}
+
+/// Caches for pictures shown in chat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaSettings {
+    /// Downloaded pictures kept on disk (MiB, 0 disables the disk cache).
+    pub disk_cache_mb: u32,
+    /// Decoded pictures kept in memory (MiB).
+    pub memory_cache_mb: u32,
+}
+
+impl Default for MediaSettings {
+    fn default() -> Self {
+        Self {
+            disk_cache_mb: 64,
+            memory_cache_mb: 64,
         }
     }
 }
@@ -99,6 +126,8 @@ pub struct AppConfig {
     pub ui: UiSettings,
     #[serde(default)]
     pub console: ConsoleSettings,
+    #[serde(default)]
+    pub media: MediaSettings,
 }
 
 impl Default for AppConfig {
@@ -110,6 +139,7 @@ impl Default for AppConfig {
             last_channel_id: None,
             ui: UiSettings::default(),
             console: ConsoleSettings::default(),
+            media: MediaSettings::default(),
         }
     }
 }

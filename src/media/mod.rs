@@ -1,12 +1,24 @@
 mod attachments;
+mod cache;
 mod chafa;
+mod disk_cache;
 mod gif_anim;
+mod inline;
 mod open_external;
+mod prepare;
 
 pub use attachments::{StagedAttachment, from_clipboard, from_path};
+pub use cache::{Lookup, MediaCache};
 pub use chafa::chafa_from_bytes;
+pub use disk_cache::DiskCache;
 pub use gif_anim::{decode_animation, decode_preview_animation};
+pub use inline::{
+    AVATAR_COLS, AVATAR_ROWS, InlinePicture, MAX_PICTURES_PER_MESSAGE, attachment_picture,
+    avatar_url, block_px, default_avatar_color, default_avatar_key, embed_picture,
+    parse_default_avatar_key, picture_cells, preview_limits, proxied_url,
+};
 pub use open_external::{open_file_path, write_temp_video_bytes};
+pub use prepare::prepare_pictures;
 
 use crate::api::types::{
     EmbedMediaResponse, MessageAttachmentResponse, MessageEmbedResponse, MessageResponse,

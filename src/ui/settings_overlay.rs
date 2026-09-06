@@ -78,6 +78,28 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         ("On", "Fast typing, skips some UI features")
     };
+    let inline_on = app.ui_settings.inline_media;
+    let inline_primary = if inline_on {
+        ("On", "Pictures and GIFs shown under messages")
+    } else {
+        ("Off", "Only file names; Ctrl+O opens them")
+    };
+    let inline_alt = if inline_on {
+        ("Off", "Only file names; Ctrl+O opens them")
+    } else {
+        ("On", "Pictures and GIFs shown under messages")
+    };
+    let avatars_on = app.ui_settings.avatars;
+    let avatars_primary = if avatars_on {
+        ("On", "Profile pictures beside messages")
+    } else {
+        ("Off", "No profile pictures")
+    };
+    let avatars_alt = if avatars_on {
+        ("Off", "No profile pictures")
+    } else {
+        ("On", "Profile pictures beside messages")
+    };
     let terminal_theme = app.ui_settings.theme == crate::config::Theme::Terminal;
     let theme_primary = if terminal_theme {
         ("Terminal", "Use the terminal's own colours")
@@ -211,6 +233,58 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("    ", text),
         Span::styled(format!("{}  ·  {}", theme_alt.0, theme_alt.1), muted),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled("  Pictures in chat", dim)]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", text),
+        Span::styled(
+            if app.settings_cursor == 4 {
+                "▸ "
+            } else {
+                "  "
+            },
+            if app.settings_cursor == 4 {
+                accent
+            } else {
+                muted
+            },
+        ),
+        Span::styled(
+            format!("{}  ·  {}", inline_primary.0, inline_primary.1),
+            panel.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    ", text),
+        Span::styled(format!("{}  ·  {}", inline_alt.0, inline_alt.1), muted),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled("  Profile pictures", dim)]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", text),
+        Span::styled(
+            if app.settings_cursor == 5 {
+                "▸ "
+            } else {
+                "  "
+            },
+            if app.settings_cursor == 5 {
+                accent
+            } else {
+                muted
+            },
+        ),
+        Span::styled(
+            format!("{}  ·  {}", avatars_primary.0, avatars_primary.1),
+            panel.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    ", text),
+        Span::styled(format!("{}  ·  {}", avatars_alt.0, avatars_alt.1), muted),
     ]));
     let block = Block::default()
         .title(Line::from(Span::styled(" Settings ", accent)))

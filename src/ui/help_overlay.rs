@@ -40,7 +40,8 @@ Messages
   e - react: opens emoji picker on selected message (Enter to send reaction, Esc cancels)
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)
   Ctrl+D - delete selected (yours, or mod with Manage Messages)
-  Ctrl+O - images / animated GIFs in-terminal; videos open via the system default app
+  Ctrl+O - the selected message's picture or GIF full size in-terminal (the chat shows
+           previews); videos open via the system default app
 
 Input
   Enter - send; save edit; send forward with reference
@@ -60,7 +61,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
   Ctrl+N / Ctrl+P - next / previous text channel (wraps)
   Ctrl+K - channel picker
   Ctrl+E / Ctrl+D - edit / delete selected message (messages focus + selection)
-  Ctrl+O - image preview when a message is selected (see Messages)
+  Ctrl+O - full-size picture when a message is selected (see Messages)
 
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)

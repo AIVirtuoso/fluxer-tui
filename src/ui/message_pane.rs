@@ -4,12 +4,14 @@ use crate::api::types::{
 };
 use crate::app::{App, Focus, display_name};
 use crate::ui::message_markdown;
+use crate::ui::span_wrap;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 use ratatui_image::Image;
+use std::collections::HashMap;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn clip_url_for_display(url: &str, max_chars: usize) -> String {
@@ -154,11 +156,6 @@ fn sel_prefix_span(is_selected: bool) -> Span<'static> {
     }
 }
 
-fn sel_prefix_cols(is_selected: bool) -> usize {
-    let s = if is_selected { "\u{25B6} " } else { "  " };
-    UnicodeWidthStr::width(s)
-}
-
 fn truncate_to_display_width(s: &str, max_w: usize) -> String {
     if max_w == 0 {
         return String::new();
@@ -178,52 +175,6 @@ fn truncate_to_display_width(s: &str, max_w: usize) -> String {
         w += cw;
     }
     out
-}
-
-fn reply_context_line(
-    is_selected_msg: bool,
-    header_style: Style,
-    text_w: u16,
-    lead: &'static str,
-    body: &str,
-    body_style: Style,
-) -> Line<'static> {
-    let tw = text_w.max(1) as usize;
-    let prefix_cols = sel_prefix_cols(is_selected_msg);
-    let lead_w = UnicodeWidthStr::width(lead);
-    let budget = tw.saturating_sub(prefix_cols).saturating_sub(lead_w).max(1);
-    let truncated = truncate_to_display_width(body, budget);
-    Line::from(vec![
-        sel_prefix_span(is_selected_msg),
-        Span::styled(lead, crate::ui::theme::muted_style()),
-        Span::styled(truncated, body_style),
-    ])
-    .style(header_style)
-}
-
-fn push_reply_message_header(
-    is_selected_msg: bool,
-    header_style: Style,
-    message: &crate::api::types::MessageResponse,
-    author: &str,
-    name_color: ratatui::style::Color,
-    lines: &mut Vec<Line<'static>>,
-    clock_12h: bool,
-) {
-    let timestamp = format_timestamp(&message.timestamp, clock_12h);
-    let mut header_spans = vec![sel_prefix_span(is_selected_msg)];
-    header_spans.push(Span::styled(
-        format!("[{timestamp}] "),
-        crate::ui::theme::dim_style(),
-    ));
-    if message_was_edited(message) {
-        header_spans.push(edited_span());
-    }
-    header_spans.push(Span::styled(
-        author.to_string(),
-        Style::default().fg(name_color).add_modifier(Modifier::BOLD),
-    ));
-    lines.push(Line::from(header_spans).style(header_style));
 }
 
 fn referenced_body_preview(ref_msg: &crate::api::types::MessageResponse) -> String {
@@ -329,15 +280,236 @@ fn push_fluxer_client_system_message(
     );
 }
 
+/// Rows of one message before its left margin is added.
+struct BlockRow {
+    spans: Vec<Span<'static>>,
+    style: Style,
+    kind: RowKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    /// The reply context above the header.
+    Context,
+    Header,
+    Body,
+    /// Marker cells of a picture: never wrapped.
+    Picture,
+}
+
+/// The left margin of a message's rows: the selection mark, then, with
+/// avatars on, the avatar's four columns and a space, like the web app.
+struct Margin {
+    avatars: bool,
+}
+
+impl Margin {
+    fn width(&self, kind: RowKind) -> usize {
+        if self.avatars {
+            7
+        } else if matches!(kind, RowKind::Context | RowKind::Header) {
+            2
+        } else {
+            0
+        }
+    }
+}
+
+const AVATAR_PLACEHOLDER: &str = "\u{2800}\u{2800}\u{2800}\u{2800}";
+
+/// Lay out one message: wrap its rows to the text width minus the margin,
+/// then put the margin in front of every row, the avatar's two rows on the
+/// header row and the one after it.
+fn finish_block(
+    rows: Vec<BlockRow>,
+    text_w: u16,
+    margin: &Margin,
+    is_selected: bool,
+    avatar_slot: Option<usize>,
+) -> Vec<Line<'static>> {
+    let mut out: Vec<(Vec<Span<'static>>, Style, RowKind)> = Vec::new();
+    for row in rows {
+        let width = (text_w as usize)
+            .saturating_sub(margin.width(row.kind))
+            .max(1);
+        if row.kind == RowKind::Picture {
+            out.push((row.spans, row.style, row.kind));
+            continue;
+        }
+        for spans in span_wrap::wrap_spans(&row.spans, width) {
+            out.push((spans, row.style, row.kind));
+        }
+    }
+    if out.is_empty() {
+        out.push((Vec::new(), Style::default(), RowKind::Body));
+    }
+    let header_at = out.iter().position(|(_, _, k)| *k == RowKind::Header);
+    if let (Some(_), Some(h)) = (avatar_slot, header_at)
+        && h + 1 >= out.len()
+    {
+        // the avatar's second row needs a row under the header
+        out.push((Vec::new(), Style::default(), RowKind::Body));
+    }
+    let muted = crate::ui::theme::muted_style();
+    let mut lines = Vec::with_capacity(out.len());
+    for (i, (spans, style, kind)) in out.into_iter().enumerate() {
+        let mut line: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 3);
+        if margin.avatars {
+            line.push(if i == 0 {
+                sel_prefix_span(is_selected)
+            } else {
+                Span::raw("  ")
+            });
+            let avatar_row = match (avatar_slot, header_at) {
+                (Some(k), Some(h)) if i == h => Some((k, 0)),
+                (Some(k), Some(h)) if i == h + 1 => Some((k, 1)),
+                _ => None,
+            };
+            match avatar_row {
+                Some((k, r)) => line.push(Span::styled(
+                    AVATAR_PLACEHOLDER,
+                    crate::app::media_marker_style(k, r),
+                )),
+                None if kind == RowKind::Context && avatar_slot.is_some() => {
+                    line.push(Span::styled(" \u{256D}\u{2500} ", muted));
+                }
+                None => line.push(Span::raw("    ")),
+            }
+            line.push(Span::raw(" "));
+        } else if matches!(kind, RowKind::Context | RowKind::Header) {
+            line.push(if i == 0 {
+                sel_prefix_span(is_selected)
+            } else {
+                Span::raw("  ")
+            });
+        }
+        line.extend(spans);
+        lines.push(Line::from(line).style(style));
+    }
+    lines
+}
+
+fn context_row(
+    width: usize,
+    lead: &'static str,
+    body: &str,
+    body_style: Style,
+    style: Style,
+) -> BlockRow {
+    let budget = width.saturating_sub(UnicodeWidthStr::width(lead)).max(1);
+    BlockRow {
+        spans: vec![
+            Span::styled(lead, crate::ui::theme::muted_style()),
+            Span::styled(truncate_to_display_width(body, budget), body_style),
+        ],
+        style,
+        kind: RowKind::Context,
+    }
+}
+
+fn header_row(
+    message: &crate::api::types::MessageResponse,
+    author: &str,
+    name_color: ratatui::style::Color,
+    style: Style,
+    clock_12h: bool,
+) -> BlockRow {
+    let timestamp = format_timestamp(&message.timestamp, clock_12h);
+    let mut spans = vec![Span::styled(
+        format!("[{timestamp}] "),
+        crate::ui::theme::dim_style(),
+    )];
+    if message_was_edited(message) {
+        spans.push(edited_span());
+    }
+    spans.push(Span::styled(
+        author.to_string(),
+        Style::default().fg(name_color).add_modifier(Modifier::BOLD),
+    ));
+    BlockRow {
+        spans,
+        style,
+        kind: RowKind::Header,
+    }
+}
+
+fn body_row(spans: Vec<Span<'static>>) -> BlockRow {
+    BlockRow {
+        spans,
+        style: Style::default(),
+        kind: RowKind::Body,
+    }
+}
+
+fn markdown_rows(rows: &mut Vec<BlockRow>, text: &str, app: &App, lead: Option<Span<'static>>) {
+    for row in message_markdown::content_lines(text, app) {
+        let mut spans = Vec::with_capacity(row.len() + 1);
+        if let Some(lead) = &lead {
+            spans.push(lead.clone());
+        }
+        if row.is_empty() {
+            spans.push(Span::raw(" "));
+        } else {
+            spans.extend(row);
+        }
+        rows.push(body_row(spans));
+    }
+}
+
+/// The marker rows of one preview; the block is registered for this draw
+/// and fetched when it comes on screen.
+fn push_picture_rows(
+    app: &App,
+    rows: &mut Vec<BlockRow>,
+    pic: &crate::media::InlinePicture,
+    max: (u16, u16),
+    left: &mut usize,
+) {
+    if *left == 0 {
+        return;
+    }
+    let (cols, prows) = crate::media::picture_cells((pic.width, pic.height), app.cell_px, max);
+    let url = crate::media::proxied_url(pic, crate::media::block_px(cols, prows, app.cell_px));
+    let slot = app.register_media_slot(crate::app::MediaSlot::new(
+        url,
+        cols,
+        prows,
+        crate::app::MediaKind::Picture,
+    ));
+    for r in 0..prows {
+        rows.push(BlockRow {
+            spans: vec![Span::styled(
+                "\u{2800}".repeat(cols as usize),
+                crate::app::media_marker_style(slot, r),
+            )],
+            style: Style::default(),
+            kind: RowKind::Picture,
+        });
+    }
+    *left -= 1;
+}
+
 fn build_message_lines(
     app: &App,
     messages: &[crate::api::types::MessageResponse],
     text_w: u16,
+    pane_rows: u16,
 ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut line_ranges = vec![(0usize, 0usize); messages.len()];
     let mut prev_author_id: Option<&str> = None;
     let mut prev_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
+    let margin = Margin {
+        avatars: app.avatars_enabled(),
+    };
+    let inline = app.inline_media_enabled();
+    let body_w = (text_w as usize)
+        .saturating_sub(margin.width(RowKind::Body))
+        .max(1) as u16;
+    let ctx_w = (text_w as usize)
+        .saturating_sub(margin.width(RowKind::Context))
+        .max(1);
+    let picture_max = crate::media::preview_limits(body_w, pane_rows, app.cell_px);
 
     for (idx, message) in messages.iter().enumerate() {
         let is_selected_msg = app.selected_message_index == Some(idx);
@@ -387,30 +559,27 @@ fn build_message_lines(
         }
 
         let block_start = lines.len();
-
-        let tw = text_w.max(1);
+        let mut rows: Vec<BlockRow> = Vec::new();
+        let clock_12h = app.ui_settings.clock_12h;
 
         if let Some(ref_msg) = message.referenced_message.as_deref() {
             let ref_author = app.shown_name_for_user(gid.as_deref(), &ref_msg.author);
             let preview = referenced_body_preview(ref_msg);
             let ctx_body = format!("@{ref_author} - {preview}");
-            lines.push(reply_context_line(
-                is_selected_msg,
-                header_style,
-                tw,
+            rows.push(context_row(
+                ctx_w,
                 "\u{21AA} ",
                 &ctx_body,
                 crate::ui::theme::dim_style(),
-            ));
-            push_reply_message_header(
-                is_selected_msg,
                 header_style,
+            ));
+            rows.push(header_row(
                 message,
                 &author,
                 name_color,
-                &mut lines,
-                app.ui_settings.clock_12h,
-            );
+                header_style,
+                clock_12h,
+            ));
         } else if let Some(mref) = &message.message_reference {
             let (ctx_body, body_style) = if mref.reference_type == 1 {
                 (
@@ -423,65 +592,54 @@ fn build_message_lines(
                     crate::ui::theme::dim_style(),
                 )
             };
-            lines.push(reply_context_line(
-                is_selected_msg,
-                header_style,
-                tw,
+            rows.push(context_row(
+                ctx_w,
                 "\u{21AA} ",
                 ctx_body,
                 body_style,
-            ));
-            push_reply_message_header(
-                is_selected_msg,
                 header_style,
+            ));
+            rows.push(header_row(
                 message,
                 &author,
                 name_color,
-                &mut lines,
-                app.ui_settings.clock_12h,
-            );
+                header_style,
+                clock_12h,
+            ));
         } else if within_group && !is_selected_msg {
-            // grouped
+            // grouped under the previous message: no header
         } else if within_group && is_selected_msg {
-            let timestamp = format_timestamp(&message.timestamp, app.ui_settings.clock_12h);
-            let mut hdr = vec![
-                sel_prefix_span(is_selected_msg),
-                Span::styled(format!("[{timestamp}] "), crate::ui::theme::dim_style()),
-            ];
+            let timestamp = format_timestamp(&message.timestamp, clock_12h);
+            let mut hdr = vec![Span::styled(
+                format!("[{timestamp}] "),
+                crate::ui::theme::dim_style(),
+            )];
             if message_was_edited(message) {
                 hdr.push(edited_span());
             }
-            lines.push(Line::from(hdr).style(header_style));
+            rows.push(BlockRow {
+                spans: hdr,
+                style: header_style,
+                kind: RowKind::Header,
+            });
         } else {
-            let timestamp = format_timestamp(&message.timestamp, app.ui_settings.clock_12h);
-            let mut header_spans = vec![sel_prefix_span(is_selected_msg)];
-            header_spans.push(Span::styled(
-                format!("[{timestamp}] "),
-                crate::ui::theme::dim_style(),
+            rows.push(header_row(
+                message,
+                &author,
+                name_color,
+                header_style,
+                clock_12h,
             ));
-            if message_was_edited(message) {
-                header_spans.push(edited_span());
-            }
-            header_spans.push(Span::styled(
-                author.clone(),
-                Style::default().fg(name_color).add_modifier(Modifier::BOLD),
-            ));
-            lines.push(Line::from(header_spans).style(header_style));
         }
 
         if !message.content.trim().is_empty() {
-            for m_line in message_markdown::content_lines(&message.content, app) {
-                if m_line.is_empty() {
-                    lines.push(Line::from(" "));
-                } else {
-                    lines.push(Line::from(m_line));
-                }
-            }
+            markdown_rows(&mut rows, &message.content, app, None);
         }
 
         prev_author_id = Some(&message.author.id);
         prev_timestamp = cur_ts;
 
+        let mut pictures_left = crate::media::MAX_PICTURES_PER_MESSAGE;
         for attachment in &message.attachments {
             let size_str = match attachment.size {
                 Some(s) if s < 1024 => format!("{} B", s),
@@ -490,7 +648,7 @@ fn build_message_lines(
                 None => "unknown".to_string(),
             };
             let mime = attachment.content_type.as_deref().unwrap_or("unknown");
-            lines.push(Line::from(vec![
+            rows.push(body_row(vec![
                 Span::styled(
                     "\u{1F4CE} ",
                     Style::default().fg(crate::ui::theme::accent_dim()),
@@ -506,6 +664,9 @@ fn build_message_lines(
                     crate::ui::theme::dim_style(),
                 ),
             ]));
+            if inline && let Some(pic) = crate::media::attachment_picture(attachment) {
+                push_picture_rows(app, &mut rows, &pic, picture_max, &mut pictures_left);
+            }
         }
 
         for embed in &message.embeds {
@@ -523,11 +684,12 @@ fn build_message_lines(
                     )
                 })
                 .unwrap_or(crate::ui::theme::accent_dim());
+            let bar = Span::styled("\u{2502} ", Style::default().fg(bar_color));
 
             if !has_content {
                 let (label, is_gif) = embed_display_label(embed);
                 if !label.is_empty() {
-                    let mut spans = vec![Span::styled("\u{2502} ", Style::default().fg(bar_color))];
+                    let mut spans = vec![bar.clone()];
                     if is_gif {
                         spans.push(Span::styled(
                             "[GIF] ",
@@ -542,70 +704,55 @@ fn build_message_lines(
                             .fg(crate::ui::theme::link_color())
                             .add_modifier(Modifier::UNDERLINED),
                     ));
-                    lines.push(Line::from(spans));
+                    rows.push(body_row(spans));
                 }
-                continue;
-            }
-
-            if let Some(author) = &embed.author {
-                lines.push(Line::from(vec![
-                    Span::styled("\u{2502} ", Style::default().fg(bar_color)),
-                    Span::styled(author.name.clone(), crate::ui::theme::dim_style()),
-                ]));
-            }
-            if let Some(title) = &embed.title {
-                let mut title_spans =
-                    vec![Span::styled("\u{2502} ", Style::default().fg(bar_color))];
-                let base = if embed.url.is_some() {
-                    Style::default()
-                        .fg(crate::ui::theme::link_color())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                        .fg(crate::ui::theme::text())
-                        .add_modifier(Modifier::BOLD)
-                };
-                for s in message_markdown::parse_message_spans(title, app) {
-                    title_spans.push(Span::styled(s.content.to_string(), base.patch(s.style)));
+            } else {
+                if let Some(author) = &embed.author {
+                    rows.push(body_row(vec![
+                        bar.clone(),
+                        Span::styled(author.name.clone(), crate::ui::theme::dim_style()),
+                    ]));
                 }
-                lines.push(Line::from(title_spans));
-            }
-            if let Some(desc) = &embed.description {
-                for row in message_markdown::content_lines(desc, app) {
-                    let mut r = vec![Span::styled("\u{2502} ", Style::default().fg(bar_color))];
-                    if row.is_empty() {
-                        r.push(Span::raw(" "));
+                if let Some(title) = &embed.title {
+                    let mut title_spans = vec![bar.clone()];
+                    let base = if embed.url.is_some() {
+                        Style::default()
+                            .fg(crate::ui::theme::link_color())
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        r.extend(row);
-                    }
-                    lines.push(Line::from(r));
-                }
-            }
-            for field in &embed.fields {
-                lines.push(Line::from(vec![
-                    Span::styled("\u{2502} ", Style::default().fg(bar_color)),
-                    Span::styled(
-                        field.name.clone(),
                         Style::default()
                             .fg(crate::ui::theme::text())
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-                for row in message_markdown::content_lines(&field.value, app) {
-                    let mut r = vec![Span::styled("\u{2502} ", Style::default().fg(bar_color))];
-                    if row.is_empty() {
-                        r.push(Span::raw(" "));
-                    } else {
-                        r.extend(row);
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    for s in message_markdown::parse_message_spans(title, app) {
+                        title_spans.push(Span::styled(s.content.to_string(), base.patch(s.style)));
                     }
-                    lines.push(Line::from(r));
+                    rows.push(body_row(title_spans));
+                }
+                if let Some(desc) = &embed.description {
+                    markdown_rows(&mut rows, desc, app, Some(bar.clone()));
+                }
+                for field in &embed.fields {
+                    rows.push(body_row(vec![
+                        bar.clone(),
+                        Span::styled(
+                            field.name.clone(),
+                            Style::default()
+                                .fg(crate::ui::theme::text())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                    markdown_rows(&mut rows, &field.value, app, Some(bar.clone()));
+                }
+                if let Some(footer) = &embed.footer {
+                    rows.push(body_row(vec![
+                        bar.clone(),
+                        Span::styled(footer.text.clone(), crate::ui::theme::muted_style()),
+                    ]));
                 }
             }
-            if let Some(footer) = &embed.footer {
-                lines.push(Line::from(vec![
-                    Span::styled("\u{2502} ", Style::default().fg(bar_color)),
-                    Span::styled(footer.text.clone(), crate::ui::theme::muted_style()),
-                ]));
+            if inline && let Some(pic) = crate::media::embed_picture(embed) {
+                push_picture_rows(app, &mut rows, &pic, picture_max, &mut pictures_left);
             }
         }
 
@@ -645,8 +792,25 @@ fn build_message_lines(
                 }
                 reaction_spans.push(Span::raw(" "));
             }
-            lines.push(Line::from(reaction_spans));
+            rows.push(body_row(reaction_spans));
         }
+
+        let avatar_slot = if margin.avatars && !within_group {
+            Some(app.register_media_slot(app.avatar_slot(
+                gid.as_deref(),
+                &message.author,
+                message.member.as_ref().and_then(|m| m.avatar.as_deref()),
+            )))
+        } else {
+            None
+        };
+        lines.extend(finish_block(
+            rows,
+            text_w,
+            &margin,
+            is_selected_msg,
+            avatar_slot,
+        ));
 
         line_ranges[idx] = (block_start, lines.len());
     }
@@ -690,7 +854,7 @@ pub fn scroll_for_selected_message(
         .map(|ch| channel_welcome_lines(app, &ch))
         .unwrap_or_default();
 
-    let (body, line_ranges) = build_message_lines(app, &messages, text_w);
+    let (body, line_ranges) = build_message_lines(app, &messages, text_w, pane_visible);
 
     let welcome_body_gap: usize = if welcome.is_empty() { 0 } else { 1 };
     let gap_lines: Vec<Line<'static>> = (0..welcome_body_gap).map(|_| Line::from("")).collect();
@@ -781,7 +945,7 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
     } else if messages.is_empty() {
         Vec::new()
     } else {
-        build_message_lines(app, &messages, text_w).0
+        build_message_lines(app, &messages, text_w, pane_visible).0
     };
 
     let welcome_body_gap: usize = if welcome.is_empty() { 0 } else { 1 };
@@ -847,10 +1011,10 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
                 && let Some(picture) = app.custom_emoji_frame(id)
             {
                 match picture {
-                    crate::app::EmojiPicture::Protocol(protocol) => {
+                    crate::app::Picture::Protocol(protocol) => {
                         Image::new(protocol).render(Rect::new(x, y, w, 1), buf);
                     }
-                    crate::app::EmojiPicture::Pixels(img) => {
+                    crate::app::Picture::Pixels(img) => {
                         app.pixel_placements
                             .borrow_mut()
                             .push(crate::console::raster::Placement {
@@ -861,6 +1025,98 @@ pub fn overlay_custom_emojis(frame: &mut Frame, inner: Rect, app: &App) {
                 }
             }
             x += w;
+        }
+    }
+}
+
+/// Draw the pictures whose marker blocks the message pane laid out this
+/// draw, where the whole block is on screen (a block cut by the pane's edge
+/// draws nothing until it scrolls fully in), and ask for the ones that are
+/// not loaded yet. Scanning the buffer means wrapping and scrolling are
+/// already accounted for.
+pub fn overlay_media(frame: &mut Frame, area: Rect, app: &App) {
+    let slots = app.media_slots.borrow();
+    if slots.is_empty() {
+        return;
+    }
+    struct Seen {
+        x: u16,
+        top: u16,
+        rows: u32,
+        consistent: bool,
+    }
+    let draw = app.draw_serial.get();
+    let buf = frame.buffer_mut();
+    let mut seen: HashMap<usize, Seen> = HashMap::new();
+    for y in area.y..area.y.saturating_add(area.height) {
+        let right = area.x.saturating_add(area.width);
+        let mut x = area.x;
+        while x < right {
+            let Some((k, r)) = crate::app::media_marker(buf[(x, y)].style()) else {
+                x += 1;
+                continue;
+            };
+            let mut run: u16 = 1;
+            while x.saturating_add(run) < right
+                && crate::app::media_marker(buf[(x + run, y)].style()) == Some((k, r))
+            {
+                run += 1;
+            }
+            if let Some(slot) = slots.get(k)
+                && run == slot.cols
+                && y >= r
+            {
+                let top = y - r;
+                let entry = seen.entry(k).or_insert(Seen {
+                    x,
+                    top,
+                    rows: 0,
+                    consistent: true,
+                });
+                if entry.x != x || entry.top != top {
+                    entry.consistent = false;
+                }
+                entry.rows |= 1 << r.min(31);
+            }
+            x = x.saturating_add(run);
+        }
+    }
+    let mut wanted = app.media_wanted.borrow_mut();
+    for (k, block) in seen {
+        let slot = &slots[k];
+        let whole = block.consistent && block.rows == (1u32 << slot.rows.min(31)) - 1;
+        match app.media.lookup(&slot.key, draw) {
+            crate::media::Lookup::Ready(frames) => {
+                if !whole {
+                    continue;
+                }
+                let picture = if app.ui_settings.performance_mode || !frames.is_animated() {
+                    &frames.frames[0]
+                } else {
+                    app.media_animation_seen.set(true);
+                    frames.frame_at(app.animation_epoch.elapsed(), draw)
+                };
+                let rect = Rect::new(block.x, block.top, slot.cols, slot.rows);
+                match picture {
+                    crate::app::Picture::Protocol(protocol) => {
+                        Image::new(protocol).render(rect, buf);
+                    }
+                    crate::app::Picture::Pixels(img) => {
+                        app.pixel_placements
+                            .borrow_mut()
+                            .push(crate::console::raster::Placement {
+                                area: rect,
+                                image: img.clone(),
+                            });
+                    }
+                }
+            }
+            crate::media::Lookup::Missing => {
+                if !wanted.iter().any(|w| w.key == slot.key) {
+                    wanted.push(slot.clone());
+                }
+            }
+            crate::media::Lookup::Pending => {}
         }
     }
 }

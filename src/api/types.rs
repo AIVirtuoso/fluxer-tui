@@ -229,6 +229,9 @@ pub struct UserPrivateResponse {
     pub global_name: Option<String>,
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Colour of the default avatar (0xRRGGBB) when there is no picture.
+    #[serde(default)]
+    pub avatar_color: Option<u32>,
     #[serde(default)]
     pub bot: bool,
     #[serde(default)]
@@ -251,6 +254,9 @@ pub struct UserPartialResponse {
     pub global_name: Option<String>,
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Colour of the default avatar (0xRRGGBB) when there is no picture.
+    #[serde(default)]
+    pub avatar_color: Option<u32>,
     #[serde(default)]
     pub bot: bool,
     #[serde(default)]
@@ -279,6 +285,9 @@ pub struct GuildMemberResponse {
     pub user: UserPartialResponse,
     #[serde(default)]
     pub nick: Option<String>,
+    /// Guild-specific avatar hash, shown instead of the user's own.
+    #[serde(default)]
+    pub avatar: Option<String>,
     #[serde(default, deserialize_with = "deserialize_vec_member_roles")]
     pub roles: Vec<String>,
     #[serde(default)]
@@ -360,6 +369,11 @@ pub struct MessageAttachmentResponse {
     pub content_type: Option<String>,
     #[serde(default)]
     pub size: Option<u64>,
+    /// Pixel size of pictures and videos, known before anything is downloaded.
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -368,6 +382,19 @@ pub struct EmbedMediaResponse {
     pub url: Option<String>,
     #[serde(default)]
     pub proxy_url: Option<String>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Bit 5 (32): the picture is animated.
+    #[serde(default)]
+    pub flags: Option<u32>,
+}
+
+impl EmbedMediaResponse {
+    pub fn is_animated(&self) -> bool {
+        self.flags.unwrap_or(0) & 32 != 0
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

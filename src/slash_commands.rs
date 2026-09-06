@@ -243,6 +243,7 @@ pub fn fluxerbot_author() -> UserPartialResponse {
         discriminator: "0000".to_string(),
         global_name: None,
         avatar: None,
+        avatar_color: None,
         bot: true,
         system: true,
     }
