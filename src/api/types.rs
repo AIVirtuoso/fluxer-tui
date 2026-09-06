@@ -245,7 +245,7 @@ pub struct UserPrivateResponse {
     pub email: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct UserPartialResponse {
     #[serde(default)]
     pub id: String,
@@ -282,7 +282,7 @@ pub struct GuildResponse {
     pub default_message_notifications: i32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct GuildMemberResponse {
     #[serde(default)]
     pub user: UserPartialResponse,
@@ -358,7 +358,7 @@ impl ChannelResponse {
         }
     }
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct MessageAttachmentResponse {
     #[serde(default)]
     pub id: String,
@@ -379,7 +379,7 @@ pub struct MessageAttachmentResponse {
     pub height: Option<u32>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct EmbedMediaResponse {
     #[serde(default)]
     pub url: Option<String>,
@@ -422,7 +422,7 @@ pub struct GuildRoleResponse {
     pub position: i32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct ReactionEmojiResponse {
     #[serde(default)]
     pub id: Option<String>,
@@ -432,7 +432,7 @@ pub struct ReactionEmojiResponse {
     pub animated: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct MessageReactionResponse {
     #[serde(default)]
     pub emoji: ReactionEmojiResponse,
@@ -442,7 +442,7 @@ pub struct MessageReactionResponse {
     pub me: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct MessageReferenceResponse {
     #[serde(default)]
     pub channel_id: String,
@@ -537,7 +537,7 @@ pub struct UserGuildSettingsPatch {
     pub hide_muted_channels: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct MessageResponse {
     #[serde(default)]
     pub id: String,
@@ -579,7 +579,7 @@ pub struct MessageResponse {
     pub member: Option<GuildMemberResponse>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct MessageEmbedResponse {
     #[serde(default, rename = "type")]
     pub embed_type: String,
@@ -610,7 +610,7 @@ pub struct MessageEmbedResponse {
     pub video: Option<EmbedMediaResponse>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct EmbedAuthorResponse {
     #[serde(default)]
     pub name: String,
@@ -618,13 +618,13 @@ pub struct EmbedAuthorResponse {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct EmbedFooterResponse {
     #[serde(default)]
     pub text: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
 pub struct EmbedFieldResponse {
     #[serde(default)]
     pub name: String,

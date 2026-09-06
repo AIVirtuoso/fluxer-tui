@@ -526,6 +526,13 @@ pub struct App {
     /// Per frame: the rendered cells and the pane's scroll, for the
     /// terminal backend to reconcile against what the terminal shows.
     pub terminal_frame: crate::console::backend::SharedFrame,
+    /// The message pane's lines as last built, reused while nothing that
+    /// shows in them changed.
+    pub pane_layout: RefCell<Option<std::rc::Rc<crate::ui::message_pane::PaneLayout>>>,
+    /// Bumped when names, nicknames, roles or members change.
+    pub roster_version: u64,
+    /// Bumped when a custom emoji's picture arrives or fails.
+    pub custom_emoji_version: u64,
     /// The message pane as last drawn, to tell a plain scroll from a change.
     pub pane_last: Option<PaneView>,
     /// Set by the message pane when it merely scrolled since the last draw.
@@ -639,6 +646,9 @@ impl App {
             disk_cache: None,
             terminal_pictures: std::rc::Rc::new(RefCell::new(HashMap::new())),
             terminal_frame: std::rc::Rc::new(RefCell::new(Default::default())),
+            pane_layout: RefCell::new(None),
+            roster_version: 0,
+            custom_emoji_version: 0,
             pane_last: None,
             pane_scroll_hint: None,
             animation_epoch: Instant::now(),
@@ -1139,6 +1149,7 @@ impl App {
         guild_id: &str,
         roles: Vec<crate::api::types::GuildRoleResponse>,
     ) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         self.guild_roles.insert(guild_id.to_string(), roles);
         self.loading_roles.remove(guild_id);
         self.api_backoff_clear(&format!("roles:{guild_id}"));
@@ -1149,6 +1160,7 @@ impl App {
         guild_id: &str,
         incoming: Vec<crate::api::types::GuildRoleResponse>,
     ) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         if incoming.is_empty() {
             return;
         }
@@ -1167,6 +1179,7 @@ impl App {
     }
 
     pub fn remove_guild_role(&mut self, guild_id: &str, role_id: &str) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         let Some(roles) = self.guild_roles.get_mut(guild_id) else {
             return;
         };
@@ -1862,6 +1875,7 @@ impl App {
     /// Store the decoded frames of a custom emoji (one for a still image,
     /// an empty list when the fetch or decode failed).
     pub fn set_custom_emoji_frames(&mut self, id: String, frames: Vec<(DynamicImage, Duration)>) {
+        self.custom_emoji_version = self.custom_emoji_version.wrapping_add(1);
         let state = match self.image_picker.as_ref() {
             _ if self.pixel_mode && !frames.is_empty() => {
                 let mut encoded = Vec::with_capacity(frames.len());
@@ -2273,6 +2287,7 @@ impl App {
     }
 
     pub fn remove_guild(&mut self, guild_id: &str) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         self.guilds.retain(|guild| guild.id != guild_id);
         self.guild_channels.remove(guild_id);
         self.guild_members.remove(guild_id);
@@ -2286,6 +2301,7 @@ impl App {
     }
 
     pub fn set_private_channels(&mut self, channels: Vec<ChannelResponse>) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         merge_user_cache(
             &mut self.user_cache,
             channels
@@ -2316,6 +2332,7 @@ impl App {
     }
 
     pub fn set_guild_channels(&mut self, guild_id: &str, channels: Vec<ChannelResponse>) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         merge_user_cache(
             &mut self.user_cache,
             channels
@@ -2359,6 +2376,7 @@ impl App {
     }
 
     pub fn set_guild_members(&mut self, guild_id: &str, members: Vec<GuildMemberResponse>) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         merge_user_cache(
             &mut self.user_cache,
             members.iter().map(|member| member.user.clone()),
@@ -3334,6 +3352,7 @@ impl App {
     }
 
     pub fn merge_guild_member(&mut self, guild_id: &str, mut member: GuildMemberResponse) {
+        self.roster_version = self.roster_version.wrapping_add(1);
         merge_user_cache(&mut self.user_cache, [member.user.clone()]);
         let members = self.guild_members.entry(guild_id.to_string()).or_default();
         if let Some(existing) = members.iter().find(|m| m.user.id == member.user.id) {

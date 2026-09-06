@@ -828,6 +828,243 @@ fn paragraph_line_heights(lines: &[Line<'static>], text_w: u16) -> Vec<u16> {
         .collect()
 }
 
+/// Everything that decides what the message pane's lines look like. While
+/// it stays the same from one draw to the next, the lines are reused.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LayoutKey {
+    channel: Option<String>,
+    text_w: u16,
+    pane_rows: u16,
+    selected: Option<usize>,
+    /// Hash of the messages: content, edits, reactions, embeds, members.
+    messages: u64,
+    clock_12h: bool,
+    avatars: bool,
+    inline: bool,
+    theme: crate::config::Theme,
+    cell_px: (u32, u32),
+    roster: u64,
+    emoji: u64,
+}
+
+/// The message pane's lines as built for one [`LayoutKey`], with what the
+/// build registered on the side: the media and emoji slots its marker
+/// cells refer to, and the emoji it wanted fetched.
+pub struct PaneLayout {
+    key: LayoutKey,
+    pub lines: Vec<Line<'static>>,
+    /// Rows before each line, and after the last: `cum[i]` is where line `i`
+    /// starts, `cum[lines.len()]` the body's height.
+    pub cum: Vec<u32>,
+    pub line_ranges: Vec<(usize, usize)>,
+    media_slots: Vec<crate::app::MediaSlot>,
+    emoji_slots: Vec<String>,
+    emoji_wants: Vec<(String, bool)>,
+}
+
+impl std::fmt::Debug for PaneLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PaneLayout({} lines)", self.lines.len())
+    }
+}
+
+/// The pane's lines for these messages, built now or reused from the last
+/// draw. Building takes tens of milliseconds for a few hundred messages,
+/// which would cap scrolling; a plain scroll changes nothing in the key.
+pub fn pane_layout(
+    app: &App,
+    messages: &[crate::api::types::MessageResponse],
+    text_w: u16,
+    pane_rows: u16,
+) -> std::rc::Rc<PaneLayout> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    messages.hash(&mut hasher);
+    let key = LayoutKey {
+        channel: app.selected_channel_id.clone(),
+        text_w,
+        pane_rows,
+        selected: app.selected_message_index,
+        messages: hasher.finish(),
+        clock_12h: app.ui_settings.clock_12h,
+        avatars: app.avatars_enabled(),
+        inline: app.inline_media_enabled(),
+        theme: app.ui_settings.theme,
+        cell_px: app.cell_px,
+        roster: app.roster_version,
+        emoji: app.custom_emoji_version,
+    };
+    if let Some(layout) = app.pane_layout.borrow().as_ref()
+        && layout.key == key
+    {
+        // the marker cells in the lines count on these slot tables
+        *app.media_slots.borrow_mut() = layout.media_slots.clone();
+        *app.custom_emoji_slots.borrow_mut() = layout.emoji_slots.clone();
+        let mut wanted = app.custom_emoji_wanted.borrow_mut();
+        for want in &layout.emoji_wants {
+            if !wanted.iter().any(|w| w.0 == want.0) {
+                wanted.push(want.clone());
+            }
+        }
+        return layout.clone();
+    }
+    app.media_slots.borrow_mut().clear();
+    app.custom_emoji_slots.borrow_mut().clear();
+    let (lines, line_ranges) = build_message_lines(app, messages, text_w, pane_rows);
+    let heights = paragraph_line_heights(&lines, text_w);
+    let mut cum = Vec::with_capacity(lines.len() + 1);
+    cum.push(0u32);
+    for h in heights {
+        cum.push(cum.last().copied().unwrap_or(0) + h as u32);
+    }
+    let layout = std::rc::Rc::new(PaneLayout {
+        key,
+        lines,
+        cum,
+        line_ranges,
+        media_slots: app.media_slots.borrow().clone(),
+        emoji_slots: app.custom_emoji_slots.borrow().clone(),
+        emoji_wants: app.custom_emoji_wanted.borrow().clone(),
+    });
+    *app.pane_layout.borrow_mut() = Some(layout.clone());
+    layout
+}
+
+/// The rows of the pane from top to bottom: blank filler when the content
+/// is shorter than the pane, the channel welcome, a gap, then the body.
+struct RowModel<'a> {
+    filler: u32,
+    welcome: &'a [Line<'static>],
+    welcome_heights: &'a [u16],
+    gap: u32,
+    body: &'a [Line<'static>],
+    body_cum: &'a [u32],
+}
+
+impl RowModel<'_> {
+    fn welcome_rows(&self) -> u32 {
+        self.welcome_heights.iter().map(|&h| h as u32).sum()
+    }
+
+    /// Rows before the body.
+    fn pre_rows(&self) -> u32 {
+        self.filler + self.welcome_rows() + self.gap
+    }
+
+    fn body_rows(&self) -> u32 {
+        self.body_cum.last().copied().unwrap_or(0)
+    }
+
+    fn total(&self) -> u32 {
+        self.pre_rows() + self.body_rows()
+    }
+
+    /// The lines that cover rows `top..top + rows`, and how many rows of the
+    /// first one lie above `top`.
+    fn window(&self, top: u32, rows: u16) -> (Vec<Line<'static>>, u16) {
+        let need = top + rows as u32;
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let mut offset = 0u32;
+        let mut row = 0u32;
+        let pre: Vec<(Line<'static>, u32)> = (0..self.filler)
+            .map(|_| (Line::from(""), 1))
+            .chain(
+                self.welcome
+                    .iter()
+                    .zip(self.welcome_heights)
+                    .map(|(l, &h)| (l.clone(), h as u32)),
+            )
+            .chain((0..self.gap).map(|_| (Line::from(""), 1)))
+            .collect();
+        for (line, h) in pre {
+            let end = row + h;
+            if end > top {
+                if out.is_empty() {
+                    offset = top.saturating_sub(row);
+                }
+                out.push(line);
+            }
+            row = end;
+            if row >= need {
+                return (out, offset as u16);
+            }
+        }
+        let pre_rows = row;
+        let first = if top > pre_rows {
+            self.body_cum
+                .partition_point(|&c| pre_rows + c <= top)
+                .saturating_sub(1)
+        } else {
+            0
+        };
+        for i in first..self.body.len() {
+            let start = pre_rows + self.body_cum[i];
+            let end = pre_rows + self.body_cum[i + 1];
+            if end <= top {
+                continue;
+            }
+            if out.is_empty() {
+                offset = top.saturating_sub(start);
+            }
+            out.push(self.body[i].clone());
+            if end >= need {
+                break;
+            }
+        }
+        (out, offset as u16)
+    }
+}
+
+#[cfg(test)]
+mod row_model_tests {
+    use super::*;
+
+    fn texts(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn window_walks_filler_welcome_gap_and_body_by_rows() {
+        let welcome = [Line::from("w0"), Line::from("w1")];
+        let body = [
+            Line::from("b0"),
+            Line::from("b1 (two rows)"),
+            Line::from("b2"),
+        ];
+        let model = RowModel {
+            filler: 2,
+            welcome: &welcome,
+            welcome_heights: &[1, 1],
+            gap: 1,
+            body: &body,
+            body_cum: &[0, 1, 3, 4],
+        };
+        assert_eq!(model.pre_rows(), 5);
+        assert_eq!(model.total(), 9);
+        let (lines, offset) = model.window(0, 4);
+        assert_eq!(texts(&lines), ["", "", "w0", "w1"]);
+        assert_eq!(offset, 0);
+        let (lines, offset) = model.window(4, 3);
+        assert_eq!(texts(&lines), ["", "b0", "b1 (two rows)"]);
+        assert_eq!(offset, 0);
+        let (lines, offset) = model.window(6, 2);
+        assert_eq!(texts(&lines), ["b1 (two rows)"]);
+        assert_eq!(offset, 0);
+        let (lines, offset) = model.window(7, 2);
+        assert_eq!(
+            texts(&lines),
+            ["b1 (two rows)", "b2"],
+            "starts inside the tall line"
+        );
+        assert_eq!(offset, 1);
+        let (lines, _) = model.window(8, 5);
+        assert_eq!(texts(&lines), ["b2"]);
+    }
+}
+
 /// When a message is selected, adjust `message_scroll_from_bottom` so the selection stays in view.
 pub fn scroll_for_selected_message(
     app: &App,
@@ -852,54 +1089,34 @@ pub fn scroll_for_selected_message(
         .active_channel()
         .map(|ch| channel_welcome_lines(app, &ch))
         .unwrap_or_default();
-
-    let (body, line_ranges) = build_message_lines(app, &messages, text_w, pane_visible);
-
-    let welcome_body_gap: usize = if welcome.is_empty() { 0 } else { 1 };
-    let gap_lines: Vec<Line<'static>> = (0..welcome_body_gap).map(|_| Line::from("")).collect();
-
-    let mut core_lines: Vec<Line<'static>> =
-        Vec::with_capacity(welcome.len() + gap_lines.len() + body.len());
-    core_lines.extend(welcome.iter().cloned());
-    core_lines.extend(gap_lines.iter().cloned());
-    core_lines.extend(body.iter().cloned());
-
-    let core_heights = paragraph_line_heights(&core_lines, text_w);
-    let content_rows: u32 = core_heights.iter().map(|&h| h as u32).sum();
-    let filler_top_n = (pane_visible as u32).saturating_sub(content_rows) as usize;
-
-    let mut lines: Vec<Line<'static>> = (0..filler_top_n).map(|_| Line::from("")).collect();
-    let welcome_len = welcome.len();
-    let gap_len = gap_lines.len();
-    lines.extend(welcome);
-    lines.extend(gap_lines);
-    lines.extend(body);
-
-    let heights = paragraph_line_heights(&lines, text_w);
-    let mut cum: Vec<u32> = Vec::with_capacity(heights.len() + 1);
-    cum.push(0);
-    for &h in &heights {
-        cum.push(cum.last().copied().unwrap_or(0) + h as u32);
-    }
-    let total = *cum.last().unwrap_or(&0);
+    let welcome_heights = paragraph_line_heights(&welcome, text_w);
+    let layout = pane_layout(app, &messages, text_w, pane_visible);
+    let mut model = RowModel {
+        filler: 0,
+        welcome: &welcome,
+        welcome_heights: &welcome_heights,
+        gap: u32::from(!welcome.is_empty()),
+        body: &layout.lines,
+        body_cum: &layout.cum,
+    };
     let pane = pane_visible as u32;
+    model.filler = pane.saturating_sub(model.total());
+    let total = model.total();
     if total <= pane {
         return Some(0);
     }
 
-    let max_scroll = total.saturating_sub(pane);
+    let max_scroll = total - pane;
     let scroll = (current_scroll_from_bottom as u32).min(max_scroll);
-    let mut top = total.saturating_sub(pane).saturating_sub(scroll);
+    let mut top = max_scroll - scroll;
 
-    let body_offset = filler_top_n + welcome_len + gap_len;
-    let (b0, b1) = line_ranges.get(idx).copied().unwrap_or((0, 0));
-    let lo = body_offset + b0;
-    let hi = body_offset + b1;
-    if hi >= cum.len() {
+    let (b0, b1) = layout.line_ranges.get(idx).copied().unwrap_or((0, 0));
+    if b1 >= layout.cum.len() {
         return None;
     }
-    let rs = cum[lo];
-    let re = cum[hi];
+    let pre = model.pre_rows();
+    let rs = pre + layout.cum[b0];
+    let re = pre + layout.cum[b1];
 
     if re.saturating_sub(rs) > pane {
         top = rs;
@@ -907,15 +1124,14 @@ pub fn scroll_for_selected_message(
         if rs < top {
             top = rs;
         }
-        let view_bottom = top.saturating_add(pane);
-        if re > view_bottom {
-            top = re.saturating_sub(pane);
+        if re > top + pane {
+            top = re - pane;
         }
     }
 
     top = top.min(max_scroll);
-    let new_scroll = total.saturating_sub(pane).saturating_sub(top);
-    Some(new_scroll.min(max_scroll) as u16)
+    let new_scroll = max_scroll - top;
+    Some(new_scroll.min(u16::MAX as u32) as u16)
 }
 
 fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -929,6 +1145,7 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .active_channel()
         .map(|ch| channel_welcome_lines(app, &ch))
         .unwrap_or_default();
+    let welcome_heights = paragraph_line_heights(&welcome, text_w);
 
     let messages = app.active_messages();
     let loading = app
@@ -936,52 +1153,44 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .as_ref()
         .is_some_and(|id| app.loading_messages.contains(id));
 
-    let body: Vec<Line<'static>> = if loading {
-        vec![Line::from(Span::styled(
-            "Loading messages...",
-            crate::ui::theme::dim_style(),
-        ))]
-    } else if messages.is_empty() {
-        Vec::new()
+    let layout = if loading || messages.is_empty() {
+        None
     } else {
-        build_message_lines(app, &messages, text_w, pane_visible).0
+        Some(pane_layout(app, &messages, text_w, pane_visible))
     };
+    let loading_line = [Line::from(Span::styled(
+        "Loading messages...",
+        crate::ui::theme::dim_style(),
+    ))];
+    let (body, body_cum): (&[Line<'static>], &[u32]) = match &layout {
+        Some(l) => (&l.lines, &l.cum),
+        None if loading => (&loading_line, &[0, 1]),
+        None => (&[], &[0]),
+    };
+    let mut model = RowModel {
+        filler: 0,
+        welcome: &welcome,
+        welcome_heights: &welcome_heights,
+        gap: u32::from(!welcome.is_empty()),
+        body,
+        body_cum,
+    };
+    let pane = pane_visible as u32;
+    model.filler = pane.saturating_sub(model.total());
+    let total = model.total();
 
-    let welcome_body_gap: usize = if welcome.is_empty() { 0 } else { 1 };
-    let gap_lines: Vec<Line<'static>> = (0..welcome_body_gap).map(|_| Line::from("")).collect();
-    let w = welcome.len();
-    let g = gap_lines.len();
-    let m = body.len();
-
-    let mut core_lines: Vec<Line<'static>> = Vec::with_capacity(w + g + m);
-    core_lines.extend(welcome.iter().cloned());
-    core_lines.extend(gap_lines.iter().cloned());
-    core_lines.extend(body.iter().cloned());
-
-    let core_heights = paragraph_line_heights(&core_lines, text_w);
-    let content_rows: u16 = core_heights.iter().sum();
-    let filler_top_n = pane_visible.saturating_sub(content_rows) as usize;
-
-    let mut lines: Vec<Line<'static>> = (0..filler_top_n).map(|_| Line::from("")).collect();
-    lines.extend(welcome);
-    lines.extend(gap_lines);
-    lines.extend(body);
-
-    let heights = paragraph_line_heights(&lines, text_w);
-    let total_display_rows: u16 = heights.iter().sum();
-
-    let max_scroll = total_display_rows.saturating_sub(pane_visible);
-    app.message_scroll_max = max_scroll;
-    let scroll_from_bottom = app.message_scroll_from_bottom.min(max_scroll);
-    let top = total_display_rows.saturating_sub(pane_visible.saturating_add(scroll_from_bottom));
+    let max_scroll = total.saturating_sub(pane);
+    app.message_scroll_max = max_scroll.min(u16::MAX as u32) as u16;
+    let scroll_from_bottom = (app.message_scroll_from_bottom as u32).min(max_scroll);
+    let top = max_scroll - scroll_from_bottom;
 
     // The same content in the same place, just scrolled: the terminal can
     // shift the rows itself and keep the pictures in them.
     let view = crate::app::PaneView {
         channel: app.selected_channel_id.clone(),
         inner,
-        total_rows: total_display_rows,
-        top,
+        total_rows: total.min(u16::MAX as u32) as u16,
+        top: top.min(u16::MAX as u32) as u16,
     };
     app.pane_scroll_hint = match &app.pane_last {
         Some(last)
@@ -999,10 +1208,12 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     app.pane_last = Some(view);
 
+    // only the lines on screen are handed to the paragraph
+    let (lines, offset) = model.window(top, pane_visible);
     let paragraph = Paragraph::new(Text::from(lines))
         .block(block.clone())
         .wrap(Wrap { trim: false })
-        .scroll((top, 0));
+        .scroll((offset, 0));
     frame.render_widget(paragraph, area);
 }
 

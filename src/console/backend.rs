@@ -124,6 +124,16 @@ impl Shadow {
             }
         }
     }
+
+    /// Everything above and below `region` is stale.
+    fn cover_outside_rows(&mut self, region: Rect) {
+        let w = self.area.width as usize;
+        for y in 0..self.area.height as usize {
+            if (y as u16) < region.y || (y as u16) >= region.bottom() {
+                self.covered[y * w..(y + 1) * w].fill(true);
+            }
+        }
+    }
 }
 
 /// The crossterm backend, with pictures and its own idea of what the
@@ -172,6 +182,11 @@ impl<W: Write> TermBackend<W> {
             };
             queue!(self.inner, Print(seq))?;
             self.shadow.scroll(s.area, s.rows);
+            // foot moves every sixel on the screen by the scrolled rows, not
+            // only those in the region, and does not cut one that crosses
+            // the region's edge: the rows outside are rewritten, which
+            // erases whatever pixels landed there
+            self.shadow.cover_outside_rows(s.area);
         }
         let pictures = self.pictures.borrow();
         let mut batch: Vec<(u16, u16, &Cell)> = Vec::new();
@@ -556,10 +571,9 @@ mod tests {
                 "{moved} moved with the scroll: {out:?}"
             );
         }
-        assert!(
-            !out.contains("status") && !out.contains("input!"),
-            "{out:?}"
-        );
+        // the rows outside the region are sent again: the terminal may have
+        // dragged picture pixels over them
+        assert!(out.contains("status") && out.contains("input!"), "{out:?}");
         // scrolling back down exposes a row at the top
         let out = r.draw(
             &["status", "aaaaaa", "bbbbbb", "cccccc", "dddddd", "input!"],
