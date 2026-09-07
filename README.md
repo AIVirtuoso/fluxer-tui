@@ -317,6 +317,14 @@ The UI has four **focus** areas, cycled with **Tab** / **Shift+Tab** (or **h**/*
 
 A status line at the top shows gateway state, errors, and hints.
 
+Messages that concern you are highlighted the way the web app does it: a
+message that mentions you (by name, through one of your roles, or with
+@everyone/@here, unless the community's notification settings suppress
+those) or that replies to one of your messages gets an amber bar in the
+left margin, and a tinted background in the Fluxer theme. When the
+selected message is a reply, the message it answers is marked with ↩ in
+the margin, as long as it is loaded.
+
 
 ## Keyboard shortcuts
 
