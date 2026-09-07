@@ -96,6 +96,13 @@ own section or table row further down.
   `notify-send`, or GNU `mail` for the console when you opt in (see
   "Notifications").
 
+**Debugging**
+
+- **A debug panel and a debug log.** `/debug` (or **F12**) shows the
+  facts a bug report needs and the last log lines; `--debug` keeps the
+  whole log in a file. Both record shapes, ids, sizes, timings and
+  errors, never message text, names or the token (see "Debugging").
+
 **Console**
 
 - **Console mode.** On a Linux virtual console (`TERM=linux`) the whole
@@ -180,6 +187,10 @@ To clear the saved token and exit:
 ```bash
 target/release/fluxer-tui/fluxer-tui --logout
 ```
+
+`--debug` keeps a debug log, `--debug-log FILE` says where, and
+`--no-graphics-query` skips the terminal's picture-protocol query; see
+"Debugging".
 
 Or you can CTRL + L (see below)
 
@@ -394,6 +405,7 @@ the margin, as long as it is loaded.
 | **Alt+A** | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps. |
 | **F1** | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close). |
 | **Ctrl+H** | Same overlay when focus is **not** the message input (in input, **Ctrl+H** / **Ctrl+Backspace** delete the previous word). |
+| **F12** | **Debug panel**: session facts and the last log lines; **s** there writes them to a file (see "Debugging"). |
 | **R** | **Refresh** active channel messages and guild metadata used for loads (clears local message cache for the channel and resets fetch/backoff state for the current guild). |
 | **Ctrl+C** | Quit. |
 | **Ctrl+L** | Log out (clear intent flag) and quit - token is cleared when the process exits cleanly after this. |
@@ -441,6 +453,7 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | **↑** | Leave **Input** and focus **Messages**. |
 | **Backspace** | Delete character. |
 | **Ctrl+Backspace** / **Ctrl+H** | Delete the previous whitespace-separated word. |
+| `/debug`, `/debug save` | Debug panel; write its facts and log lines to a file (see "Debugging"). |
 | **Ctrl+U** | Clear the whole input line. |
 | **Esc** | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Channels**. |
 | **:** (colon) | Start **custom emoji** autocomplete (server emojis + unicode picker). |
@@ -481,6 +494,37 @@ Plain letters (without **Ctrl**) are inserted into the message, except where aut
   twice a second instead of ten times, and draws a burst of gateway
   traffic (presence changes in a big community, say) once every 200 ms
   instead of once per event. Your own keys are always drawn at once.
+
+## Debugging
+
+When something goes wrong, the client can say what it saw:
+
+- **`/debug`** (or **F12**) opens the debug panel: version, terminal
+  and picture protocol, cell size, gateway state, what is loaded, how
+  long the last frame took, and the last few hundred log lines. **s**
+  in the panel, or `/debug save`, writes all of that to a file whose
+  path shows in the status line; attach it to a bug report.
+- **`--debug`** keeps the whole log from start to exit, panics
+  included, in `$XDG_STATE_HOME/fluxer-tui/debug.log` (that is
+  `~/.local/state/fluxer-tui/debug.log` as a rule). `--debug-log FILE`
+  names the file. `FLUXER_TUI_DEBUG=1` (or a path) does the same from
+  the environment, which is handy with `nix run`.
+- **`--no-graphics-query`** (or `FLUXER_TUI_NO_GRAPHICS_QUERY=1`) skips
+  asking the terminal which picture protocol it speaks. Under tmux,
+  expect or another program driving the client, nothing answers, and
+  the thread waiting for the answer eats every other keystroke.
+
+The log respects your privacy: it records what happened, not what was
+said. Gateway events appear as their kind, size and shape (field names
+and types, string lengths, the ids of channels, communities, users and
+messages); HTTP requests as method, path, status and duration, with the
+API's error code when there is one; pictures as host, size and result;
+plus the client's own status-line messages, errors and frame timings.
+It never contains message text, user or community names, e-mail
+addresses, file names, paths under your home directory (which appears
+as `~`), notification text, or the token. Events that come in bursts,
+presence changes for one, are logged once and then every hundredth
+time.
 
 ## Console mode (Linux VT, no terminal emulator)
 

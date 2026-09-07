@@ -1,6 +1,7 @@
 pub mod ansi_line;
 pub mod channel_picker;
 pub mod command_popup;
+pub mod debug_overlay;
 pub mod emoji_popup;
 pub mod file_picker;
 pub mod help_overlay;
@@ -98,7 +99,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.set_cursor_position(cursor);
     }
 
-    if app.show_help {
+    if app.show_debug {
+        debug_overlay::render(frame, area, app);
+    } else if app.show_help {
         help_overlay::render(frame, area, app);
     } else if app.show_settings {
         settings_overlay::render(frame, area, app);
@@ -126,6 +129,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // over it.
     if !app.pixel_mode {
         let popup = app.show_help
+            || app.show_debug
             || app.show_settings
             || app.show_server_notifications
             || app.profile.is_some()

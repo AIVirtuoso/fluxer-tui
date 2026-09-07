@@ -673,6 +673,8 @@ impl FluxerHttpClient {
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
+        let started = std::time::Instant::now();
+        let method_name = method.to_string();
         let mut builder = self
             .inner
             .request(method, self.url(path))
@@ -694,12 +696,29 @@ impl FluxerHttpClient {
             builder = builder.json(body);
         }
 
-        let response = builder
-            .send()
-            .await
-            .with_context(|| format!("request failed for {path}"))?;
+        let response = match builder.send().await {
+            Ok(response) => response,
+            Err(err) => {
+                crate::debug::log(
+                    "http",
+                    format!(
+                        "{method_name} {path} failed after {} ms: {err}",
+                        started.elapsed().as_millis()
+                    ),
+                );
+                return Err(err).with_context(|| format!("request failed for {path}"));
+            }
+        };
 
         let status = response.status();
+        crate::debug::log(
+            "http",
+            format!(
+                "{method_name} {path} {} in {} ms",
+                status.as_u16(),
+                started.elapsed().as_millis()
+            ),
+        );
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let json = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
@@ -718,6 +737,16 @@ impl FluxerHttpClient {
                         body.clone()
                     }
                 });
+            // the API's own words for it, and the shape of the rest
+            crate::debug::log(
+                "http",
+                format!(
+                    "{method_name} {path}: {} {}: {}",
+                    status.as_u16(),
+                    code.as_deref().unwrap_or("-"),
+                    crate::debug::shape(&json)
+                ),
+            );
             return Err(ApiError::Response {
                 status,
                 code,
@@ -731,10 +760,16 @@ impl FluxerHttpClient {
             bail!("unexpected empty response for {path}");
         }
 
-        response
-            .json::<T>()
-            .await
-            .with_context(|| format!("failed to decode JSON for {path}"))
+        match response.json::<T>().await {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                crate::debug::log(
+                    "http",
+                    format!("{method_name} {path}: the answer could not be read: {err}"),
+                );
+                Err(err).with_context(|| format!("failed to decode JSON for {path}"))
+            }
+        }
     }
 
     pub async fn fetch_url_bytes(&self, url_or_path: &str) -> Result<Vec<u8>> {

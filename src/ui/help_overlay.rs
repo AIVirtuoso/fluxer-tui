@@ -73,6 +73,9 @@ Alt
 
 Other
   Edited messages show “(edited)” after the timestamp when the API sends edited_timestamp.
+  F12 or /debug - debug panel: session facts and the last log lines (no message text,
+           no names); s there, or /debug save, writes them to a file for a bug report.
+           Start with --debug to keep the whole log in a file (see README, "Debugging").
 "#;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {

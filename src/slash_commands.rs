@@ -65,6 +65,13 @@ pub static SLASH_COMMANDS: &[SlashCommandDef] = &[
         requires_channel_perm: None,
     },
     SlashCommandDef {
+        name: "/debug",
+        description: "Debug panel: session facts and the last log lines (/debug save writes them to a file).",
+        simple_append: None,
+        requires_guild: false,
+        requires_channel_perm: None,
+    },
+    SlashCommandDef {
         name: "/nick",
         description: "Change your nickname in this community.",
         simple_append: None,
@@ -125,6 +132,10 @@ pub enum OutgoingSlash {
     Attach(String),
     /// Open the file picker.
     AttachPick,
+    /// Open the debug panel.
+    Debug,
+    /// Write the debug panel's facts and log lines to a file.
+    DebugSave,
     Blocked(String),
     Normal,
 }
@@ -181,6 +192,12 @@ pub fn resolve_outgoing_slash(
     }
     if t == "/attach" {
         return OutgoingSlash::AttachPick;
+    }
+    if t == "/debug" {
+        return OutgoingSlash::Debug;
+    }
+    if t == "/debug save" {
+        return OutgoingSlash::DebugSave;
     }
     if let Some(rest) = t.strip_prefix("/attach ") {
         let path = rest.trim();

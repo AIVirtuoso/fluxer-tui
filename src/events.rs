@@ -164,6 +164,19 @@ pub struct EventEffects {
     pub notify: Vec<crate::notify::Notification>,
 }
 
+/// A gateway payload read into its type; when it cannot be, the debug
+/// log says which event and why, since a field the client does not
+/// expect is exactly the kind of thing a bug report needs.
+fn read<T: serde::de::DeserializeOwned>(kind: &str, payload: serde_json::Value) -> Option<T> {
+    match serde_json::from_value::<T>(payload) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            crate::debug::log("gateway", format!("{kind}: cannot read it: {err}"));
+            None
+        }
+    }
+}
+
 pub fn apply_event(
     app: &mut App,
     event: AppEvent,
@@ -237,7 +250,7 @@ pub fn apply_event(
         }
         AppEvent::Dispatch { kind, payload } => match kind.as_str() {
             "READY" => {
-                if let Ok(ready) = serde_json::from_value::<ReadyEvent>(payload) {
+                if let Some(ready) = read::<ReadyEvent>(&kind, payload) {
                     app.clear_all_typing();
                     app.me = ready.user.clone();
                     if let Some(settings) = ready.user_settings {
@@ -278,29 +291,29 @@ pub fn apply_event(
                 app.gateway_lazy_guild_id = None;
             }
             "USER_UPDATE" => {
-                if let Ok(user) = serde_json::from_value::<UserPrivateResponse>(payload) {
+                if let Some(user) = read::<UserPrivateResponse>(&kind, payload) {
                     app.me = user;
                 }
             }
             "USER_SETTINGS_UPDATE" => {
-                if let Ok(settings) = serde_json::from_value::<UserSettingsResponse>(payload) {
+                if let Some(settings) = read::<UserSettingsResponse>(&kind, payload) {
                     app.user_settings = Some(settings);
                 }
             }
             "USER_GUILD_SETTINGS_UPDATE" => {
-                if let Ok(settings) = serde_json::from_value::<UserGuildSettingsResponse>(payload) {
+                if let Some(settings) = read::<UserGuildSettingsResponse>(&kind, payload) {
                     app.upsert_user_guild_settings(settings);
                 }
             }
             "AUTH_SESSION_CHANGE" => {
-                if let Ok(auth) = serde_json::from_value::<AuthSessionChangeEvent>(payload)
+                if let Some(auth) = read::<AuthSessionChangeEvent>(&kind, payload)
                     && !auth.new_token.is_empty()
                 {
                     effects.persist_token = Some(auth.new_token);
                 }
             }
             "GUILD_CREATE" | "GUILD_SYNC" => {
-                if let Ok(event) = serde_json::from_value::<GuildCreateEvent>(payload)
+                if let Some(event) = read::<GuildCreateEvent>(&kind, payload)
                     && !event.unavailable
                 {
                     let guild_id = event.guild.id.clone();
@@ -320,12 +333,12 @@ pub fn apply_event(
                 }
             }
             "GUILD_UPDATE" => {
-                if let Ok(guild) = serde_json::from_value::<GuildResponse>(payload) {
+                if let Some(guild) = read::<GuildResponse>(&kind, payload) {
                     app.upsert_guild(guild);
                 }
             }
             "GUILD_DELETE" => {
-                if let Ok(event) = serde_json::from_value::<GuildDeleteEvent>(payload)
+                if let Some(event) = read::<GuildDeleteEvent>(&kind, payload)
                     && !event.unavailable
                 {
                     app.remove_guild(&event.id);
@@ -336,24 +349,24 @@ pub fn apply_event(
                 }
             }
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" => {
-                if let Ok(channel) = serde_json::from_value::<ChannelResponse>(payload) {
+                if let Some(channel) = read::<ChannelResponse>(&kind, payload) {
                     app.upsert_channel(channel);
                 }
             }
             "CHANNEL_UPDATE_BULK" => {
-                if let Ok(event) = serde_json::from_value::<ChannelBulkUpdateEvent>(payload) {
+                if let Some(event) = read::<ChannelBulkUpdateEvent>(&kind, payload) {
                     for channel in event.channels {
                         app.upsert_channel(channel);
                     }
                 }
             }
             "CHANNEL_DELETE" => {
-                if let Ok(channel) = serde_json::from_value::<ChannelResponse>(payload) {
+                if let Some(channel) = read::<ChannelResponse>(&kind, payload) {
                     app.remove_channel(&channel);
                 }
             }
             "MESSAGE_CREATE" => {
-                if let Ok(message) = serde_json::from_value::<MessageResponse>(payload) {
+                if let Some(message) = read::<MessageResponse>(&kind, payload) {
                     app.clear_typing_for_message(&message.channel_id, &message.author.id);
                     if app.upsert_message(message.clone()) {
                         if let Some(n) = app.notification_for(&message) {
@@ -364,7 +377,7 @@ pub fn apply_event(
                 }
             }
             "TYPING_START" => {
-                if let Ok(ev) = serde_json::from_value::<TypingStartEvent>(payload) {
+                if let Some(ev) = read::<TypingStartEvent>(&kind, payload) {
                     if !ev.channel_id.is_empty()
                         && !ev.user_id.is_empty()
                         && ev.user_id != app.me.id
@@ -377,17 +390,17 @@ pub fn apply_event(
                 }
             }
             "MESSAGE_UPDATE" => {
-                if let Ok(message) = serde_json::from_value::<MessageResponse>(payload) {
+                if let Some(message) = read::<MessageResponse>(&kind, payload) {
                     app.upsert_message(message);
                 }
             }
             "MESSAGE_DELETE" => {
-                if let Ok(event) = serde_json::from_value::<MessageDeleteEvent>(payload) {
+                if let Some(event) = read::<MessageDeleteEvent>(&kind, payload) {
                     app.remove_message(&event.channel_id, &event.id);
                 }
             }
             "MESSAGE_ACK" => {
-                if let Ok(event) = serde_json::from_value::<MessageAckEvent>(payload) {
+                if let Some(event) = read::<MessageAckEvent>(&kind, payload) {
                     app.read_states.insert(
                         event.channel_id,
                         crate::app::ReadState {
@@ -398,7 +411,7 @@ pub fn apply_event(
                 }
             }
             "MESSAGE_REACTION_ADD" => {
-                if let Ok(event) = serde_json::from_value::<MessageReactionAddEvent>(payload)
+                if let Some(event) = read::<MessageReactionAddEvent>(&kind, payload)
                     && let Some(msgs) = app.messages.get_mut(&event.channel_id)
                     && let Some(msg) = std::rc::Rc::make_mut(msgs)
                         .iter_mut()
@@ -427,7 +440,7 @@ pub fn apply_event(
                 }
             }
             "MESSAGE_REACTION_REMOVE" => {
-                if let Ok(event) = serde_json::from_value::<MessageReactionRemoveEvent>(payload)
+                if let Some(event) = read::<MessageReactionRemoveEvent>(&kind, payload)
                     && let Some(msgs) = app.messages.get_mut(&event.channel_id)
                     && let Some(msg) = std::rc::Rc::make_mut(msgs)
                         .iter_mut()
@@ -450,7 +463,7 @@ pub fn apply_event(
                 }
             }
             "VOICE_STATE_UPDATE" => {
-                if let Ok(state) = serde_json::from_value::<VoiceStateResponse>(payload) {
+                if let Some(state) = read::<VoiceStateResponse>(&kind, payload) {
                     app.update_voice_state(state);
                 }
             }
@@ -466,7 +479,7 @@ pub fn apply_event(
                     guild_id: String,
                     emojis: Vec<crate::api::types::GuildEmojiResponse>,
                 }
-                if let Ok(update) = serde_json::from_value::<EmojiUpdate>(payload) {
+                if let Some(update) = read::<EmojiUpdate>(&kind, payload) {
                     app.set_guild_emojis(&update.guild_id, update.emojis);
                 }
             }
@@ -476,7 +489,7 @@ pub fn apply_event(
                     guild_id: String,
                     role: crate::api::types::GuildRoleResponse,
                 }
-                if let Ok(p) = serde_json::from_value::<GuildRolePayload>(payload) {
+                if let Some(p) = read::<GuildRolePayload>(&kind, payload) {
                     app.merge_guild_roles_from_gateway(&p.guild_id, vec![p.role]);
                 }
             }
@@ -486,7 +499,7 @@ pub fn apply_event(
                     guild_id: String,
                     role_id: String,
                 }
-                if let Ok(p) = serde_json::from_value::<GuildRoleDeletePayload>(payload) {
+                if let Some(p) = read::<GuildRoleDeletePayload>(&kind, payload) {
                     app.remove_guild_role(&p.guild_id, &p.role_id);
                 }
             }
@@ -496,7 +509,7 @@ pub fn apply_event(
                     guild_id: String,
                     roles: Vec<crate::api::types::GuildRoleResponse>,
                 }
-                if let Ok(p) = serde_json::from_value::<GuildRoleBulkPayload>(payload) {
+                if let Some(p) = read::<GuildRoleBulkPayload>(&kind, payload) {
                     app.merge_guild_roles_from_gateway(&p.guild_id, p.roles);
                 }
             }
