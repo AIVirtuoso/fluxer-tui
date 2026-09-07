@@ -99,6 +99,15 @@ pub struct UiSettings {
     /// Also notify for every message in community channels set to "all
     /// messages", not only mentions and direct messages.
     pub notify_all_messages: bool,
+    /// A sound with every notification, played by a program on PATH
+    /// (the audio player), so it works on the console too.
+    #[serde(default = "default_true")]
+    pub notify_sound: bool,
+    /// The sound to play; a built-in chime when empty.
+    pub notify_sound_file: String,
+    /// The program to play it with; `[media] audio_player` or the first
+    /// usual player on PATH when empty.
+    pub notify_sound_player: String,
 }
 
 const fn default_true() -> bool {
@@ -120,6 +129,9 @@ impl Default for UiSettings {
             notify_mail_command: String::new(),
             notify_desktop_command: String::new(),
             notify_all_messages: false,
+            notify_sound: true,
+            notify_sound_file: String::new(),
+            notify_sound_player: String::new(),
         }
     }
 }

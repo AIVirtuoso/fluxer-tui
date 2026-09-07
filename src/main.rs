@@ -28,8 +28,8 @@ use crate::media::{MessagePreviewMedia, first_message_preview_media};
 use anyhow::{Context, Error as AnyhowError, Result};
 use clap::Parser;
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -378,6 +378,9 @@ async fn main() -> Result<()> {
     let mut urgent_redraw = false;
     let mut last_draw = Instant::now() - PERF_FRAME_GAP;
     let mut frame_stats = FrameStats::default();
+    // a burst of messages gets one sound, not one per message
+    let mut last_notify_sound: Option<Instant> = None;
+    let mut no_sound_player_reported = false;
 
     loop {
         if needs_redraw
@@ -481,6 +484,14 @@ async fn main() -> Result<()> {
                             );
                             ensure_lazy_guild_subscription(&mut app, &gateway_cmd_tx);
                         }
+                        Event::FocusGained => {
+                            app.window_focused = true;
+                            debug::log("focus", "window focused");
+                        }
+                        Event::FocusLost => {
+                            app.window_focused = false;
+                            debug::log("focus", "window unfocused");
+                        }
                         _ => {}
                     }
                     handled += 1;
@@ -502,18 +513,56 @@ async fn main() -> Result<()> {
                     spawn_image_chafa_fallback(event_tx.clone(), title, bytes, cols, rows);
                 }
                 if !effects.notify.is_empty()
-                    && let Some(backend) =
-                        notify::backend(app.ui_settings.notifications, notify::has_display())
+                    && app.ui_settings.notifications != config::NotifyMode::Off
                 {
-                    for n in effects.notify {
-                        notify::send(
-                            backend,
-                            n,
-                            notify::mail_recipient(&app.ui_settings.notify_mail_to),
-                            app.ui_settings.notify_mail_command.clone(),
-                            app.ui_settings.notify_desktop_command.clone(),
-                            event_tx.clone(),
-                        );
+                    if let Some(backend) =
+                        notify::backend(app.ui_settings.notifications, notify::has_display())
+                    {
+                        for n in effects.notify {
+                            notify::send(
+                                backend,
+                                n,
+                                notify::mail_recipient(&app.ui_settings.notify_mail_to),
+                                app.ui_settings.notify_mail_command.clone(),
+                                app.ui_settings.notify_desktop_command.clone(),
+                                event_tx.clone(),
+                            );
+                        }
+                    }
+                    // the sound goes with the notification whatever
+                    // delivers it, and is all there is on a console
+                    // where nothing does
+                    if app.ui_settings.notify_sound
+                        && last_notify_sound
+                            .is_none_or(|t| t.elapsed() >= NOTIFY_SOUND_GAP)
+                    {
+                        last_notify_sound = Some(Instant::now());
+                        let player = if app.ui_settings.notify_sound_player.trim().is_empty() {
+                            &app.audio_player_cmd
+                        } else {
+                            &app.ui_settings.notify_sound_player
+                        };
+                        match (
+                            crate::media::player_command(player),
+                            notify::sound_bytes(&app.ui_settings.notify_sound_file),
+                        ) {
+                            (Some(argv), Ok(bytes)) => {
+                                notify::play_sound(argv, bytes, event_tx.clone());
+                            }
+                            (None, _) => {
+                                if !no_sound_player_reported {
+                                    no_sound_player_reported = true;
+                                    app.set_status(
+                                        "Notification sound: no audio player on PATH \
+                                         (mpv, ffplay, pw-play, paplay, aplay); set \
+                                         notify_sound_player",
+                                    );
+                                }
+                            }
+                            (_, Err(e)) => {
+                                app.set_status(format!("Notification sound: {e}"));
+                            }
+                        }
                     }
                 }
                 schedule_needed_fetches(&mut app, authed_client.clone(), event_tx.clone());
@@ -537,12 +586,18 @@ async fn main() -> Result<()> {
                     {
                         let _ = b.suspend();
                         vt.ack_release();
+                        // another VT is in front: the open channel is out
+                        // of sight, so its messages are announced
+                        app.window_focused = false;
+                        debug::log("focus", "VT released");
                     }
                     if console::vt::VtGuard::take_acquire_request()
                         && let console::backend::AnyBackend::Console(b) = terminal.backend_mut()
                     {
                         vt.ack_acquire();
                         let _ = b.resume();
+                        app.window_focused = true;
+                        debug::log("focus", "VT acquired");
                         needs_redraw = true;
                     }
                 }
@@ -759,6 +814,9 @@ fn handle_paste_event(
 /// at least this far apart: a burst of gateway events (presence changes
 /// in a big community, say) is drawn once instead of once per event.
 const PERF_FRAME_GAP: Duration = Duration::from_millis(200);
+/// The least time between two notification sounds: a burst of messages
+/// is one event, not a carillon.
+const NOTIFY_SOUND_GAP: Duration = Duration::from_millis(1500);
 
 /// Whether a pending redraw is drawn right now or held for the next tick.
 fn draw_now(performance_mode: bool, urgent: bool, since_last_draw: Duration) -> bool {
@@ -2620,8 +2678,15 @@ fn init_terminal(
     enable_raw_mode().context("failed to enable raw mode")?;
     if *selection == console::Selection::Terminal {
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
-            .context("failed to enter alternate screen")?;
+        // focus reporting tells whether the window is in sight, which
+        // decides whether a message in the open channel is announced
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableFocusChange
+        )
+        .context("failed to enter alternate screen")?;
         let backend = console::backend::AnyBackend::Crossterm(console::backend::TermBackend::new(
             stdout, pictures, frame,
         ));
@@ -2666,7 +2731,12 @@ impl Drop for TerminalGuard {
         let _ = disable_raw_mode();
         if !self.console {
             let mut stdout = io::stdout();
-            let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+            let _ = execute!(
+                stdout,
+                DisableFocusChange,
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
         }
         let _ = terminal::disable_raw_mode();
     }

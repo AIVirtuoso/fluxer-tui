@@ -93,7 +93,9 @@ own section or table row further down.
   (mpv, ffplay, pw-play, paplay, aplay, or one you name), the same way
   in a terminal emulator and on the console (see "Audio").
 - **Notifications** for mentions and direct messages through libnotify's
-  `notify-send`, or GNU `mail` for the console when you opt in (see
+  `notify-send`, or GNU `mail` for the console when you opt in, with a
+  **sound** through the audio player; nothing is announced for the
+  channel you are reading while the window (or the VT) is in front (see
   "Notifications").
 
 **Debugging**
@@ -360,6 +362,9 @@ notify_mail_to = ""         # recipient; the login user when empty
 notify_mail_command = ""    # the mail program; "mail" when empty
 notify_desktop_command = "" # the desktop program; "notify-send" when empty
 notify_all_messages = false # also every message in channels set to all messages
+notify_sound = true         # a sound with every notification
+notify_sound_file = ""      # the sound; a built-in chime when empty
+notify_sound_player = ""    # the player; [media] audio_player or the usual ones when empty
 ```
 
 Nothing is announced for your own messages, and a channel's own
@@ -368,6 +373,30 @@ that cannot be run is reported on the status line: `notify-send` comes
 with libnotify and needs a notification daemon (mako, dunst, ...) to
 show anything; `mail` comes with GNU mailutils and needs local mail
 delivery.
+
+**The channel you are reading is not announced while you can see it.**
+A message in the open channel is on screen, so it sends no notification
+and plays no sound as long as the terminal window has focus. When the
+window is not in front (another window has focus, or, in console mode,
+another VT is active), messages in the open channel are announced like
+any other. The terminal reports focus changes through the usual focus
+reporting escape (`CSI ? 1004 h`), which foot, kitty, alacritty,
+wezterm, xterm and most others support; a terminal that does not report
+focus is taken to be in front, so the open channel stays quiet there.
+Under tmux, focus reaches the client only with `set -g focus-events on`.
+
+**The sound** is played by the same kind of program that plays audio
+attachments (see "Audio"): the bytes go to its stdin, it gets no
+terminal, and so it works in a terminal emulator and on a Linux console
+alike. With nothing configured, `[media] audio_player` is used, else the
+first of mpv, ffplay, pw-play, paplay and aplay on PATH; a player of
+your own goes in `notify_sound_player`. The sound is a short built-in
+chime, or any file the player can play in `notify_sound_file` (`~/` is
+expanded). A burst of messages plays it once, not once per message. The
+**Notification sound** row in the settings overlay (**F2**) turns it
+off. The sound follows the notification: with the mode Off there is
+none; with Auto on a console, where nothing else is announced, the
+sound is the whole notification.
 
 ## Interface overview
 

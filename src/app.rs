@@ -904,6 +904,9 @@ pub struct App {
     pub audio: Option<crate::media::Player>,
     /// `[media] audio_player`: empty picks a player from PATH.
     pub audio_player_cmd: String,
+    /// Whether the terminal window (or the VT, in console mode) is the one
+    /// the user is looking at; true until the terminal says otherwise.
+    pub window_focused: bool,
 }
 
 impl App {
@@ -1029,13 +1032,14 @@ impl App {
             file_picker: None,
             attach_dir: None,
             audio: None,
+            window_focused: true,
             audio_player_cmd: String::new(),
         };
         app.normalize_selection();
         app
     }
 
-    pub const UI_SETTINGS_LAST_ROW: usize = 6;
+    pub const UI_SETTINGS_LAST_ROW: usize = 7;
     pub const SERVER_NOTIFICATION_LAST_ROW: usize = 5;
     pub const HISTORY_AUTOLOAD_THRESHOLD_ROWS: u16 = 3;
     pub const TRANSIENT_STATUS_DURATION: Duration = Duration::from_millis(1800);
@@ -1331,15 +1335,19 @@ impl App {
                     NotifyMode::Off => NotifyMode::Auto,
                 };
             }
+            7 => {
+                self.ui_settings.notify_sound = !self.ui_settings.notify_sound;
+            }
             _ => {}
         }
     }
 
     /// What to announce about a message that just arrived, if anything: a
-    /// direct message or a mention, wherever it lands (the terminal may
-    /// well be out of sight), or, when asked for, any message in a
-    /// community channel set to all messages other than the one being
-    /// read; never the user's own.
+    /// direct message or a mention, or, when asked for, any message in a
+    /// community channel set to all messages; never the user's own, and
+    /// nothing for the channel being read while the window is focused
+    /// (the message is on screen). A message in that channel is announced
+    /// again once the terminal window, or the VT, is out of sight.
     pub fn notification_for(
         &self,
         message: &MessageResponse,
@@ -1349,9 +1357,11 @@ impl App {
         }
         let channel = self.channel_by_id(&message.channel_id);
         let reading_it = self.active_channel_id().as_deref() == Some(message.channel_id.as_str());
+        if reading_it && self.window_focused {
+            return None;
+        }
         let wanted = self.message_notifies_me(message)
             || (self.ui_settings.notify_all_messages
-                && !reading_it
                 && channel.as_ref().is_some_and(|c| {
                     c.guild_id.is_some()
                         && self.channel_notification_visibility(c)
@@ -5398,26 +5408,37 @@ mod notification_tests {
             app.notification_for(&msg("art", "ann", "no mention"))
                 .is_none()
         );
-        // a mention in the channel being read still counts (the terminal
-        // may be out of sight); one's own messages never do
+        // a mention in the channel being read is on screen while the
+        // window is focused, and counts once it is not; one's own messages
+        // never do
         let mut here = msg("general", "ann", "<@me> here");
         here.mentions.push(UserPartialResponse {
             id: "me".into(),
             ..Default::default()
         });
-        assert!(app.notification_for(&here).is_some());
-        assert!(app.notification_for(&msg("dm", "me", "my own")).is_none());
+        assert!(app.notification_for(&here).is_none());
+        let mut away = app;
+        away.window_focused = false;
+        assert!(away.notification_for(&here).is_some());
+        assert!(away.notification_for(&msg("dm", "me", "my own")).is_none());
     }
 
     #[test]
     fn all_messages_can_be_asked_for_and_files_are_named() {
         let mut app = app();
         app.ui_settings.notify_all_messages = true;
-        // all messages: except in the channel being read
+        // all messages: except in the channel being read, while it is
+        // in sight
         assert!(
             app.notification_for(&msg("general", "ann", "chatter"))
                 .is_none()
         );
+        app.window_focused = false;
+        assert!(
+            app.notification_for(&msg("general", "ann", "chatter"))
+                .is_some()
+        );
+        app.window_focused = true;
         assert!(
             app.notification_for(&msg("art", "ann", "chatter"))
                 .is_some()

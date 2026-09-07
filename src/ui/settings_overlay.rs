@@ -333,14 +333,59 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             muted,
         ),
     ]));
+    let sound_primary = if app.ui_settings.notify_sound {
+        ("On", "A sound with every notification")
+    } else {
+        ("Off", "Notifications are silent")
+    };
+    let sound_alt = if app.ui_settings.notify_sound {
+        ("Off", "Notifications are silent")
+    } else {
+        ("On", "A sound with every notification")
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled("  Notification sound", dim)]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", text),
+        Span::styled(
+            if app.settings_cursor == 7 {
+                "▸ "
+            } else {
+                "  "
+            },
+            if app.settings_cursor == 7 {
+                accent
+            } else {
+                muted
+            },
+        ),
+        Span::styled(
+            format!("{}  ·  {}", sound_primary.0, sound_primary.1),
+            panel.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    ", text),
+        Span::styled(format!("{}  ·  {}", sound_alt.0, sound_alt.1), muted),
+    ]));
     let block = Block::default()
         .title(Line::from(Span::styled(" Settings ", accent)))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(crate::ui::theme::accent_dim()));
 
+    // more rows than the terminal has lines: keep the selected row and
+    // its alternative in view
+    let selected = lines
+        .iter()
+        .position(|l| l.spans.iter().any(|s| s.content.as_ref() == "▸ "))
+        .unwrap_or(0);
+    let inner = content.height.saturating_sub(2) as usize;
+    let scroll = (selected + 2).saturating_sub(inner) as u16;
     let paragraph = Paragraph::new(Text::from(lines))
         .block(block)
         .wrap(Wrap { trim: true })
+        .scroll((scroll, 0))
         .alignment(Alignment::Left);
 
     frame.render_widget(paragraph, content);
@@ -386,7 +431,7 @@ mod tests {
             None,
             Default::default(),
         );
-        app.settings_cursor = App::UI_SETTINGS_LAST_ROW;
+        app.settings_cursor = 6;
         assert_eq!(app.ui_settings.notifications, NotifyMode::Auto);
         let s = drawn(&app);
         assert!(
@@ -414,5 +459,49 @@ mod tests {
         assert!(drawn(&app).contains("▸ Off  ·  No notifications outside the client"));
         app.toggle_settings_selection();
         assert_eq!(app.ui_settings.notifications, NotifyMode::Auto);
+    }
+
+    #[test]
+    fn the_sound_row_is_last_and_toggles() {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            crate::app::ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        app.settings_cursor = App::UI_SETTINGS_LAST_ROW;
+        assert!(app.ui_settings.notify_sound);
+        let s = drawn(&app);
+        assert!(s.contains("Notification sound"), "{s}");
+        assert!(
+            s.contains("▸ On  ·  A sound with every notification"),
+            "{s}"
+        );
+        app.toggle_settings_selection();
+        assert!(!app.ui_settings.notify_sound);
+        assert!(drawn(&app).contains("▸ Off  ·  Notifications are silent"));
+        // a short terminal scrolls the selected row into view
+        let mut t = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        t.draw(|f| render(f, f.area(), &app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let short = (0..24)
+            .map(|y| {
+                (0..90)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            short.contains("▸ Off  ·  Notifications are silent"),
+            "{short}"
+        );
+        assert!(short.contains("On  ·  A sound with every notification"));
+        app.settings_cursor = 0;
+        assert!(drawn(&app).contains("▸ 24-hour"));
     }
 }
