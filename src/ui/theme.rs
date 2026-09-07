@@ -42,6 +42,8 @@ colour!(text_muted, Color::Reset, Color::Rgb(94, 103, 114));
 colour!(emoji_unknown, Color::Yellow, Color::Rgb(254, 231, 92));
 colour!(link_color, Color::Cyan, Color::Rgb(0, 168, 252));
 colour!(danger, Color::Red, Color::Rgb(237, 66, 69));
+// The bar beside a message that mentions the reader: the web app's amber.
+colour!(mention_bar, Color::Yellow, Color::Rgb(250, 166, 26));
 // Others typing (input bar title): distinct from `text_muted` so it does
 // not match the empty placeholder.
 colour!(typing_others, Color::Green, Color::Rgb(114, 218, 167));
@@ -111,6 +113,17 @@ pub fn muted_style() -> Style {
         Style::default().add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(text_muted())
+    }
+}
+
+/// Background of a message that mentions the reader: the web app's amber
+/// tint in the Fluxer theme. The terminal theme has no tint of its own
+/// and relies on the bar in the margin.
+pub fn mention_block_style() -> Style {
+    if is_terminal_theme() {
+        Style::default()
+    } else {
+        Style::default().bg(Color::Rgb(64, 57, 47))
     }
 }
 

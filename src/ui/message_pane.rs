@@ -155,6 +155,63 @@ fn sel_prefix_span(is_selected: bool) -> Span<'static> {
     }
 }
 
+/// What the two columns left of a message say about it.
+#[derive(Clone, Copy, Default)]
+struct Gutter {
+    /// The selected message: an arrow on its first row.
+    selected: bool,
+    /// A message that mentions the reader or answers them: a bar down
+    /// every row that has a margin.
+    mention: bool,
+    /// The message the selected reply answers: a mark on its first row.
+    reply_target: bool,
+}
+
+impl Gutter {
+    fn span(self, row: usize) -> Span<'static> {
+        if row == 0 && self.selected {
+            return sel_prefix_span(true);
+        }
+        if row == 0 && self.reply_target {
+            return Span::styled(
+                "\u{21A9} ",
+                Style::default()
+                    .fg(crate::ui::theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        if self.mention {
+            return Span::styled(
+                "\u{258E} ",
+                Style::default().fg(crate::ui::theme::mention_bar()),
+            );
+        }
+        Span::raw("  ")
+    }
+}
+
+/// The message the selected message answers, when it is a reply and the
+/// original is among the loaded messages.
+fn reply_target_index(app: &App, messages: &[crate::api::types::MessageResponse]) -> Option<usize> {
+    let selected = messages.get(app.selected_message_index?)?;
+    let original_id = selected
+        .referenced_message
+        .as_deref()
+        .map(|m| m.id.as_str())
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            selected
+                .message_reference
+                .as_ref()
+                .map(|r| r.message_id.as_str())
+                .filter(|id| !id.is_empty())
+        })?;
+    messages
+        .iter()
+        .position(|m| m.id == original_id)
+        .filter(|&i| Some(i) != app.selected_message_index)
+}
+
 fn truncate_to_display_width(s: &str, max_w: usize) -> String {
     if max_w == 0 {
         return String::new();
@@ -323,7 +380,8 @@ fn finish_block(
     rows: Vec<BlockRow>,
     text_w: u16,
     margin: &Margin,
-    is_selected: bool,
+    gutter: Gutter,
+    block_style: Style,
     avatar_slot: Option<usize>,
 ) -> Vec<Line<'static>> {
     let mut out: Vec<(Vec<Span<'static>>, Style, RowKind)> = Vec::new();
@@ -354,11 +412,7 @@ fn finish_block(
     for (i, (spans, style, kind)) in out.into_iter().enumerate() {
         let mut line: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 3);
         if margin.avatars {
-            line.push(if i == 0 {
-                sel_prefix_span(is_selected)
-            } else {
-                Span::raw("  ")
-            });
+            line.push(gutter.span(i));
             let avatar_row = match (avatar_slot, header_at) {
                 (Some(k), Some(h)) if i == h => Some((k, 0)),
                 (Some(k), Some(h)) if i == h + 1 => Some((k, 1)),
@@ -376,14 +430,10 @@ fn finish_block(
             }
             line.push(Span::raw(" "));
         } else if matches!(kind, RowKind::Context | RowKind::Header) {
-            line.push(if i == 0 {
-                sel_prefix_span(is_selected)
-            } else {
-                Span::raw("  ")
-            });
+            line.push(gutter.span(i));
         }
         line.extend(spans);
-        lines.push(Line::from(line).style(style));
+        lines.push(Line::from(line).style(block_style.patch(style)));
     }
     lines
 }
@@ -507,6 +557,7 @@ fn build_message_lines(
         .saturating_sub(margin.width(RowKind::Context))
         .max(1);
     let picture_max = crate::media::preview_limits(body_w, pane_rows, app.cell_px);
+    let reply_target = reply_target_index(app, messages);
 
     for (idx, message) in messages.iter().enumerate() {
         let is_selected_msg = app.selected_message_index == Some(idx);
@@ -545,10 +596,21 @@ fn build_message_lines(
                 _ => false,
             };
 
+        let mention = app.message_highlights_me(message);
+        let block_style = if mention {
+            crate::ui::theme::mention_block_style()
+        } else {
+            Style::default()
+        };
         let header_style = if is_selected_msg {
             Style::default().bg(crate::ui::theme::bg_tertiary())
         } else {
-            Style::default()
+            block_style
+        };
+        let gutter = Gutter {
+            selected: is_selected_msg,
+            mention,
+            reply_target: reply_target == Some(idx),
         };
 
         if idx > 0 && !within_group {
@@ -810,7 +872,8 @@ fn build_message_lines(
             rows,
             text_w,
             &margin,
-            is_selected_msg,
+            gutter,
+            block_style,
             avatar_slot,
         ));
 
@@ -2185,5 +2248,205 @@ mod bottom_tests {
         // the pane changes size (the input box grows) and shrinks back
         assert_newest_at_bottom(&mut app, w, h - 4, 41);
         assert_newest_at_bottom(&mut app, w, h, 41);
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use crate::api::types::{
+        ChannelResponse, MessageReferenceResponse, MessageResponse, UserPartialResponse,
+        UserPrivateResponse, WellKnownFluxerResponse,
+    };
+    use crate::app::{App, Focus, ServerSelection};
+    use crate::config::UiSettings;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn user(id: &str) -> UserPartialResponse {
+        UserPartialResponse {
+            id: id.into(),
+            username: id.into(),
+            discriminator: "0001".into(),
+            ..Default::default()
+        }
+    }
+
+    fn msg(id: &str, author: &str, content: &str) -> MessageResponse {
+        MessageResponse {
+            id: id.into(),
+            channel_id: "c".into(),
+            author: user(author),
+            content: content.into(),
+            timestamp: format!("2026-09-07T10:{:02}:00.000Z", id.parse::<u64>().unwrap()),
+            ..Default::default()
+        }
+    }
+
+    fn reply_to(mut message: MessageResponse, original: &MessageResponse) -> MessageResponse {
+        message.message_reference = Some(MessageReferenceResponse {
+            channel_id: "c".into(),
+            message_id: original.id.clone(),
+            ..Default::default()
+        });
+        message.referenced_message = Some(Box::new(original.clone()));
+        message
+    }
+
+    fn app_with(messages: Vec<MessageResponse>, avatars: bool) -> App {
+        let me = UserPrivateResponse {
+            id: "me".into(),
+            ..Default::default()
+        };
+        let channel = ChannelResponse {
+            id: "c".into(),
+            kind: 1,
+            recipients: vec![user("bob")],
+            ..Default::default()
+        };
+        let mut ui = UiSettings::default();
+        ui.avatars = avatars;
+        ui.inline_media = false;
+        let mut app = App::new(
+            WellKnownFluxerResponse::default(),
+            me,
+            None,
+            Vec::new(),
+            vec![channel],
+            ServerSelection::DirectMessages,
+            Some("c".into()),
+            ui,
+        );
+        app.focus = Focus::Messages;
+        for m in messages {
+            app.upsert_message(m);
+        }
+        app
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The pane rows, without the sidebar and the borders, keyed by a
+    /// word each message ends with.
+    fn pane_row_starting_with<'a>(rows: &'a [String], marker: &str) -> &'a str {
+        rows.iter()
+            .find(|r| r.contains(marker))
+            .map(|r| r.as_str())
+            .unwrap_or_else(|| panic!("no row contains {marker:?}"))
+    }
+
+    /// The two gutter columns of a pane row: the first two columns inside
+    /// the message pane's left border, found from its title row.
+    fn gutter_of(rows: &[String], row: &str) -> String {
+        let title = rows
+            .iter()
+            .find(|r| r.contains("Messages"))
+            .expect("the pane has a title row");
+        let corner = title
+            .find("\u{250C} Messages")
+            .expect("the title row has the pane's corner");
+        let border_x = title[..corner].chars().count();
+        row.chars().skip(border_x + 1).take(2).collect()
+    }
+
+    /// The row above the one containing `body`: a message's header when
+    /// `body` is its first line.
+    fn row_above<'a>(rows: &'a [String], body: &str) -> &'a str {
+        let at = rows
+            .iter()
+            .position(|r| r.contains(body))
+            .unwrap_or_else(|| panic!("no row contains {body:?}"));
+        &rows[at - 1]
+    }
+
+    #[test]
+    fn mentions_and_answers_to_me_get_the_bar_my_own_messages_do_not() {
+        let mine = msg("1", "me", "mine one");
+        let mut mention = msg("2", "bob", "hey mention");
+        mention.mentions = vec![user("me")];
+        let answer = reply_to(msg("3", "bob", "your point answer"), &mine);
+        let mut own_ping = msg("4", "me", "self ping");
+        own_ping.mentions = vec![user("me")];
+        let plain = msg("5", "ann", "nothing plain");
+        let mut app = app_with(vec![mine, mention, answer, own_ping, plain], false);
+        let rows = draw(&mut app, 100, 30);
+
+        // without avatars only the header and context rows have a margin
+        assert_eq!(
+            gutter_of(&rows, row_above(&rows, "hey mention")),
+            "\u{258E} "
+        );
+        assert_eq!(
+            gutter_of(&rows, row_above(&rows, "your point answer")),
+            "\u{258E} "
+        );
+        assert_eq!(
+            gutter_of(&rows, pane_row_starting_with(&rows, "@me#0001 - mine one")),
+            "\u{258E} "
+        );
+        assert_eq!(gutter_of(&rows, row_above(&rows, "mine one")), "  ");
+        assert_eq!(gutter_of(&rows, row_above(&rows, "self ping")), "  ");
+        assert_eq!(gutter_of(&rows, row_above(&rows, "nothing plain")), "  ");
+    }
+
+    #[test]
+    fn with_avatars_every_row_of_a_mention_carries_the_bar() {
+        let mut mention = msg("2", "bob", "first row\nsecond row\nthird row");
+        mention.mentions = vec![user("me")];
+        let mut app = app_with(vec![msg("1", "ann", "before"), mention], true);
+        // the console renderer draws pictures itself: avatars are on
+        app.pixel_mode = true;
+        let rows = draw(&mut app, 100, 24);
+        assert_eq!(gutter_of(&rows, row_above(&rows, "first row")), "\u{258E} ");
+        for marker in ["first row", "second row", "third row"] {
+            assert_eq!(
+                gutter_of(&rows, pane_row_starting_with(&rows, marker)),
+                "\u{258E} ",
+                "{marker}"
+            );
+        }
+        assert_eq!(gutter_of(&rows, row_above(&rows, "before")), "  ");
+        assert_eq!(
+            gutter_of(&rows, pane_row_starting_with(&rows, "before")),
+            "  "
+        );
+    }
+
+    #[test]
+    fn the_message_a_selected_reply_answers_is_marked() {
+        let original = msg("1", "ann", "the original");
+        let between = msg("2", "bob", "in between");
+        let reply = reply_to(msg("3", "bob", "the reply"), &original);
+        let mut app = app_with(vec![original, between, reply], false);
+        app.selected_message_index = Some(2);
+        let rows = draw(&mut app, 100, 24);
+        // the original's header carries the mark, the selected reply's
+        // first row (its context row) the arrow, the one between nothing
+        assert_eq!(
+            gutter_of(&rows, row_above(&rows, "the original")),
+            "\u{21A9} "
+        );
+        assert_eq!(gutter_of(&rows, row_above(&rows, "in between")), "  ");
+        assert_eq!(
+            gutter_of(
+                &rows,
+                pane_row_starting_with(&rows, "@ann#0001 - the original")
+            ),
+            "\u{25B6} "
+        );
+
+        app.selected_message_index = None;
+        let rows = draw(&mut app, 100, 24);
+        assert_eq!(gutter_of(&rows, row_above(&rows, "the original")), "  ");
     }
 }

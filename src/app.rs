@@ -2033,12 +2033,25 @@ impl App {
         if self.channel_notification_visibility(&channel) == NotificationVisibility::None {
             return false;
         }
+        if self.message_mentions_me(message) {
+            return true;
+        }
+        channel.guild_id.is_none() && !self.channel_is_muted_effective(&channel)
+    }
+
+    /// Whether a message mentions the user: by name, through one of their
+    /// roles, or with @everyone/@here, the last two unless the community's
+    /// notification settings suppress them.
+    pub fn message_mentions_me(&self, message: &MessageResponse) -> bool {
         if message.mentions.iter().any(|u| u.id == self.me.id) {
             return true;
         }
+        let guild_id = self
+            .channel_by_id(&message.channel_id)
+            .and_then(|c| c.guild_id.clone());
         if !message.mention_roles.is_empty()
-            && !self.suppress_roles_enabled(channel.guild_id.as_deref())
-            && let Some(gid) = channel.guild_id.as_deref()
+            && !self.suppress_roles_enabled(guild_id.as_deref())
+            && let Some(gid) = guild_id.as_deref()
             && let Some(roles) = self
                 .guild_members
                 .get(gid)
@@ -2051,14 +2064,19 @@ impl App {
         {
             return true;
         }
-        if message.mention_everyone && !self.suppress_everyone_enabled(channel.guild_id.as_deref())
-        {
-            return true;
-        }
-        if channel.guild_id.is_none() && !self.channel_is_muted_effective(&channel) {
-            return true;
-        }
-        false
+        message.mention_everyone && !self.suppress_everyone_enabled(guild_id.as_deref())
+    }
+
+    /// Whether a message is shown highlighted, the way the web app marks
+    /// what concerns the reader: it mentions them, or it answers one of
+    /// their messages. Never the reader's own messages.
+    pub fn message_highlights_me(&self, message: &MessageResponse) -> bool {
+        message.author.id != self.me.id
+            && (self.message_mentions_me(message)
+                || message
+                    .referenced_message
+                    .as_deref()
+                    .is_some_and(|original| original.author.id == self.me.id))
     }
 
     pub fn on_gateway_message_create(&mut self, message: &MessageResponse) {
