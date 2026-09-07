@@ -1,4 +1,5 @@
 mod attachments;
+mod audio;
 mod cache;
 mod chafa;
 mod disk_cache;
@@ -8,6 +9,7 @@ mod open_external;
 mod prepare;
 
 pub use attachments::{StagedAttachment, from_clipboard, from_path};
+pub use audio::{Player, attachment_is_audio, format_duration, player_command};
 pub use cache::{Lookup, MediaCache};
 pub use chafa::chafa_from_bytes;
 pub use disk_cache::DiskCache;
@@ -139,8 +141,29 @@ fn gif_label(embed: &MessageEmbedResponse) -> String {
 
 #[derive(Debug, Clone)]
 pub enum MessagePreviewMedia {
-    Image { url: String, label: String },
-    Video { url: String, label: String },
+    Image {
+        url: String,
+        label: String,
+    },
+    Video {
+        url: String,
+        label: String,
+    },
+    /// Played through an external program (see `audio`).
+    Audio {
+        url: String,
+        label: String,
+    },
+}
+
+fn attachment_audio_url(a: &MessageAttachmentResponse) -> Option<String> {
+    if !attachment_is_audio(a) {
+        return None;
+    }
+    a.url
+        .clone()
+        .or_else(|| a.proxy_url.clone())
+        .filter(|u| is_http_url(u))
 }
 
 /// What Ctrl+O shows for one embed, if anything.
@@ -200,6 +223,16 @@ pub fn first_message_preview_media(msg: &MessageResponse) -> Option<MessagePrevi
                 a.filename.clone()
             };
             return Some(MessagePreviewMedia::Video { url: u, label });
+        }
+    }
+    for a in &msg.attachments {
+        if let Some(u) = attachment_audio_url(a) {
+            let label = if a.filename.is_empty() {
+                "audio".to_string()
+            } else {
+                a.filename.clone()
+            };
+            return Some(MessagePreviewMedia::Audio { url: u, label });
         }
     }
 

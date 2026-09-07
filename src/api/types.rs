@@ -480,6 +480,9 @@ pub struct MessageAttachmentResponse {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
+    /// Length of an audio file in seconds.
+    #[serde(default)]
+    pub duration: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]

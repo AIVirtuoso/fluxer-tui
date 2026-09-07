@@ -111,7 +111,8 @@ console, the message pane looks like the web app:
   previews: scaled to fit about a third of the pane, never larger than the
   original. GIFs from the picker (KLIPY, Tenor) and animated WebP play; in
   performance mode they stay on their first frame. **Ctrl+O** on a selected
-  message still opens the full-size picture or GIF, and videos externally.
+  message still opens the full-size picture or GIF, videos externally, and
+  plays audio (see "Audio").
 
 Previews are asked from Fluxer's media proxy already scaled to the size
 they are drawn at, so a 4000-pixel photo costs a few kilobytes. Only the
@@ -128,6 +129,7 @@ avatars = true        # profile pictures beside messages
 [media]
 disk_cache_mb = 64    # 0 turns the disk cache off
 memory_cache_mb = 64
+audio_player = ""     # see "Audio" below
 ```
 
 Both `[ui]` switches are also in the settings overlay (**F2**). A picture
@@ -139,6 +141,33 @@ terminal is asked to shift those rows itself (pictures move with them, as
 foot, kitty and xterm do), and only the rows that came into view are
 sent. Keys that arrive while a frame is drawn are handled together, so a
 held key scrolls as fast as the terminal keeps up.
+
+## Audio
+
+**Ctrl+O** on a message with an audio attachment (a voice message, an
+mp3, ...) plays it; **Ctrl+O** on it again stops. The client does not
+decode audio itself: the file is piped to a program that does, with no
+terminal of its own, so it works the same in a terminal emulator and on a
+Linux console. With nothing configured the first of these on PATH is
+used, each told to play audio only and read stdin:
+
+```
+mpv --no-video --no-terminal --really-quiet -
+ffplay -nodisp -autoexit -loglevel error -
+pw-play -
+paplay
+aplay -q
+```
+
+Any other program that reads the audio from stdin does too:
+
+```toml
+[media]
+audio_player = "sox -q -t mp3 - -d"
+```
+
+The status line shows what plays. Audio attachments are listed with ♪
+and their length.
 
 ## Interface overview
 

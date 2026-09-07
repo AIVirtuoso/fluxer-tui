@@ -776,6 +776,10 @@ pub struct App {
     pub ui_settings: UiSettings,
     /// The profile popup, while open.
     pub profile: Option<ProfileView>,
+    /// The external player an audio attachment is playing through.
+    pub audio: Option<crate::media::Player>,
+    /// `[media] audio_player`: empty picks a player from PATH.
+    pub audio_player_cmd: String,
 }
 
 impl App {
@@ -891,6 +895,8 @@ impl App {
             server_notification_scroll: 0,
             ui_settings,
             profile: None,
+            audio: None,
+            audio_player_cmd: String::new(),
         };
         app.normalize_selection();
         app
@@ -2398,6 +2404,50 @@ impl App {
 
     pub fn dismiss_profile(&mut self) {
         self.profile = None;
+    }
+
+    /// Whether Ctrl+O on this attachment should stop what plays rather
+    /// than start it again.
+    pub fn audio_playing(&self, key: &str) -> bool {
+        self.audio.as_ref().is_some_and(|p| p.key == key)
+    }
+
+    pub fn stop_audio(&mut self) {
+        if let Some(mut player) = self.audio.take() {
+            player.stop();
+            self.set_status(format!("Stopped {}", player.label));
+        }
+    }
+
+    /// Hand downloaded audio to the player; whatever played before stops.
+    pub fn play_audio(&mut self, key: String, label: String, bytes: Vec<u8>) {
+        if let Some(mut old) = self.audio.take() {
+            old.stop();
+        }
+        let Some(argv) = crate::media::player_command(&self.audio_player_cmd) else {
+            self.set_status(
+                "No audio player found: install mpv (or ffplay, pw-play, paplay, aplay), \
+                 or set [media] audio_player in the config.",
+            );
+            return;
+        };
+        match crate::media::Player::start(&argv, bytes, label, key) {
+            Ok(player) => {
+                self.set_status(format!(
+                    "\u{266A} {} via {} (Ctrl+O on it again stops)",
+                    player.label, player.program
+                ));
+                self.audio = Some(player);
+            }
+            Err(err) => self.set_status(format!("Couldn't start the audio player: {err}")),
+        }
+    }
+
+    /// Notice a player that ended on its own.
+    pub fn reap_audio(&mut self) {
+        if self.audio.as_mut().is_some_and(|p| p.finished()) {
+            self.audio = None;
+        }
     }
 
     /// The member data for the profile popup's guild: from the profile

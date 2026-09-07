@@ -145,6 +145,12 @@ pub enum AppEvent {
         guild_id: Option<String>,
         message: String,
     },
+    /// An audio attachment downloaded, ready for the player.
+    AudioBytes {
+        key: String,
+        label: String,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -198,6 +204,9 @@ pub fn apply_event(
             message,
         } => {
             app.set_profile_failed(&user_id, guild_id.as_deref(), message);
+        }
+        AppEvent::AudioBytes { key, label, bytes } => {
+            app.play_audio(key, label, bytes);
         }
         AppEvent::SendRestore {
             content,

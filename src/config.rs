@@ -101,6 +101,9 @@ pub struct MediaSettings {
     pub disk_cache_mb: u32,
     /// Decoded pictures kept in memory (MiB).
     pub memory_cache_mb: u32,
+    /// The command audio attachments are piped to (whitespace-separated);
+    /// empty picks the first of mpv, ffplay, pw-play, paplay, aplay on PATH.
+    pub audio_player: String,
 }
 
 impl Default for MediaSettings {
@@ -108,6 +111,7 @@ impl Default for MediaSettings {
         Self {
             disk_cache_mb: 64,
             memory_cache_mb: 64,
+            audio_player: String::new(),
         }
     }
 }
