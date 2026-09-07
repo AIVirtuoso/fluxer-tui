@@ -209,6 +209,7 @@ async fn main() -> Result<()> {
             .unwrap_or((8, 16)),
     };
     app.media = crate::media::MediaCache::new((config.media.memory_cache_mb.max(1) as usize) << 20);
+    app.audio_player_cmd = config.media.audio_player.clone();
     app.disk_cache = dirs::cache_dir()
         .map(|d| d.join("fluxer-tui").join("media"))
         .and_then(|dir| {
@@ -330,6 +331,7 @@ async fn main() -> Result<()> {
                 let dt = now.duration_since(last_tick);
                 last_tick = now;
                 next_tick = tokio::time::Instant::now() + app.tick_period();
+                app.reap_audio();
                 // VT switching in console mode: hand the display over and back
                 if let Some(session) = console_session.as_ref()
                     && let Some(vt) = session.vt.as_ref()
@@ -829,9 +831,23 @@ fn handle_key_event(
                                 app.set_status(format!("Fetching {label}…"));
                                 spawn_open_video(client.clone(), event_tx.clone(), url, label);
                             }
+                            Some(MessagePreviewMedia::Audio { url, label }) => {
+                                if app.audio_playing(&url) {
+                                    app.stop_audio();
+                                } else {
+                                    app.set_status(format!("Fetching {label}…"));
+                                    spawn_audio_fetch(
+                                        client.clone(),
+                                        event_tx.clone(),
+                                        url,
+                                        label,
+                                        app.disk_cache.clone(),
+                                    );
+                                }
+                            }
                             None => {
                                 app.set_status(
-                                    "No image or video attachment or embed on this message.",
+                                    "No image, video or audio attachment or embed on this message.",
                                 );
                             }
                         }
@@ -1723,6 +1739,52 @@ fn spawn_open_video(
             Err(e) => format!("Couldn't open video: {e:#}"),
         };
         let _ = event_tx.send(AppEvent::SetStatus(msg));
+    });
+}
+
+/// Download an audio attachment (through the disk cache, like pictures)
+/// for the player.
+fn spawn_audio_fetch(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    url: String,
+    label: String,
+    disk: Option<std::sync::Arc<crate::media::DiskCache>>,
+) {
+    tokio::spawn(async move {
+        let cached = match disk.clone() {
+            Some(d) => {
+                let u = url.clone();
+                tokio::task::spawn_blocking(move || d.read(&u))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            None => None,
+        };
+        let bytes = match cached {
+            Some(b) => b,
+            None => match client.fetch_media_bytes(&url).await {
+                Ok(b) => {
+                    if let Some(d) = disk {
+                        let (u, copy) = (url.clone(), b.clone());
+                        let _ = tokio::task::spawn_blocking(move || d.write(&u, &copy)).await;
+                    }
+                    b
+                }
+                Err(err) => {
+                    let _ = event_tx.send(AppEvent::SetStatus(format!(
+                        "Couldn't download {label}: {err:#}"
+                    )));
+                    return;
+                }
+            },
+        };
+        let _ = event_tx.send(AppEvent::AudioBytes {
+            key: url,
+            label,
+            bytes,
+        });
     });
 }
 

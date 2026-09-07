@@ -647,9 +647,14 @@ fn build_message_lines(
                 None => "unknown".to_string(),
             };
             let mime = attachment.content_type.as_deref().unwrap_or("unknown");
+            let audio = crate::media::attachment_is_audio(attachment);
+            let size_str = match attachment.duration.filter(|_| audio) {
+                Some(d) => format!("{size_str} \u{00B7} {}", crate::media::format_duration(d)),
+                None => size_str,
+            };
             rows.push(body_row(vec![
                 Span::styled(
-                    "\u{1F4CE} ",
+                    if audio { "\u{266A} " } else { "\u{1F4CE} " },
                     Style::default().fg(crate::ui::theme::accent_dim()),
                 ),
                 Span::styled(

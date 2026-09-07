@@ -11,11 +11,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ServerSelection::Guild(_) => app.selected_server_name(),
     };
 
-    let status_mid = if app.status_message.is_empty() {
+    let mut status_mid = if app.status_message.is_empty() {
         String::new()
     } else {
         format!(" | {}", app.status_message)
     };
+    if let Some(player) = app.audio.as_ref()
+        && app.status_message.is_empty()
+    {
+        status_mid = format!(" | \u{266A} {}", player.label);
+    }
 
     let hints = match app.focus {
         Focus::Servers => " · j/k servers · n notifications · Tab/h/l · l open channels",

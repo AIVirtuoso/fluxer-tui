@@ -43,7 +43,8 @@ Messages
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)
   Ctrl+D - delete selected (yours, or mod with Manage Messages)
   Ctrl+O - the selected message's picture or GIF full size in-terminal (the chat shows
-           previews); videos open via the system default app
+           previews); videos open via the system default app; audio plays through
+           mpv/ffplay/pw-play/paplay/aplay or [media] audio_player (again: stop)
 
 Input
   Enter - send; save edit; send forward with reference
