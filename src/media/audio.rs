@@ -64,12 +64,6 @@ fn player_command_in(configured: &str, path: &OsStr) -> Option<Vec<String>> {
         .map(|argv| argv.iter().map(|s| s.to_string()).collect())
 }
 
-/// Whether a program of that name is on PATH.
-pub fn on_path(name: &str) -> bool {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    find_on_path(name, &path).is_some()
-}
-
 fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
     if name.contains('/') {
         let p = Path::new(name);

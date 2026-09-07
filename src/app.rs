@@ -1314,9 +1314,10 @@ impl App {
     }
 
     /// What to announce about a message that just arrived, if anything: a
-    /// direct message, a mention, or (when asked for) any message in a
-    /// community channel set to all messages; never the user's own, nor
-    /// the channel being read.
+    /// direct message or a mention, wherever it lands (the terminal may
+    /// well be out of sight), or, when asked for, any message in a
+    /// community channel set to all messages other than the one being
+    /// read; never the user's own.
     pub fn notification_for(
         &self,
         message: &MessageResponse,
@@ -1324,12 +1325,11 @@ impl App {
         if message.author.id == self.me.id {
             return None;
         }
-        if self.active_channel_id().as_deref() == Some(message.channel_id.as_str()) {
-            return None;
-        }
         let channel = self.channel_by_id(&message.channel_id);
+        let reading_it = self.active_channel_id().as_deref() == Some(message.channel_id.as_str());
         let wanted = self.message_notifies_me(message)
             || (self.ui_settings.notify_all_messages
+                && !reading_it
                 && channel.as_ref().is_some_and(|c| {
                     c.guild_id.is_some()
                         && self.channel_notification_visibility(c)
@@ -5247,11 +5247,14 @@ mod notification_tests {
             app.notification_for(&msg("art", "ann", "no mention"))
                 .is_none()
         );
-        // the channel being read, and one's own messages, are not announced
-        assert!(
-            app.notification_for(&msg("general", "ann", "<@me> here"))
-                .is_none()
-        );
+        // a mention in the channel being read still counts (the terminal
+        // may be out of sight); one's own messages never do
+        let mut here = msg("general", "ann", "<@me> here");
+        here.mentions.push(UserPartialResponse {
+            id: "me".into(),
+            ..Default::default()
+        });
+        assert!(app.notification_for(&here).is_some());
         assert!(app.notification_for(&msg("dm", "me", "my own")).is_none());
     }
 
@@ -5259,6 +5262,15 @@ mod notification_tests {
     fn all_messages_can_be_asked_for_and_files_are_named() {
         let mut app = app();
         app.ui_settings.notify_all_messages = true;
+        // all messages: except in the channel being read
+        assert!(
+            app.notification_for(&msg("general", "ann", "chatter"))
+                .is_none()
+        );
+        assert!(
+            app.notification_for(&msg("art", "ann", "chatter"))
+                .is_some()
+        );
         let mut m = msg("art", "ann", "");
         m.attachments
             .push(crate::api::types::MessageAttachmentResponse {

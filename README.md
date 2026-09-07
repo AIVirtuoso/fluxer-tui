@@ -192,9 +192,8 @@ videos are listed by name.
 ## Notifications
 
 A direct message, or a message that mentions you (directly, through one
-of your roles, or with @everyone unless you suppress those) in a channel
-you are not reading, is announced outside the client by a program that
-does that:
+of your roles, or with @everyone unless you suppress those), is announced
+outside the client by a program that does that:
 
 - on a desktop, libnotify's `notify-send`;
 - on a Linux console, GNU `mail`: the message is mailed to you locally,
@@ -215,9 +214,12 @@ notify_desktop_command = "" # the desktop program; "notify-send" when empty
 notify_all_messages = false # also every message in channels set to all messages
 ```
 
-Nothing is announced for your own messages or for the channel you are
-reading, and a channel's own notification settings (muted, mentions
-only) are respected.
+Nothing is announced for your own messages, and a channel's own
+notification settings (muted, mentions only) are respected. A program
+that cannot be run is reported on the status line: `notify-send` comes
+with libnotify and needs a notification daemon (mako, dunst, ...) to
+show anything; `mail` comes with GNU mailutils and needs local mail
+delivery.
 
 ## Interface overview
 

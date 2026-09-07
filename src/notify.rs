@@ -38,32 +38,17 @@ pub fn on_console(console_mode: bool) -> bool {
 
 /// Which program delivers notifications for `mode` here. Auto picks
 /// notify-send where there is a display, mail on the console, and nothing
-/// elsewhere; the explicit modes are taken at their word.
+/// elsewhere; whether the program is there is found out when it is run,
+/// so a missing one is reported rather than passed over in silence.
 pub fn backend(mode: NotifyMode, console: bool, display: bool) -> Option<Backend> {
-    backend_with(
-        mode,
-        console,
-        display,
-        crate::media::on_path("notify-send"),
-        crate::media::on_path("mail"),
-    )
-}
-
-fn backend_with(
-    mode: NotifyMode,
-    console: bool,
-    display: bool,
-    notify_send: bool,
-    mail: bool,
-) -> Option<Backend> {
     match mode {
         NotifyMode::Off => None,
         NotifyMode::Desktop => Some(Backend::Desktop),
         NotifyMode::Mail => Some(Backend::Mail),
         NotifyMode::Auto => {
-            if display && notify_send {
+            if display {
                 Some(Backend::Desktop)
-            } else if console && mail {
+            } else if console {
                 Some(Backend::Mail)
             } else {
                 None
@@ -149,8 +134,12 @@ pub fn send(
         {
             Ok(child) => child,
             Err(err) => {
+                let hint = match backend {
+                    Backend::Desktop => " (libnotify, plus a notification daemon)",
+                    Backend::Mail => " (GNU mailutils)",
+                };
                 let _ = event_tx.send(crate::events::AppEvent::SetStatus(format!(
-                    "Notifications: cannot run {program}: {err}"
+                    "Notifications: cannot run {program}{hint}: {err}"
                 )));
                 return;
             }
@@ -178,30 +167,16 @@ mod tests {
     #[test]
     fn auto_picks_the_desktop_with_a_display_and_mail_on_the_console() {
         let auto = NotifyMode::Auto;
+        assert_eq!(backend(auto, false, true), Some(Backend::Desktop));
+        assert_eq!(backend(auto, true, false), Some(Backend::Mail));
+        assert_eq!(backend(auto, true, true), Some(Backend::Desktop));
+        assert_eq!(backend(auto, false, false), None);
         assert_eq!(
-            backend_with(auto, false, true, true, true),
+            backend(NotifyMode::Desktop, true, false),
             Some(Backend::Desktop)
         );
-        assert_eq!(
-            backend_with(auto, true, false, true, true),
-            Some(Backend::Mail)
-        );
-        assert_eq!(
-            backend_with(auto, true, true, true, true),
-            Some(Backend::Desktop)
-        );
-        assert_eq!(backend_with(auto, false, false, true, true), None);
-        assert_eq!(backend_with(auto, true, false, true, false), None);
-        assert_eq!(backend_with(auto, false, true, false, true), None);
-        assert_eq!(
-            backend_with(NotifyMode::Desktop, true, false, false, false),
-            Some(Backend::Desktop)
-        );
-        assert_eq!(
-            backend_with(NotifyMode::Mail, false, true, true, false),
-            Some(Backend::Mail)
-        );
-        assert_eq!(backend_with(NotifyMode::Off, true, true, true, true), None);
+        assert_eq!(backend(NotifyMode::Mail, false, true), Some(Backend::Mail));
+        assert_eq!(backend(NotifyMode::Off, true, true), None);
     }
 
     /// A script standing in for the program records how it was called.
@@ -288,7 +263,10 @@ mod tests {
             .expect("a status");
         match status {
             crate::events::AppEvent::SetStatus(s) => {
-                assert!(s.starts_with("Notifications: cannot run "), "{s}")
+                assert!(
+                    s.starts_with("Notifications: cannot run ") && s.contains("libnotify"),
+                    "{s}"
+                )
             }
             other => panic!("{other:?}"),
         }
