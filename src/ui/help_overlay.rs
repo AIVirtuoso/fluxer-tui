@@ -37,6 +37,7 @@ Messages
   Scroll up near the top - older messages load automatically
   s - select last message (selection mode)
   r - reply to selected message
+  p - profile of the selected message's author (p again: picture full size; Esc closes)
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
   e - react: opens emoji picker on selected message (Enter to send reaction, Esc cancels)
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)

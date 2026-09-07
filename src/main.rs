@@ -603,6 +603,7 @@ fn handle_key_event(
             app.settings_cursor = 0;
             app.show_server_notifications = false;
             app.dismiss_image_preview();
+            app.dismiss_profile();
         }
         return;
     }
@@ -685,6 +686,26 @@ fn handle_key_event(
             KeyCode::Down | KeyCode::Char('j') if chafa_scroll => app.image_preview_scroll(1),
             KeyCode::PageUp if chafa_scroll => app.image_preview_scroll(-12),
             KeyCode::PageDown if chafa_scroll => app.image_preview_scroll(12),
+            _ => {}
+        }
+        return;
+    }
+
+    if app.profile.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.dismiss_profile(),
+            // p again: the picture full size, over the popup
+            KeyCode::Char('p') => match app.profile_picture() {
+                Some((url, title)) => {
+                    app.start_image_preview_loading(title.clone());
+                    spawn_image_preview(client.clone(), event_tx.clone(), url, title);
+                }
+                None => app.set_status("No profile picture to show."),
+            },
+            KeyCode::Up | KeyCode::Char('k') => app.profile_scroll(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
+            KeyCode::PageUp => app.profile_scroll(-12),
+            KeyCode::PageDown => app.profile_scroll(12),
             _ => {}
         }
         return;
@@ -1285,6 +1306,14 @@ fn handle_key_event(
         {
             app.start_reply();
         }
+        // p = the selected message's author's profile
+        KeyCode::Char('p')
+            if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
+        {
+            if let Some((user_id, guild_id)) = app.open_profile_of_selected() {
+                spawn_profile_load(client.clone(), event_tx.clone(), user_id, guild_id);
+            }
+        }
         // R = refresh
         KeyCode::Char('R') => {
             if let Some(channel_id) = app.active_channel_id() {
@@ -1520,6 +1549,32 @@ fn spawn_guild_roles_load(
                     guild_id,
                     forbidden,
                     message: format!("Failed to load roles: {err}"),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_profile_load(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    user_id: String,
+    guild_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        match client.user_profile(&user_id, guild_id.as_deref()).await {
+            Ok(profile) => {
+                let _ = event_tx.send(AppEvent::ProfileLoaded {
+                    user_id,
+                    guild_id,
+                    profile: Box::new(profile),
+                });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ProfileFailed {
+                    user_id,
+                    guild_id,
+                    message: format!("Failed to load profile: {err}"),
                 });
             }
         }
@@ -1952,7 +2007,7 @@ fn spawn_nick_change(
             Ok(member) => {
                 let _ = event_tx.send(AppEvent::NickChangeSuccess {
                     guild_id,
-                    member,
+                    member: Box::new(member),
                     channel_id,
                     prev_display,
                     new_display,

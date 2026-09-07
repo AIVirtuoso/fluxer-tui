@@ -9,6 +9,7 @@ pub(crate) mod input_word_wrap;
 pub mod mention_popup;
 pub mod message_markdown;
 pub mod message_pane;
+pub mod profile_overlay;
 pub mod server_notifications_overlay;
 pub mod settings_overlay;
 pub mod sidebar;
@@ -104,6 +105,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         server_notifications_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
+    } else if app.profile.is_some() {
+        profile_overlay::render(frame, area, app);
     } else if app.channel_picker.is_some() {
         channel_picker::render(frame, area, app);
     }
@@ -122,6 +125,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let popup = app.show_help
             || app.show_settings
             || app.show_server_notifications
+            || app.profile.is_some()
             || app.image_preview.is_some()
             || app.channel_picker.is_some()
             || app.emoji_autocomplete.is_some()

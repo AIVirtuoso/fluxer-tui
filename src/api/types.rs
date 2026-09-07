@@ -264,6 +264,16 @@ pub struct UserPartialResponse {
     pub bot: bool,
     #[serde(default)]
     pub system: bool,
+    /// Public account flags (staff, partner, bug hunter, ...).
+    #[serde(default)]
+    pub flags: u64,
+}
+
+/// Bits of `UserPartialResponse::flags` shown as badges.
+pub mod user_flags {
+    pub const STAFF: u64 = 1 << 0;
+    pub const PARTNER: u64 = 1 << 2;
+    pub const BUG_HUNTER: u64 = 1 << 3;
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -297,6 +307,99 @@ pub struct GuildMemberResponse {
     pub mute: bool,
     #[serde(default)]
     pub deaf: bool,
+    /// ISO 8601, when the member joined.
+    #[serde(default)]
+    pub joined_at: Option<String>,
+}
+
+/// The customisable part of a profile: the user's own, or their
+/// guild-specific one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfileDataResponse {
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub pronouns: Option<String>,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub accent_color: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MutualGuildResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub nick: Option<String>,
+}
+
+/// A verified external account shown on a profile.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConnectionResponse {
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub verified: bool,
+}
+
+/// `GET /users/{id}/profile`: what the web app's profile popup shows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UserProfileResponse {
+    #[serde(default)]
+    pub user: UserPartialResponse,
+    #[serde(default)]
+    pub user_profile: ProfileDataResponse,
+    /// Only with `guild_id`, and only while they are a member.
+    #[serde(default)]
+    pub guild_member: Option<GuildMemberResponse>,
+    #[serde(default)]
+    pub guild_member_profile: Option<ProfileDataResponse>,
+    /// 0 none, 1 subscription, 2 lifetime.
+    #[serde(default)]
+    pub premium_type: Option<u8>,
+    #[serde(default)]
+    pub premium_since: Option<String>,
+    #[serde(default)]
+    pub premium_lifetime_sequence: Option<i32>,
+    #[serde(default)]
+    pub mutual_friends: Option<Vec<UserPartialResponse>>,
+    #[serde(default)]
+    pub mutual_guilds: Option<Vec<MutualGuildResponse>>,
+    #[serde(default)]
+    pub connected_accounts: Option<Vec<ConnectionResponse>>,
+    /// Minutes from UTC of the profile's time zone, when shared.
+    #[serde(default)]
+    pub timezone_offset: Option<i32>,
+    /// The user restricted their profile: bio, pronouns, badges and
+    /// connections were stripped.
+    #[serde(default)]
+    pub profile_limited: Option<bool>,
+}
+
+impl UserProfileResponse {
+    /// The bio, pronouns and accent colour for the guild the profile was
+    /// asked for, falling back field by field to the user's own.
+    pub fn shown_profile(&self) -> ProfileDataResponse {
+        let base = &self.user_profile;
+        let Some(g) = self.guild_member_profile.as_ref() else {
+            return base.clone();
+        };
+        let pick = |a: &Option<String>, b: &Option<String>| {
+            a.as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .or(b.as_ref())
+                .cloned()
+        };
+        ProfileDataResponse {
+            bio: pick(&g.bio, &base.bio),
+            pronouns: pick(&g.pronouns, &base.pronouns),
+            banner: pick(&g.banner, &base.banner),
+            accent_color: g.accent_color.or(base.accent_color),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

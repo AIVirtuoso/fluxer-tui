@@ -232,6 +232,30 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// A user's profile as the web app's popup shows it; with `guild_id`
+    /// also their member data and guild profile there.
+    pub async fn user_profile(
+        &self,
+        user_id: &str,
+        guild_id: Option<&str>,
+    ) -> Result<crate::api::types::UserProfileResponse> {
+        let mut query: Vec<(&str, &str)> = vec![
+            ("with_mutual_guilds", "true"),
+            ("with_mutual_friends", "true"),
+        ];
+        if let Some(gid) = guild_id {
+            query.push(("guild_id", gid));
+        }
+        self.send_json::<[(&str, &str)], (), crate::api::types::UserProfileResponse>(
+            Method::GET,
+            &format!("/users/{user_id}/profile"),
+            Some(query.as_slice()),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
     pub async fn patch_current_guild_member_nick(
         &self,
         guild_id: &str,

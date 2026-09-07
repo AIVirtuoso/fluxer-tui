@@ -179,13 +179,27 @@ pub fn proxied_url(pic: &InlinePicture, box_px: (u32, u32)) -> String {
 /// The media-proxy URL of an avatar, as the web app builds it: an `a_`
 /// prefix marks an animated one, which is asked for as a still picture.
 pub fn avatar_url(media_base: &str, guild_id: Option<&str>, user_id: &str, hash: &str) -> String {
+    avatar_url_sized(media_base, guild_id, user_id, hash, AVATAR_PX)
+}
+
+/// The largest size the media proxy serves an avatar at.
+pub const AVATAR_PREVIEW_PX: u32 = 1024;
+
+/// An avatar at one of the media proxy's sizes.
+pub fn avatar_url_sized(
+    media_base: &str,
+    guild_id: Option<&str>,
+    user_id: &str,
+    hash: &str,
+    size: u32,
+) -> String {
     let base = media_base.trim_end_matches('/');
     let hash = hash.strip_prefix("a_").unwrap_or(hash);
     match guild_id {
         Some(gid) => {
-            format!("{base}/guilds/{gid}/users/{user_id}/avatars/{hash}.webp?size={AVATAR_PX}")
+            format!("{base}/guilds/{gid}/users/{user_id}/avatars/{hash}.webp?size={size}")
         }
-        None => format!("{base}/avatars/{user_id}/{hash}.webp?size={AVATAR_PX}"),
+        None => format!("{base}/avatars/{user_id}/{hash}.webp?size={size}"),
     }
 }
 
@@ -410,6 +424,16 @@ mod tests {
         assert_eq!(
             avatar_url("https://media.example", Some("7"), "42", "cafe"),
             "https://media.example/guilds/7/users/42/avatars/cafe.webp?size=160"
+        );
+        assert_eq!(
+            avatar_url_sized(
+                "https://media.example",
+                None,
+                "42",
+                "a_cafe",
+                AVATAR_PREVIEW_PX
+            ),
+            "https://media.example/avatars/42/cafe.webp?size=1024"
         );
     }
 
