@@ -78,7 +78,7 @@ pub enum AppEvent {
     },
     NickChangeSuccess {
         guild_id: String,
-        member: GuildMemberResponse,
+        member: Box<GuildMemberResponse>,
         channel_id: String,
         prev_display: String,
         new_display: String,
@@ -135,6 +135,16 @@ pub enum AppEvent {
         content: String,
         attachments: Vec<crate::media::StagedAttachment>,
     },
+    ProfileLoaded {
+        user_id: String,
+        guild_id: Option<String>,
+        profile: Box<crate::api::types::UserProfileResponse>,
+    },
+    ProfileFailed {
+        user_id: String,
+        guild_id: Option<String>,
+        message: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -174,6 +184,20 @@ pub fn apply_event(
         }
         AppEvent::AttachmentFailed { message } => {
             app.set_status(format!("Attach failed: {message}"));
+        }
+        AppEvent::ProfileLoaded {
+            user_id,
+            guild_id,
+            profile,
+        } => {
+            app.set_profile_loaded(&user_id, guild_id.as_deref(), *profile);
+        }
+        AppEvent::ProfileFailed {
+            user_id,
+            guild_id,
+            message,
+        } => {
+            app.set_profile_failed(&user_id, guild_id.as_deref(), message);
         }
         AppEvent::SendRestore {
             content,
@@ -575,7 +599,7 @@ pub fn apply_event(
             prev_display,
             new_display,
         } => {
-            app.merge_guild_member(&guild_id, member);
+            app.merge_guild_member(&guild_id, *member);
             let content =
                 crate::slash_commands::nick_change_system_markdown(&prev_display, &new_display);
             let id = app.allocate_local_message_snowflake(&channel_id);

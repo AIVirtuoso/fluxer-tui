@@ -638,6 +638,27 @@ impl std::fmt::Debug for ImagePreviewState {
     }
 }
 
+/// The profile popup: whose profile, and what the API answered.
+#[derive(Debug)]
+pub struct ProfileView {
+    pub user_id: String,
+    /// The guild the message was in: nickname, roles and guild profile
+    /// come from there.
+    pub guild_id: Option<String>,
+    /// What was known before the fetch answered (the message's author),
+    /// replaced by the profile's user when it arrives.
+    pub user: UserPartialResponse,
+    pub state: ProfileState,
+    pub scroll: u16,
+}
+
+#[derive(Debug)]
+pub enum ProfileState {
+    Loading,
+    Ready(Box<crate::api::types::UserProfileResponse>),
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct App {
     pub discovery: WellKnownFluxerResponse,
@@ -753,6 +774,8 @@ pub struct App {
     pub server_notification_cursor: usize,
     pub server_notification_scroll: u16,
     pub ui_settings: UiSettings,
+    /// The profile popup, while open.
+    pub profile: Option<ProfileView>,
 }
 
 impl App {
@@ -867,6 +890,7 @@ impl App {
             server_notification_cursor: 0,
             server_notification_scroll: 0,
             ui_settings,
+            profile: None,
         };
         app.normalize_selection();
         app
@@ -2197,6 +2221,25 @@ impl App {
         user: &UserPartialResponse,
         member_avatar: Option<&str>,
     ) -> MediaSlot {
+        self.avatar_slot_sized(
+            guild_id,
+            user,
+            member_avatar,
+            crate::media::AVATAR_COLS,
+            crate::media::AVATAR_ROWS,
+        )
+    }
+
+    /// The same avatar as a block of any size (the profile popup shows a
+    /// larger one).
+    pub fn avatar_slot_sized(
+        &self,
+        guild_id: Option<&str>,
+        user: &UserPartialResponse,
+        member_avatar: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> MediaSlot {
         let base = self.media_base_url();
         let url = match (guild_id, member_avatar, user.avatar.as_deref()) {
             (Some(_), Some(hash), _) if !hash.is_empty() => {
@@ -2214,12 +2257,7 @@ impl App {
                 }
             }
         };
-        MediaSlot::new(
-            url,
-            crate::media::AVATAR_COLS,
-            crate::media::AVATAR_ROWS,
-            MediaKind::Avatar,
-        )
+        MediaSlot::new(url, cols, rows, MediaKind::Avatar)
     }
 
     /// Blocks on screen with nothing loaded yet, marked loading here so
@@ -2328,6 +2366,76 @@ impl App {
     pub fn open_help(&mut self) {
         self.help_scroll = 0;
         self.show_help = true;
+    }
+
+    /// Open the profile popup for the selected message's author, over any
+    /// other popup. Returns whose profile to fetch; None when there is no
+    /// selected message or its author has no profile (Fluxerbot).
+    pub fn open_profile_of_selected(&mut self) -> Option<(String, Option<String>)> {
+        let msg = self.selected_message()?;
+        if msg.author.id == crate::slash_commands::FLUXERBOT_ID {
+            self.set_status("Fluxerbot has no profile.");
+            return None;
+        }
+        let guild_id = self.guild_id_for_channel(&msg.channel_id);
+        let user = self
+            .user_cache
+            .get(&msg.author.id)
+            .cloned()
+            .unwrap_or_else(|| msg.author.clone());
+        self.show_settings = false;
+        self.show_server_notifications = false;
+        self.dismiss_image_preview();
+        self.profile = Some(ProfileView {
+            user_id: user.id.clone(),
+            guild_id: guild_id.clone(),
+            user,
+            state: ProfileState::Loading,
+            scroll: 0,
+        });
+        Some((msg.author.id.clone(), guild_id))
+    }
+
+    pub fn dismiss_profile(&mut self) {
+        self.profile = None;
+    }
+
+    pub fn profile_scroll(&mut self, delta: i32) {
+        if let Some(view) = self.profile.as_mut() {
+            view.scroll = view.scroll.saturating_add_signed(delta as i16);
+        }
+    }
+
+    /// A profile arrived: shown if the popup still asks for it; the user
+    /// and member data are kept either way.
+    pub fn set_profile_loaded(
+        &mut self,
+        user_id: &str,
+        guild_id: Option<&str>,
+        profile: crate::api::types::UserProfileResponse,
+    ) {
+        merge_user_cache(&mut self.user_cache, [profile.user.clone()]);
+        if let (Some(gid), Some(member)) = (guild_id, profile.guild_member.clone())
+            && self.guild_members.contains_key(gid)
+        {
+            self.merge_guild_member(gid, member);
+        }
+        if let Some(view) = self.profile.as_mut()
+            && view.user_id == user_id
+            && view.guild_id.as_deref() == guild_id
+        {
+            view.user = profile.user.clone();
+            view.state = ProfileState::Ready(Box::new(profile));
+        }
+    }
+
+    pub fn set_profile_failed(&mut self, user_id: &str, guild_id: Option<&str>, message: String) {
+        if let Some(view) = self.profile.as_mut()
+            && view.user_id == user_id
+            && view.guild_id.as_deref() == guild_id
+        {
+            view.state = ProfileState::Failed(message);
+        }
     }
 
     pub fn dismiss_image_preview(&mut self) {
@@ -3724,6 +3832,7 @@ pub fn me_as_partial(me: &UserPrivateResponse) -> UserPartialResponse {
         avatar_color: me.avatar_color,
         bot: me.bot,
         system: me.system,
+        flags: 0,
     }
 }
 

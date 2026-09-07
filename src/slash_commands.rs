@@ -246,5 +246,6 @@ pub fn fluxerbot_author() -> UserPartialResponse {
         avatar_color: None,
         bot: true,
         system: true,
+        flags: 0,
     }
 }

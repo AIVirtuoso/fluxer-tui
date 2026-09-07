@@ -204,6 +204,7 @@ Changing channels marks read state for the new channel when applicable.
 | **s** | **Select** mode: select the latest message (start of thread for reply / react / forward). |
 | **G** | Jump to the **newest** message (also from the Servers and Channels focus). While you are scrolled up, the view stays on the message you are reading as new messages arrive or older ones load. |
 | **r** | **Reply** to the selected message (only in select mode). Moves focus to **Input** with reply state set. |
+| **p** | **Profile** of the selected message's author: name, badges, pronouns, bio, when they joined Fluxer and the community, roles, connections, mutual communities and friends. **↑** / **↓** scroll, **Esc** / **q** / **p** close. |
 | **e** | **React**: pick an emoji (**Enter** sends the reaction via API; **Esc** cancels). |
 | **f** | **Forward**: optional note, switch target channel (**Ctrl+K** or list), **Enter** to send (reference type forward). |
 | **Ctrl+E** | **Edit** the selected message (your messages only; **Enter** in input to save, **Esc** to cancel). |
