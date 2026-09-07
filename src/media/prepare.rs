@@ -94,10 +94,13 @@ pub fn prepare_pictures(
         let picture = if pixel_mode {
             Picture::Pixels(Arc::new(rgba))
         } else {
+            // sixel keeps the pixels: a run of rows cut at the top is
+            // encoded from them when it is first shown
+            let pixels = sixel.then(|| Arc::new(rgba.clone()));
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
-            Picture::Terminal(Arc::new(terminal_picture(&protocol)?))
+            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels)?))
         };
         pictures.push(picture);
     }
@@ -174,7 +177,7 @@ mod tests {
         match &frames.frames[0] {
             Picture::Terminal(tp) => {
                 assert_eq!(tp.area(), Rect::new(0, 0, 8, 3), "fills its cells exactly");
-                let out = tp.printout(0, 3, 20).expect("the whole block");
+                let out = tp.printout(0, 3, 20, None).expect("the whole block");
                 assert_eq!(
                     out.rows.len(),
                     1,
@@ -203,7 +206,7 @@ mod tests {
         let Picture::Terminal(tp) = &frames.frames[0] else {
             panic!()
         };
-        let data = tp.printout(0, 2, 20).unwrap().rows.remove(0).1;
+        let data = tp.printout(0, 2, 20, None).unwrap().rows.remove(0).1;
         assert!(data.contains("\"1;1;40;36"), "{data:?}");
         assert_eq!(data.matches('-').count(), 5);
         // sixel has no transparency: avatars stay square there unless the

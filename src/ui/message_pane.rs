@@ -1544,7 +1544,7 @@ fn place_terminal_picture(
         // encoded for a wider block than it has: printing it would spill
         return;
     }
-    let Some(printout) = picture.printout(r0, r1, app.cell_px.1) else {
+    let Some(printout) = picture.printout(r0, r1, app.cell_px.1, app.image_picker.as_ref()) else {
         return;
     };
     let bottom = rect.y.saturating_add(rect.height);
