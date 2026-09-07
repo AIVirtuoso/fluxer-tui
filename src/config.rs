@@ -21,12 +21,13 @@ pub enum Theme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NotifyMode {
-    /// notify-send where there is a display, mail on the console.
+    /// notify-send where there is a display, nothing elsewhere.
     #[default]
     Auto,
     /// libnotify's notify-send.
     Desktop,
-    /// GNU mail to the login user (or `notify_mail_to`).
+    /// GNU mail to the login user (or `notify_mail_to`): for the console,
+    /// and only ever by choice.
     Mail,
     Off,
 }

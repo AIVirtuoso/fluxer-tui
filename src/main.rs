@@ -327,11 +327,8 @@ async fn main() -> Result<()> {
                     spawn_image_chafa_fallback(event_tx.clone(), title, bytes, cols, rows);
                 }
                 if !effects.notify.is_empty()
-                    && let Some(backend) = notify::backend(
-                        app.ui_settings.notifications,
-                        notify::on_console(app.pixel_mode),
-                        notify::has_display(),
-                    )
+                    && let Some(backend) =
+                        notify::backend(app.ui_settings.notifications, notify::has_display())
                 {
                     for n in effects.notify {
                         notify::send(

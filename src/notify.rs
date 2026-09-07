@@ -30,30 +30,17 @@ pub fn has_display() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
 }
 
-/// On a Linux virtual console: the client's own console mode, or TERM
-/// says so.
-pub fn on_console(console_mode: bool) -> bool {
-    console_mode || std::env::var("TERM").is_ok_and(|t| t == "linux")
-}
-
 /// Which program delivers notifications for `mode` here. Auto picks
-/// notify-send where there is a display, mail on the console, and nothing
-/// elsewhere; whether the program is there is found out when it is run,
-/// so a missing one is reported rather than passed over in silence.
-pub fn backend(mode: NotifyMode, console: bool, display: bool) -> Option<Backend> {
+/// notify-send where there is a display and nothing elsewhere; mail is
+/// only ever used when asked for by name, since it puts messages in the
+/// user's mailbox. Whether the program is there is found out when it is
+/// run, so a missing one is reported rather than passed over in silence.
+pub fn backend(mode: NotifyMode, display: bool) -> Option<Backend> {
     match mode {
         NotifyMode::Off => None,
         NotifyMode::Desktop => Some(Backend::Desktop),
         NotifyMode::Mail => Some(Backend::Mail),
-        NotifyMode::Auto => {
-            if display {
-                Some(Backend::Desktop)
-            } else if console {
-                Some(Backend::Mail)
-            } else {
-                None
-            }
-        }
+        NotifyMode::Auto => display.then_some(Backend::Desktop),
     }
 }
 
@@ -165,18 +152,16 @@ mod tests {
     }
 
     #[test]
-    fn auto_picks_the_desktop_with_a_display_and_mail_on_the_console() {
-        let auto = NotifyMode::Auto;
-        assert_eq!(backend(auto, false, true), Some(Backend::Desktop));
-        assert_eq!(backend(auto, true, false), Some(Backend::Mail));
-        assert_eq!(backend(auto, true, true), Some(Backend::Desktop));
-        assert_eq!(backend(auto, false, false), None);
+    fn auto_uses_the_desktop_only_and_mail_is_opt_in() {
+        assert_eq!(backend(NotifyMode::Auto, true), Some(Backend::Desktop));
         assert_eq!(
-            backend(NotifyMode::Desktop, true, false),
-            Some(Backend::Desktop)
+            backend(NotifyMode::Auto, false),
+            None,
+            "no mail unless asked"
         );
-        assert_eq!(backend(NotifyMode::Mail, false, true), Some(Backend::Mail));
-        assert_eq!(backend(NotifyMode::Off, true, true), None);
+        assert_eq!(backend(NotifyMode::Desktop, false), Some(Backend::Desktop));
+        assert_eq!(backend(NotifyMode::Mail, true), Some(Backend::Mail));
+        assert_eq!(backend(NotifyMode::Off, true), None);
     }
 
     /// A script standing in for the program records how it was called.

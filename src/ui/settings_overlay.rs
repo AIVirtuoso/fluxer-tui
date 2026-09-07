@@ -288,9 +288,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     ]));
     use crate::config::NotifyMode;
     let notify_label = |m: NotifyMode| match m {
-        NotifyMode::Auto => ("Auto", "notify-send on a desktop, mail on the console"),
+        NotifyMode::Auto => ("Auto", "notify-send where there is a display"),
         NotifyMode::Desktop => ("Desktop", "notify-send (libnotify)"),
-        NotifyMode::Mail => ("Mail", "GNU mail to the login user"),
+        NotifyMode::Mail => ("Mail", "GNU mail to the login user (for the console)"),
         NotifyMode::Off => ("Off", "No notifications outside the client"),
     };
     let notify_next = match app.ui_settings.notifications {
@@ -394,7 +394,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("▸ Auto  ·  notify-send on a desktop, mail on the console"),
+            s.contains("▸ Auto  ·  notify-send where there is a display"),
             "{s}"
         );
         let mut seen = vec![app.ui_settings.notifications];

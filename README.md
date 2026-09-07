@@ -196,18 +196,19 @@ of your roles, or with @everyone unless you suppress those), is announced
 outside the client by a program that does that:
 
 - on a desktop, libnotify's `notify-send`;
-- on a Linux console, GNU `mail`: the message is mailed to you locally,
-  so the console's "You have new mail" is the notification, and `mail`
-  reads it.
+- on a Linux console, GNU `mail`, when you choose it: the message is
+  mailed to you locally, so the console's "You have new mail" is the
+  notification, and `mail` reads it.
 
 The **Notifications** row in the settings overlay (**F2**) picks the
-mode: **Auto** (the default: notify-send where there is a display, mail
-on the console, nothing elsewhere), **Desktop**, **Mail** or **Off**.
-The config file has the rest:
+mode: **Auto** (the default: notify-send where there is a display,
+nothing elsewhere), **Desktop**, **Mail** or **Off**. Mail is never
+picked on its own, since it puts messages in your mailbox: set the mode
+to Mail for the console. The config file has the rest:
 
 ```toml
 [ui]
-notifications = "auto"      # auto | desktop | mail | off
+notifications = "auto"      # auto | desktop | mail (opt in) | off
 notify_mail_to = ""         # recipient; the login user when empty
 notify_mail_command = ""    # the mail program; "mail" when empty
 notify_desktop_command = "" # the desktop program; "notify-send" when empty
