@@ -238,6 +238,7 @@ async fn main() -> Result<()> {
                 _ => None,
             };
             for slot in app.take_media_wants() {
+                let local = app.local_media_source(&slot.url);
                 spawn_media_fetch(
                     authed_client.clone(),
                     event_tx.clone(),
@@ -247,6 +248,7 @@ async fn main() -> Result<()> {
                     app.cell_px,
                     opaque_bg,
                     app.disk_cache.clone(),
+                    local,
                 );
             }
             needs_redraw = false;
@@ -713,6 +715,64 @@ fn handle_key_event(
         return;
     }
 
+    if app.file_picker.is_some() {
+        match key.code {
+            KeyCode::Esc => app.dismiss_file_picker(),
+            KeyCode::Up => app.file_picker_move(-1),
+            KeyCode::Down => app.file_picker_move(1),
+            KeyCode::PageUp => app.file_picker_move(-10),
+            KeyCode::PageDown => app.file_picker_move(10),
+            KeyCode::Home => app.file_picker_move(i32::MIN / 2),
+            KeyCode::End => app.file_picker_move(i32::MAX / 2),
+            KeyCode::Left => app.file_picker_parent(),
+            KeyCode::Enter | KeyCode::Right => {
+                if let Some(path) = app.file_picker_confirm() {
+                    let shown = path.display().to_string();
+                    app.set_status(format!("Reading {shown}…"));
+                    spawn_file_attach(event_tx.clone(), shown);
+                    if app.active_channel_is_text() && app.can_send_in_active_channel() {
+                        app.focus = Focus::Input;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                let emptied = app
+                    .file_picker
+                    .as_mut()
+                    .map(|p| {
+                        if key.modifiers.contains(KeyModifiers::CONTROL) {
+                            p.query.clear();
+                        } else {
+                            p.query.pop();
+                        }
+                        p.query.is_empty()
+                    })
+                    .unwrap_or(false);
+                if emptied
+                    && app.file_picker.as_ref().is_some_and(|p| p.query.is_empty())
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && app.file_picker.as_ref().is_some_and(|p| {
+                        p.filtered.len() == p.entries.len()
+                            || p.entries.iter().all(|e| e.name.starts_with('.'))
+                    })
+                {
+                    // nothing was filtered away: Backspace goes up
+                    app.file_picker_parent();
+                } else {
+                    app.filter_file_picker();
+                }
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(p) = app.file_picker.as_mut() {
+                    p.query.push(ch);
+                    app.filter_file_picker();
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if matches!(key.code, KeyCode::F(1)) {
         app.open_help();
         return;
@@ -794,6 +854,10 @@ fn handle_key_event(
                 app.open_channel_picker();
                 return;
             }
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                app.open_file_picker();
+                return;
+            }
             KeyCode::Char('e') => {
                 if app.focus == Focus::Messages
                     && app.selected_message_index.is_some()
@@ -820,6 +884,46 @@ fn handle_key_event(
                 }
             }
             KeyCode::Char('o') | KeyCode::Char('O') => {
+                if app.focus == Focus::Input {
+                    match app.pending_attachments.last().cloned() {
+                        Some(a) if a.is_image() => {
+                            app.start_image_preview_loading(a.filename.clone());
+                            let _ = event_tx.send(AppEvent::ImagePreviewBytes {
+                                title: a.filename.clone(),
+                                bytes: a.bytes.clone(),
+                            });
+                        }
+                        Some(a) if a.is_video() => {
+                            app.start_image_preview_loading(a.filename.clone());
+                            let source = crate::media::LocalSource::Bytes {
+                                filename: a.filename.clone(),
+                                bytes: a.bytes.clone(),
+                            };
+                            let title = a.filename.clone();
+                            let tx = event_tx.clone();
+                            tokio::spawn(async move {
+                                let poster = tokio::task::spawn_blocking(move || {
+                                    crate::media::picture_bytes(source, (1280, 720))
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let _ = match poster {
+                                    Some(bytes) => {
+                                        tx.send(AppEvent::ImagePreviewBytes { title, bytes })
+                                    }
+                                    None => tx.send(AppEvent::ImagePreviewFailed {
+                                        message: "No preview: ffmpeg is needed for videos."
+                                            .to_string(),
+                                    }),
+                                };
+                            });
+                        }
+                        Some(a) => app.set_status(format!("No preview for {}.", a.filename)),
+                        None => app.set_status("Nothing staged. Ctrl+F picks a file."),
+                    }
+                    return;
+                }
                 if app.focus == Focus::Messages {
                     if let Some(msg) = app.selected_message() {
                         match first_message_preview_media(&msg) {
@@ -1074,6 +1178,12 @@ fn handle_key_event(
                         let _ = std::mem::take(&mut app.input);
                         app.set_status(format!("Reading {path}…"));
                         spawn_file_attach(event_tx.clone(), path);
+                        return;
+                    }
+                    if matches!(resolved, crate::slash_commands::OutgoingSlash::AttachPick) {
+                        app.dismiss_command_autocomplete();
+                        let _ = std::mem::take(&mut app.input);
+                        app.open_file_picker();
                         return;
                     }
                     if let crate::slash_commands::OutgoingSlash::SetNick {
@@ -1952,6 +2062,7 @@ fn spawn_custom_emoji_fetch(
 /// cache, else the media proxy (which delivers it already scaled); decoded
 /// and encoded off the UI thread. Avatars without a picture are drawn
 /// locally and never touch the network.
+#[allow(clippy::too_many_arguments)]
 fn spawn_media_fetch(
     client: FluxerHttpClient,
     event_tx: UnboundedSender<AppEvent>,
@@ -1961,9 +2072,46 @@ fn spawn_media_fetch(
     cell_px: (u32, u32),
     opaque_bg: Option<[u8; 3]>,
     disk: Option<std::sync::Arc<crate::media::DiskCache>>,
+    local: Option<crate::media::LocalSource>,
 ) {
     tokio::spawn(async move {
         let key = slot.key.clone();
+        if let Some(source) = local {
+            // a file about to be sent: its bytes, or a video's first frame
+            let box_px = crate::media::block_px(slot.cols, slot.rows, cell_px);
+            let bytes =
+                tokio::task::spawn_blocking(move || crate::media::picture_bytes(source, box_px))
+                    .await
+                    .ok()
+                    .flatten();
+            let Some(bytes) = bytes else {
+                let _ = event_tx.send(AppEvent::MediaLoaded {
+                    key,
+                    frames: None,
+                    bytes: 0,
+                });
+                return;
+            };
+            let prepared = tokio::task::spawn_blocking(move || {
+                crate::media::prepare_pictures(
+                    Some(&bytes),
+                    &slot,
+                    picker.as_ref(),
+                    pixel_mode,
+                    cell_px,
+                    opaque_bg,
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+            let (frames, bytes) = match prepared {
+                Some((f, b)) => (Some(f), b),
+                None => (None, 0),
+            };
+            let _ = event_tx.send(AppEvent::MediaLoaded { key, frames, bytes });
+            return;
+        }
         let local = crate::media::parse_default_avatar_key(&slot.url).is_some();
         let bytes: Option<Vec<u8>> = if local {
             None
@@ -2024,8 +2172,10 @@ fn spawn_media_fetch(
 fn spawn_clipboard_attach(event_tx: UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         match crate::media::from_clipboard().await {
-            Ok(attachment) => {
-                let _ = event_tx.send(AppEvent::AttachmentStaged { attachment });
+            Ok(attachments) => {
+                for attachment in attachments {
+                    let _ = event_tx.send(AppEvent::AttachmentStaged { attachment });
+                }
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::AttachmentFailed {

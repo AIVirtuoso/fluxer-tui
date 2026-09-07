@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             }
         }
         Focus::Input => {
-            " · Ctrl+V paste image · Ctrl+K picker · Ctrl+N/P channel · Alt+A · Ctrl+H help"
+            " · Ctrl+F file · Ctrl+V paste · Ctrl+K picker · Ctrl+N/P channel · Ctrl+H help"
         }
     };
 

@@ -169,6 +169,26 @@ audio_player = "sox -q -t mp3 - -d"
 The status line shows what plays. Audio attachments are listed with ♪
 and their length.
 
+## Attaching files
+
+Any kind of file can go with a message, up to ten at a time:
+
+- **Ctrl+F**, or `/attach` on its own, opens a file picker: directories
+  first, type to filter (a leading dot shows dotfiles), **Enter** opens a
+  directory or attaches the file, **←** or **Backspace** on an empty
+  filter goes up. What is under the cursor is described on the right,
+  with a preview when it is a picture or a video.
+- `/attach ~/path/to/file` attaches by path.
+- **Ctrl+V** attaches what is on the clipboard: an image, or the files
+  copied in a file manager (`wl-paste` or `xclip` do the reading).
+
+Staged files show above the text you type, pictures and videos as
+thumbnails where the terminal draws pictures, everything else by name and
+size. **Ctrl+O** shows the last staged picture or video full size,
+**Ctrl+X** drops it, **Enter** sends text and files together. A video's
+preview is its first frame, which `ffmpeg` on PATH provides; without it
+videos are listed by name.
+
 ## Interface overview
 
 The UI has four **focus** areas, cycled with **Tab** / **Shift+Tab** (or **h**/**l** / **Left**/**Right**):
