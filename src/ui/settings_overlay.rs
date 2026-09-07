@@ -69,14 +69,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
     let perf_on = app.ui_settings.performance_mode;
     let perf_primary = if perf_on {
-        ("On", "Fast typing, skips some UI features")
+        ("On", "No pictures or animations, fewer redraws")
     } else {
         ("Off", "Full feature set")
     };
     let perf_alt = if perf_on {
         ("Off", "Full feature set")
     } else {
-        ("On", "Fast typing, skips some UI features")
+        ("On", "No pictures or animations, fewer redraws")
     };
     let inline_on = app.ui_settings.inline_media;
     let inline_primary = if inline_on {
