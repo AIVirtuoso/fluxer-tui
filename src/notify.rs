@@ -135,7 +135,18 @@ pub fn send(
             use std::io::Write;
             let _ = pipe.write_all(body.as_bytes());
         }
-        let _ = child.wait();
+        let status = child.wait();
+        crate::debug::log(
+            "notify",
+            format!(
+                "{program} {}",
+                match status {
+                    Ok(s) if s.success() => "ran".to_string(),
+                    Ok(s) => format!("failed: {s}"),
+                    Err(e) => format!("could not be waited for: {e}"),
+                }
+            ),
+        );
     });
 }
 

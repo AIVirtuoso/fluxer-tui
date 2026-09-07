@@ -820,6 +820,18 @@ pub struct App {
     pub loading_older_messages: HashSet<String>,
     pub show_help: bool,
     pub help_scroll: u16,
+    /// The debug panel (`/debug`, F12).
+    pub show_debug: bool,
+    pub debug_scroll: u16,
+    /// A map of the next frame goes to the debug log (`/debug frame`, f
+    /// in the panel).
+    pub debug_frame_wanted: bool,
+    /// What was known at start, for the debug panel: version, terminal,
+    /// picture protocol, cell size. Nothing personal.
+    pub debug_facts: Vec<(String, String)>,
+    /// How long the last frame took to draw.
+    pub last_frame_ms: u32,
+    pub started_at: Instant,
     pub channel_picker: Option<ChannelPicker>,
     pub reaction_target: Option<(String, String)>,
     pub edit_target: Option<EditState>,
@@ -971,6 +983,12 @@ impl App {
             loading_older_messages: HashSet::new(),
             show_help: false,
             help_scroll: 0,
+            show_debug: false,
+            debug_scroll: 0,
+            debug_frame_wanted: false,
+            debug_facts: Vec::new(),
+            last_frame_ms: 0,
+            started_at: Instant::now(),
             channel_picker: None,
             reaction_target: None,
             edit_target: None,
@@ -2570,11 +2588,22 @@ impl App {
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status_message = message.into();
         self.status_message_until = None;
+        self.log_status();
     }
 
     pub fn set_transient_status(&mut self, message: impl Into<String>, duration: Duration) {
         self.status_message = message.into();
         self.status_message_until = Some(Instant::now() + duration);
+        self.log_status();
+    }
+
+    /// The status line is where errors show, and they are gone a moment
+    /// later: the debug log keeps them, without the names or paths of
+    /// files.
+    fn log_status(&self) {
+        if !self.status_message.is_empty() {
+            crate::debug::log("status", crate::debug::scrub_private(&self.status_message));
+        }
     }
 
     pub fn clear_status(&mut self) {
@@ -2600,6 +2629,12 @@ impl App {
     pub fn open_help(&mut self) {
         self.help_scroll = 0;
         self.show_help = true;
+    }
+
+    pub fn open_debug(&mut self) {
+        self.dismiss_image_preview();
+        self.debug_scroll = u16::MAX;
+        self.show_debug = true;
     }
 
     /// Open the profile popup for the selected message's author, over any

@@ -3,6 +3,7 @@ mod app;
 mod auth;
 mod config;
 mod console;
+mod debug;
 mod emoji;
 mod events;
 mod media;
@@ -63,13 +64,71 @@ struct Args {
     api_base_url: Option<String>,
     #[arg(long, help = "Clear saved token and exit")]
     logout: bool,
+    #[arg(
+        long,
+        help = "Keep a debug log (event shapes, ids, sizes, timings; never message text or names) in the state directory"
+    )]
+    debug: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Write the debug log to this file (implies --debug)"
+    )]
+    debug_log: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Do not ask the terminal which picture protocol it speaks (for tmux or expect driven runs, where nothing answers)"
+    )]
+    no_graphics_query: bool,
+}
+
+/// The debug log file the flags and `FLUXER_TUI_DEBUG` ask for: `1` for
+/// the default place, anything else as a path.
+fn debug_log_path(args: &Args) -> Option<PathBuf> {
+    if let Some(path) = &args.debug_log {
+        return Some(path.clone());
+    }
+    let from_env = std::env::var("FLUXER_TUI_DEBUG")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && v != "0");
+    match from_env.as_deref() {
+        Some("1") | Some("true") | Some("yes") => Some(debug::default_path()),
+        Some(path) => Some(PathBuf::from(path)),
+        None => args.debug.then(debug::default_path),
+    }
+}
+
+fn graphics_query_skipped(args: &Args) -> bool {
+    args.no_graphics_query
+        || std::env::var("FLUXER_TUI_NO_GRAPHICS_QUERY")
+            .is_ok_and(|v| !v.trim().is_empty() && v != "0")
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let config_path = args.config.unwrap_or(default_config_path()?);
+    let config_path = args.config.clone().unwrap_or(default_config_path()?);
     let mut config = load_config(&config_path)?;
+    if let Some(log_path) = debug_log_path(&args) {
+        debug::init(&log_path)
+            .with_context(|| format!("cannot open the debug log {}", log_path.display()))?;
+        debug::install_panic_hook();
+    }
+    debug::log(
+        "start",
+        format!(
+            "fluxer-tui {} on {} {}, config {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            if args.config.is_some() {
+                "given with --config"
+            } else {
+                "at the default place"
+            }
+        ),
+    );
 
     if args.logout {
         config.token = None;
@@ -78,7 +137,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(api_base_url) = args.api_base_url {
+    if let Some(api_base_url) = args.api_base_url.clone() {
         config.api_base_url = api_base_url;
     }
     if config.api_base_url.trim().is_empty() {
@@ -89,6 +148,14 @@ async fn main() -> Result<()> {
 
     let base_client = FluxerHttpClient::new(config.api_base_url.clone())?;
     let discovery = base_client.discover().await.unwrap_or_default();
+    debug::log(
+        "start",
+        format!(
+            "API {}, gateway {}",
+            debug::url_host(&config.api_base_url),
+            debug::url_host(&discovery.endpoints.gateway)
+        ),
+    );
 
     let webapp_url = if discovery.endpoints.webapp.is_empty() {
         "https://fluxer.app".to_string()
@@ -96,7 +163,7 @@ async fn main() -> Result<()> {
         discovery.endpoints.webapp.trim_end_matches('/').to_string()
     };
 
-    let auth = ensure_auth(&base_client, &mut config, args.token, &webapp_url).await?;
+    let auth = ensure_auth(&base_client, &mut config, args.token.clone(), &webapp_url).await?;
     save_config(&config_path, &config)?;
 
     let authed_client = base_client.with_token(auth.token.clone());
@@ -187,8 +254,28 @@ async fn main() -> Result<()> {
         // our own renderer draws pictures; no terminal protocol involved
         app.pixel_mode = true;
         app.image_picker = None;
+    } else if graphics_query_skipped(&args) {
+        debug::log("start", "terminal graphics query skipped as asked");
+        app.image_picker = None;
     } else {
-        app.image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+        app.image_picker = match ratatui_image::picker::Picker::from_query_stdio() {
+            Ok(picker) => {
+                debug::log(
+                    "start",
+                    format!(
+                        "terminal draws pictures with {:?}, font {}x{} px",
+                        picker.protocol_type(),
+                        picker.font_size().0,
+                        picker.font_size().1
+                    ),
+                );
+                Some(picker)
+            }
+            Err(err) => {
+                debug::log("start", format!("no terminal picture protocol: {err}"));
+                None
+            }
+        };
         // whatever the encoder still pads gets the theme's background, not black
         if let Some(picker) = app.image_picker.as_mut()
             && let Some(bg) = ui::theme::bg_rgb()
@@ -209,6 +296,71 @@ async fn main() -> Result<()> {
             })
             .unwrap_or((8, 16)),
     };
+    let term_size = terminal
+        .size()
+        .map(|s| format!("{}x{} cells", s.width, s.height))
+        .unwrap_or_else(|_| "unknown size".to_string());
+    debug::log(
+        "start",
+        format!(
+            "{}, {}, cell {}x{} px, theme {}",
+            if console_mode {
+                "console mode (DRM)"
+            } else {
+                "terminal"
+            },
+            term_size,
+            app.cell_px.0,
+            app.cell_px.1,
+            if ui::theme::is_terminal_theme() {
+                "terminal"
+            } else {
+                "fluxer"
+            }
+        ),
+    );
+    app.debug_facts = vec![
+        ("version".into(), env!("CARGO_PKG_VERSION").into()),
+        (
+            "config".into(),
+            if args.config.is_some() {
+                "given with --config".to_string()
+            } else {
+                "at the default place".to_string()
+            },
+        ),
+        ("API".into(), debug::url_host(&config.api_base_url)),
+        (
+            "terminal".into(),
+            format!(
+                "TERM={} {}",
+                std::env::var("TERM").unwrap_or_default(),
+                if console_mode {
+                    "(console mode, DRM)".to_string()
+                } else {
+                    term_size
+                }
+            ),
+        ),
+        (
+            "pictures".into(),
+            if console_mode {
+                "drawn by the console renderer".to_string()
+            } else {
+                match app.image_picker.as_ref() {
+                    Some(p) => format!("{:?}", p.protocol_type()),
+                    None if graphics_query_skipped(&args) => {
+                        "none (the terminal was not asked)".to_string()
+                    }
+                    None => "none (the terminal has no picture protocol)".to_string(),
+                }
+            },
+        ),
+        (
+            "cell size".into(),
+            format!("{}x{} px", app.cell_px.0, app.cell_px.1),
+        ),
+    ];
     app.media = crate::media::MediaCache::new((config.media.memory_cache_mb.max(1) as usize) << 20);
     app.audio_player_cmd = config.media.audio_player.clone();
     app.disk_cache = dirs::cache_dir()
@@ -225,6 +377,7 @@ async fn main() -> Result<()> {
     // when the redraw is for the user's own key, it is never held back
     let mut urgent_redraw = false;
     let mut last_draw = Instant::now() - PERF_FRAME_GAP;
+    let mut frame_stats = FrameStats::default();
 
     loop {
         if needs_redraw
@@ -239,10 +392,15 @@ async fn main() -> Result<()> {
             let wait = PERF_FRAME_GAP.saturating_sub(last_draw.elapsed());
             next_tick = next_tick.min(tokio::time::Instant::now() + wait);
         } else if needs_redraw {
+            let drawing = Instant::now();
             if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
+                debug::log("draw", format!("failed: {e}"));
                 eprintln!("fluxer-tui: terminal draw failed: {e}");
                 break;
             }
+            let took = drawing.elapsed();
+            app.last_frame_ms = took.as_millis() as u32;
+            frame_stats.note(took);
             last_draw = Instant::now();
             urgent_redraw = false;
             for (id, url) in app.take_custom_emoji_wants() {
@@ -367,6 +525,9 @@ async fn main() -> Result<()> {
                 last_tick = now;
                 next_tick = tokio::time::Instant::now() + app.tick_period();
                 app.reap_audio();
+                if let Some(summary) = frame_stats.summary_if_due() {
+                    debug::log("draw", summary);
+                }
                 // VT switching in console mode: hand the display over and back
                 if let Some(session) = console_session.as_ref()
                     && let Some(vt) = session.vt.as_ref()
@@ -434,6 +595,14 @@ async fn main() -> Result<()> {
         }
     }
 
+    debug::log(
+        "exit",
+        if app.should_logout {
+            "logging out"
+        } else {
+            "quitting"
+        },
+    );
     if app.should_logout {
         config.token = None;
     }
@@ -596,6 +765,42 @@ fn draw_now(performance_mode: bool, urgent: bool, since_last_draw: Duration) -> 
     !performance_mode || urgent || since_last_draw >= PERF_FRAME_GAP
 }
 
+/// Frame times, summarised for the debug log every ten seconds.
+#[derive(Default)]
+struct FrameStats {
+    frames: u32,
+    total: Duration,
+    slowest: Duration,
+    since: Option<Instant>,
+}
+
+impl FrameStats {
+    fn note(&mut self, took: Duration) {
+        self.frames += 1;
+        self.total += took;
+        self.slowest = self.slowest.max(took);
+        self.since.get_or_insert_with(Instant::now);
+    }
+
+    /// One line every ten seconds of drawing, only while a log is kept:
+    /// how many frames, how long on average, how long the slowest.
+    fn summary_if_due(&mut self) -> Option<String> {
+        const EVERY: Duration = Duration::from_secs(10);
+        if !debug::enabled() || self.frames == 0 || self.since?.elapsed() < EVERY {
+            return None;
+        }
+        let summary = format!(
+            "{} frames in {} s: {:.1} ms on average, slowest {} ms",
+            self.frames,
+            self.since?.elapsed().as_secs(),
+            self.total.as_secs_f64() * 1000.0 / f64::from(self.frames),
+            self.slowest.as_millis()
+        );
+        *self = Self::default();
+        Some(summary)
+    }
+}
+
 fn resolve_initial_server(
     config: &config::AppConfig,
     guilds: &[crate::api::types::GuildResponse],
@@ -609,6 +814,16 @@ fn resolve_initial_server(
             .first()
             .map(|guild| ServerSelection::Guild(guild.id.clone()))
             .unwrap_or(ServerSelection::DirectMessages),
+    }
+}
+
+/// The debug panel's facts and log lines to a file, and where it went in
+/// the status line, on the screen only: the log keeps no paths.
+fn save_debug_snapshot(app: &mut App) {
+    let facts = ui::debug_overlay::facts(app);
+    match debug::save_snapshot(&facts) {
+        Ok(path) => app.set_status(format!("Debug snapshot written to {}", path.display())),
+        Err(err) => app.set_status(format!("Could not write the debug snapshot: {err}")),
     }
 }
 
@@ -626,6 +841,34 @@ fn handle_key_event(
     config_path: &Path,
     config: &mut AppConfig,
 ) {
+    if app.show_debug {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.show_debug = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.debug_scroll = app.debug_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.debug_scroll = app.debug_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => app.debug_scroll = app.debug_scroll.saturating_sub(12),
+            KeyCode::PageDown => app.debug_scroll = app.debug_scroll.saturating_add(12),
+            KeyCode::Home => app.debug_scroll = 0,
+            KeyCode::End => app.debug_scroll = u16::MAX,
+            KeyCode::Char('s') => {
+                // the panel closes so the status line can show where it went
+                save_debug_snapshot(app);
+                app.show_debug = false;
+            }
+            KeyCode::Char('f') => {
+                // the panel closes first: the map is of what was under it
+                app.show_debug = false;
+                app.debug_frame_wanted = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.show_help {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.show_help = false,
@@ -820,6 +1063,10 @@ fn handle_key_event(
 
     if matches!(key.code, KeyCode::F(1)) {
         app.open_help();
+        return;
+    }
+    if matches!(key.code, KeyCode::F(12)) {
+        app.open_debug();
         return;
     }
 
@@ -1229,6 +1476,24 @@ fn handle_key_event(
                         app.dismiss_command_autocomplete();
                         let _ = std::mem::take(&mut app.input);
                         app.open_file_picker();
+                        return;
+                    }
+                    if matches!(resolved, crate::slash_commands::OutgoingSlash::Debug) {
+                        app.dismiss_command_autocomplete();
+                        let _ = std::mem::take(&mut app.input);
+                        app.open_debug();
+                        return;
+                    }
+                    if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugSave) {
+                        app.dismiss_command_autocomplete();
+                        let _ = std::mem::take(&mut app.input);
+                        save_debug_snapshot(app);
+                        return;
+                    }
+                    if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugFrame) {
+                        app.dismiss_command_autocomplete();
+                        let _ = std::mem::take(&mut app.input);
+                        app.debug_frame_wanted = true;
                         return;
                     }
                     if let crate::slash_commands::OutgoingSlash::SetNick {
@@ -2137,6 +2402,7 @@ fn spawn_media_fetch(
                     .ok()
                     .flatten();
             let Some(bytes) = bytes else {
+                crate::debug::log("media", "a staged file could not be read as a picture");
                 let _ = event_tx.send(AppEvent::MediaLoaded {
                     key,
                     frames: None,
@@ -2183,13 +2449,24 @@ fn spawn_media_fetch(
                 Some(b) => Some(b),
                 None => match client.fetch_media_bytes(&url).await {
                     Ok(b) => {
+                        crate::debug::log(
+                            "media",
+                            format!("{} B from {}", b.len(), crate::debug::url_host(&url)),
+                        );
                         if let Some(d) = disk.clone() {
                             let copy = b.clone();
                             let _ = tokio::task::spawn_blocking(move || d.write(&url, &copy)).await;
                         }
                         Some(b)
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        crate::debug::log(
+                            "media",
+                            format!(
+                                "fetch from {} failed: {err:#}",
+                                crate::debug::url_host(&url)
+                            ),
+                        );
                         let _ = event_tx.send(AppEvent::MediaLoaded {
                             key,
                             frames: None,
@@ -2215,7 +2492,13 @@ fn spawn_media_fetch(
         .flatten();
         let (frames, bytes) = match prepared {
             Some((f, b)) => (Some(f), b),
-            None => (None, 0),
+            None => {
+                crate::debug::log(
+                    "media",
+                    "a picture could not be decoded or prepared for the terminal",
+                );
+                (None, 0)
+            }
         };
         let _ = event_tx.send(AppEvent::MediaLoaded { key, frames, bytes });
     });

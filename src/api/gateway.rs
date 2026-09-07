@@ -69,10 +69,23 @@ pub async fn run_gateway(
         };
         let _ = event_tx.send(AppEvent::GatewayStatus(status));
 
+        crate::debug::log(
+            "gateway",
+            format!(
+                "{} {}",
+                if resume_session_id.is_some() {
+                    "reconnecting to"
+                } else {
+                    "connecting to"
+                },
+                crate::debug::url_host(&endpoint)
+            ),
+        );
         let connection = connect_async(endpoint.as_str()).await;
         let (stream, _) = match connection {
             Ok(ok) => ok,
             Err(err) => {
+                crate::debug::log("gateway", format!("connect failed: {err}"));
                 let _ = event_tx.send(AppEvent::GatewayStatus(GatewayStatus::Disconnected));
                 let _ = event_tx.send(AppEvent::ApiError(format!("Gateway connect failed: {err}")));
                 sleep(Duration::from_secs(2)).await;
@@ -93,15 +106,28 @@ pub async fn run_gateway(
 
         match outcome {
             Ok(ConnectionOutcome::Shutdown) => {
+                crate::debug::log("gateway", "closed on request");
                 let _ = event_tx.send(AppEvent::GatewayStatus(GatewayStatus::Disconnected));
                 break;
             }
             Ok(ConnectionOutcome::Fatal(reason)) => {
+                crate::debug::log("gateway", format!("giving up: {reason}"));
                 let _ = event_tx.send(AppEvent::GatewayStatus(GatewayStatus::Disconnected));
                 let _ = event_tx.send(AppEvent::ApiError(format!("Gateway fatal: {reason}")));
                 break;
             }
             Ok(ConnectionOutcome::Reconnect { clear_resume }) => {
+                crate::debug::log(
+                    "gateway",
+                    format!(
+                        "reconnecting in 2 s{}",
+                        if clear_resume {
+                            ", session dropped"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
                 if clear_resume {
                     resume_session_id = None;
                     last_sequence = 0;
@@ -110,6 +136,7 @@ pub async fn run_gateway(
                 sleep(Duration::from_secs(2)).await;
             }
             Err(err) => {
+                crate::debug::log("gateway", format!("connection error: {err:#}"));
                 let _ = event_tx.send(AppEvent::GatewayStatus(GatewayStatus::Disconnected));
                 let _ = event_tx.send(AppEvent::ApiError(format!("Gateway error: {err}")));
                 sleep(Duration::from_secs(2)).await;
@@ -118,6 +145,20 @@ pub async fn run_gateway(
     }
 
     Ok(())
+}
+
+/// Events that come in bursts are logged once, then every hundredth
+/// time, so a big community's presence changes do not drown the log.
+fn logged_sparsely(kind: &str) -> bool {
+    matches!(
+        kind,
+        "PRESENCE_UPDATE"
+            | "TYPING_START"
+            | "VOICE_STATE_UPDATE"
+            | "GUILD_MEMBER_LIST_UPDATE"
+            | "MESSAGE_ACK"
+            | "SESSIONS_REPLACE"
+    )
 }
 
 enum ConnectionOutcome {
@@ -139,8 +180,14 @@ async fn run_connection(
 ) -> Result<ConnectionOutcome> {
     let (mut write, mut read) = stream.split();
     let hello = wait_for_hello(&mut read).await?;
+    crate::debug::log(
+        "gateway",
+        format!("hello: heartbeat every {} ms", hello.heartbeat_interval),
+    );
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     if let Some(session_id) = resume_session_id.as_ref() {
+        crate::debug::log("gateway", format!("resume from seq {}", *last_sequence));
         let payload = GatewayResumePayload {
             token: token.to_string(),
             session_id: session_id.clone(),
@@ -148,6 +195,7 @@ async fn run_connection(
         };
         send_payload(&mut write, OP_RESUME, &payload).await?;
     } else {
+        crate::debug::log("gateway", "identify");
         let payload = GatewayIdentifyPayload {
             token: token.to_string(),
             properties: GatewayIdentifyProperties {
@@ -204,6 +252,10 @@ async fn run_connection(
                 // handle close frames before trying to extract text
                 if let Message::Close(frame) = &message {
                     let close = extract_close(frame);
+                    crate::debug::log(
+                        "gateway",
+                        format!("closed by the server: {} ({})", close.reason, close.code),
+                    );
                     let _ = event_tx.send(AppEvent::ApiError(
                         format!("Gateway closed: {} ({})", close.reason, close.code)
                     ));
@@ -231,10 +283,32 @@ async fn run_connection(
                 match payload.op {
                     OP_DISPATCH => {
                         if let Some(kind) = payload.t.clone() {
-                            if kind == "READY"
-                                && let Ok(ready) = serde_json::from_value::<ReadyEvent>(payload.d.clone()) {
-                                    *resume_session_id = Some(ready.session_id);
+                            let n = seen.entry(kind.clone()).or_insert(0);
+                            *n += 1;
+                            if !logged_sparsely(&kind) || *n == 1 || n.is_multiple_of(100) {
+                                crate::debug::log(
+                                    "gateway",
+                                    format!(
+                                        "{kind}{} {} B {}",
+                                        if *n > 1 && logged_sparsely(&kind) {
+                                            format!(" ×{n}")
+                                        } else {
+                                            String::new()
+                                        },
+                                        text.len(),
+                                        crate::debug::shape(&payload.d)
+                                    ),
+                                );
+                            }
+                            if kind == "READY" {
+                                match serde_json::from_value::<ReadyEvent>(payload.d.clone()) {
+                                    Ok(ready) => *resume_session_id = Some(ready.session_id),
+                                    Err(err) => crate::debug::log(
+                                        "gateway",
+                                        format!("READY cannot be read for the session id: {err}"),
+                                    ),
                                 }
+                            }
                             let _ = event_tx.send(AppEvent::Dispatch {
                                 kind,
                                 payload: payload.d,
@@ -246,10 +320,15 @@ async fn run_connection(
                     }
                     OP_HEARTBEAT_ACK => {}
                     OP_RECONNECT => {
+                        crate::debug::log("gateway", "server asks to reconnect");
                         return Ok(ConnectionOutcome::Reconnect { clear_resume: false });
                     }
                     OP_INVALID_SESSION => {
                         let resumable = payload.d.as_bool().unwrap_or(false);
+                        crate::debug::log(
+                            "gateway",
+                            format!("invalid session, resumable: {resumable}"),
+                        );
                         if !resumable {
                             *resume_session_id = None;
                             *last_sequence = 0;
@@ -258,6 +337,7 @@ async fn run_connection(
                     }
                     OP_HELLO => {}
                     other => {
+                        crate::debug::log("gateway", format!("unhandled opcode {other}"));
                         let _ = event_tx.send(AppEvent::ApiError(format!(
                             "Unhandled gateway opcode {other}"
                         )));
