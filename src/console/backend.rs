@@ -215,6 +215,23 @@ impl<W: Write> TermBackend<W> {
                 if crate::app::is_picture_sentinel(current.underline_color) {
                     self.inner.draw(batch.drain(..))?;
                     if let Some(p) = pictures.get(&(x, y)) {
+                        if y == p.area.y {
+                            // The cells under a picture are never written
+                            // while it is there, and a sixel is cut to whole
+                            // bands: blank them first, so the pixels it
+                            // leaves show the background, not what was there.
+                            let blanks: Vec<(u16, u16, Cell)> = (p.area.y..p.area.bottom())
+                                .flat_map(|yy| (p.area.x..p.area.right()).map(move |xx| (xx, yy)))
+                                .filter_map(|(xx, yy)| {
+                                    let cell = buf.cell((xx, yy))?;
+                                    let mut blank = Cell::default();
+                                    blank.set_fg(cell.fg).set_bg(cell.bg);
+                                    Some((xx, yy, blank))
+                                })
+                                .collect();
+                            self.inner
+                                .draw(blanks.iter().map(|(bx, by, c)| (*bx, *by, c)))?;
+                        }
                         if let Some((key, seq)) = &p.transmit
                             && self.transmitted.insert(*key)
                         {
@@ -704,6 +721,10 @@ mod tests {
         let out = r.draw_buf(buf.clone(), None);
         assert_eq!(out.matches("\x1bPq").count(), 1, "printed once: {out:?}");
         assert!(out.contains("\x1b[2;2H\x1bPq"), "at its cell: {out:?}");
+        // its cells are blanked first, so what a sixel leaves uncovered
+        // shows the background rather than what was there
+        let blank_second_row = out.find("\x1b[3;2H  ").expect("blanks on the second row");
+        assert!(blank_second_row < out.find("\x1bPq").unwrap(), "{out:?}");
 
         // the same frame again: nothing is sent
         let out = r.draw_buf(buf.clone(), None);

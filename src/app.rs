@@ -178,6 +178,11 @@ pub enum TerminalPicture {
         palette: std::sync::Arc<str>,
         bands: Vec<std::sync::Arc<str>>,
         area: Rect,
+        /// The picture's pixels, so a run of rows that starts inside a
+        /// band can be encoded from its own first pixel row.
+        pixels: Option<std::sync::Arc<image::RgbaImage>>,
+        /// Such runs, by (first row, end row), encoded when first shown.
+        cuts: std::sync::Mutex<std::collections::HashMap<(u16, u16), std::sync::Arc<str>>>,
     },
     /// Kitty places one row of placeholder cells per cell row, each naming
     /// its row of the image, once the image has been transmitted.
@@ -210,9 +215,17 @@ impl TerminalPicture {
 
     /// The sequences that show block rows `r0..r1`, for cells `cell_h`
     /// pixels tall; None when that part cannot be shown on its own. A sixel
-    /// run starts at the first whole band inside the rows, at most five
-    /// pixels below the row's edge, and is printed at the row.
-    pub fn printout(&self, r0: u16, r1: u16, cell_h: u32) -> Option<PicturePrintout> {
+    /// run from the top is the bands up to the rows' edge; one cut at the
+    /// top is encoded from the pixels at the row's edge (with `picker`),
+    /// or, without them, starts at the first whole band inside the rows,
+    /// at most five pixels below the edge, and is printed at the row.
+    pub fn printout(
+        &self,
+        r0: u16,
+        r1: u16,
+        cell_h: u32,
+        picker: Option<&ratatui_image::picker::Picker>,
+    ) -> Option<PicturePrintout> {
         let rows = self.area().height;
         if r0 >= r1 || r1 > rows {
             return None;
@@ -222,8 +235,29 @@ impl TerminalPicture {
                 head,
                 palette,
                 bands,
-                ..
+                area,
+                pixels,
+                cuts,
             } => {
+                if r0 > 0
+                    && let (Some(pixels), Some(picker)) = (pixels, picker)
+                {
+                    if let Some(data) = cuts.lock().unwrap().get(&(r0, r1)) {
+                        return Some(PicturePrintout {
+                            transmit: None,
+                            rows: vec![(r0, data.clone())],
+                        });
+                    }
+                    if let Some(data) =
+                        encode_sixel_rows(picker, pixels, r0, r1, cell_h, area.width)
+                    {
+                        cuts.lock().unwrap().insert((r0, r1), data.clone());
+                        return Some(PicturePrintout {
+                            transmit: None,
+                            rows: vec![(r0, data)],
+                        });
+                    }
+                }
                 let b0 = (r0 as u32 * cell_h).div_ceil(6) as usize;
                 let b1 = ((r1 as u32 * cell_h) / 6) as usize;
                 let b1 = b1.min(bands.len());
@@ -263,6 +297,36 @@ impl TerminalPicture {
     }
 }
 
+/// Block rows `r0..r1` of a picture as their own sixel, cut to whole bands
+/// at the bottom, so the run's first pixel row is the row's edge exactly.
+fn encode_sixel_rows(
+    picker: &ratatui_image::picker::Picker,
+    pixels: &image::RgbaImage,
+    r0: u16,
+    r1: u16,
+    cell_h: u32,
+    cols: u16,
+) -> Option<std::sync::Arc<str>> {
+    let y0 = (r0 as u32 * cell_h).min(pixels.height());
+    let h = ((r1 - r0) as u32 * cell_h).min(pixels.height() - y0);
+    if h < 6 {
+        return None;
+    }
+    let h = h / 6 * 6;
+    let crop = image::imageops::crop_imm(pixels, 0, y0, pixels.width(), h).to_image();
+    let protocol = picker
+        .new_protocol(
+            image::DynamicImage::ImageRgba8(crop),
+            Rect::new(0, 0, cols, r1 - r0),
+            ratatui_image::Resize::Fit(None),
+        )
+        .ok()?;
+    match protocol {
+        Protocol::Sixel(sixel) => Some(std::sync::Arc::from(sixel.data.as_str())),
+        _ => None,
+    }
+}
+
 /// The cells a protocol picture would put its sequences in, by row: what
 /// ratatui-image writes into a scratch buffer.
 fn protocol_rows(protocol: &Protocol) -> Vec<(u16, String)> {
@@ -278,13 +342,16 @@ fn protocol_rows(protocol: &Protocol) -> Vec<(u16, String)> {
 }
 
 /// Encode a protocol picture for printing in parts.
-pub fn terminal_picture(protocol: &Protocol) -> Option<TerminalPicture> {
+pub fn terminal_picture(
+    protocol: &Protocol,
+    pixels: Option<std::sync::Arc<image::RgbaImage>>,
+) -> Option<TerminalPicture> {
     let area = protocol.area();
     if area.width == 0 || area.height == 0 {
         return None;
     }
     match protocol {
-        Protocol::Sixel(sixel) => parse_sixel(&sixel.data, area).or_else(|| {
+        Protocol::Sixel(sixel) => parse_sixel(&sixel.data, area, pixels).or_else(|| {
             Some(TerminalPicture::Whole {
                 data: std::sync::Arc::from(sixel.data.as_str()),
                 area,
@@ -325,7 +392,11 @@ pub fn terminal_picture(protocol: &Protocol) -> Option<TerminalPicture> {
 
 /// Take a sixel sequence apart: the DCS header up to the height in the
 /// raster attributes, the palette definitions, and the bands.
-fn parse_sixel(data: &str, area: Rect) -> Option<TerminalPicture> {
+fn parse_sixel(
+    data: &str,
+    area: Rect,
+    pixels: Option<std::sync::Arc<image::RgbaImage>>,
+) -> Option<TerminalPicture> {
     let b = data.as_bytes();
     if !data.starts_with("\x1bP") {
         return None;
@@ -378,6 +449,8 @@ fn parse_sixel(data: &str, area: Rect) -> Option<TerminalPicture> {
         palette: std::sync::Arc::from(palette),
         bands: body.split('-').map(std::sync::Arc::from).collect(),
         area,
+        pixels,
+        cuts: std::sync::Mutex::new(std::collections::HashMap::new()),
     })
 }
 
@@ -2165,7 +2238,7 @@ impl App {
                         img,
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
-                    ) && let Some(tp) = terminal_picture(&p)
+                    ) && let Some(tp) = terminal_picture(&p, None)
                     {
                         encoded.push(Picture::Terminal(std::sync::Arc::new(tp)));
                         delays.push(delay.max(Duration::from_millis(20)));
@@ -4387,31 +4460,31 @@ mod custom_emoji_tests {
             Protocol::Sixel(s) => s.data.clone(),
             _ => panic!("sixel"),
         };
-        let picture = terminal_picture(&protocol).unwrap();
+        let picture = terminal_picture(&protocol, None).unwrap();
         let TerminalPicture::Sixel { bands, .. } = &picture else {
             panic!("kept in bands");
         };
         assert_eq!(bands.len(), 6, "36 px = 6 bands");
         // the whole block prints exactly what the encoder produced
-        let whole = picture.printout(0, 2, 20).unwrap();
+        let whole = picture.printout(0, 2, 20, None).unwrap();
         assert_eq!(whole.rows.len(), 1);
         assert_eq!(&*whole.rows[0].1, original);
         // the second row alone: whole bands from 20 px on (24..36), 12 px tall
-        let lower = picture.printout(1, 2, 20).unwrap();
+        let lower = picture.printout(1, 2, 20, None).unwrap();
         assert_eq!(lower.rows[0].0, 1);
         let data = &*lower.rows[0].1;
         assert!(data.contains("\"1;1;40;12"), "{data:?}");
         assert_eq!(data.matches('-').count(), 1, "two bands: {data:?}");
         assert!(data.ends_with("\x1b\\"));
         // the first row alone: bands 0..3, 18 px, and nothing past the row
-        let upper = picture.printout(0, 1, 20).unwrap();
+        let upper = picture.printout(0, 1, 20, None).unwrap();
         assert!(
             upper.rows[0].1.contains("\"1;1;40;18"),
             "{:?}",
             upper.rows[0].1
         );
-        assert!(picture.printout(1, 1, 20).is_none());
-        assert!(picture.printout(0, 3, 20).is_none());
+        assert!(picture.printout(1, 1, 20, None).is_none());
+        assert!(picture.printout(0, 3, 20, None).is_none());
     }
 
     #[test]
@@ -4427,7 +4500,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol).unwrap();
+        let picture = terminal_picture(&protocol, None).unwrap();
         let TerminalPicture::Kitty { transmit, rows, .. } = &picture else {
             panic!("kitty keeps rows");
         };
@@ -4437,9 +4510,62 @@ mod custom_emoji_tests {
             rows.iter().all(|r| r.starts_with("\x1b[s")),
             "placeholders only"
         );
-        let middle = picture.printout(1, 3, 20).unwrap();
+        let middle = picture.printout(1, 3, 20, None).unwrap();
         assert_eq!(middle.rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
         assert!(middle.transmit.is_some());
+    }
+
+    #[test]
+    fn a_sixel_run_cut_at_the_top_is_encoded_from_the_rows_edge() {
+        use ratatui_image::picker::{Picker, ProtocolType};
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        // red on top, blue from pixel row 20 (the second cell row) down
+        let mut img = image::RgbaImage::from_pixel(40, 36, image::Rgba([200, 30, 30, 255]));
+        for y in 20..36 {
+            for x in 0..40 {
+                img.put_pixel(x, y, image::Rgba([30, 30, 200, 255]));
+            }
+        }
+        let pixels = std::sync::Arc::new(img.clone());
+        let protocol = picker
+            .new_protocol(
+                image::DynamicImage::ImageRgba8(img),
+                Rect::new(0, 0, 4, 2),
+                ratatui_image::Resize::Fit(None),
+            )
+            .unwrap();
+        let picture = terminal_picture(&protocol, Some(pixels)).unwrap();
+        // the second row alone starts at pixel row 20: 16 rows left, cut to
+        // two whole bands, all blue (no red band from above)
+        let lower = picture.printout(1, 2, 20, Some(&picker)).unwrap();
+        assert_eq!(lower.rows[0].0, 1);
+        let data = &*lower.rows[0].1;
+        assert!(data.contains("\"1;1;40;12"), "{data:?}");
+        let blue_only = picker
+            .new_protocol(
+                image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    40,
+                    12,
+                    image::Rgba([30, 30, 200, 255]),
+                )),
+                Rect::new(0, 0, 4, 1),
+                ratatui_image::Resize::Fit(None),
+            )
+            .unwrap();
+        let Protocol::Sixel(blue) = &blue_only else {
+            panic!("sixel");
+        };
+        assert_eq!(data, blue.data.as_str(), "the run is the blue rows alone");
+        // asked again, the same encoding comes back without more work
+        let again = picture.printout(1, 2, 20, Some(&picker)).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&again.rows[0].1, &lower.rows[0].1));
+        // from the top, the bands are still used, and without a picker the
+        // band method stands in for a cut
+        let whole = picture.printout(0, 2, 20, Some(&picker)).unwrap();
+        assert!(whole.rows[0].1.contains("\"1;1;40;36"));
+        let bands = picture.printout(1, 2, 20, None).unwrap();
+        assert!(bands.rows[0].1.contains("\"1;1;40;12"));
     }
 
     #[test]
