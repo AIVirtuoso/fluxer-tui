@@ -50,6 +50,22 @@ pub fn default_path() -> PathBuf {
         .join("debug.log")
 }
 
+/// Make sure the folder the log and the snapshots go to is there, even
+/// when no log is kept this time: someone looking for the log after the
+/// fact should find the folder, and a `/debug save` in a session that
+/// was started without `--debug` writes into it. The path comes back.
+pub fn ensure_log_dir() -> std::io::Result<PathBuf> {
+    ensure_dir_of(&default_path())
+}
+
+fn ensure_dir_of(path: &Path) -> std::io::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the log path has no folder"))?;
+    std::fs::create_dir_all(parent)?;
+    Ok(parent.to_path_buf())
+}
+
 /// Start writing the log to `path`, appending to what is there. Lines
 /// logged before this point are written out first.
 pub fn init(path: &Path) -> std::io::Result<()> {
@@ -386,6 +402,24 @@ mod tests {
             "wss://gateway.fluxer.app"
         );
         assert_eq!(url_host("no scheme here"), "no scheme here");
+    }
+
+    #[test]
+    fn the_log_folder_is_made_on_its_own_and_the_default_path_sits_in_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("state")
+            .join("fluxer-tui")
+            .join("debug.log");
+        let made = ensure_dir_of(&file).unwrap();
+        assert_eq!(made, dir.path().join("state").join("fluxer-tui"));
+        assert!(made.is_dir());
+        assert!(!file.exists(), "the folder, not the file");
+        assert!(ensure_dir_of(&file).is_ok(), "a second time is fine");
+        let default = default_path();
+        assert_eq!(default.file_name().unwrap(), "debug.log");
+        assert_eq!(default.parent().unwrap().file_name().unwrap(), "fluxer-tui");
     }
 
     #[test]

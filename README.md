@@ -552,7 +552,9 @@ When something goes wrong, the client can say what it saw:
   included, in `$XDG_STATE_HOME/fluxer-tui/debug.log` (that is
   `~/.local/state/fluxer-tui/debug.log` as a rule). `--debug-log FILE`
   names the file. `FLUXER_TUI_DEBUG=1` (or a path) does the same from
-  the environment, which is handy with `nix run`.
+  the environment, which is handy with `nix run`. The folder is made
+  on every start, so it is there to look in; the file only appears
+  when a log is kept, and `/debug save` snapshots land beside it.
 - **`--no-graphics-query`** (or `FLUXER_TUI_NO_GRAPHICS_QUERY=1`) skips
   asking the terminal which picture protocol it speaks. Under tmux,
   expect or another program driving the client, nothing answers, and

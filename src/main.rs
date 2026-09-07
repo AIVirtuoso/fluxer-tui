@@ -110,6 +110,11 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config_path = args.config.clone().unwrap_or(default_config_path()?);
     let mut config = load_config(&config_path)?;
+    // the log folder exists from the first start, so it is there to look
+    // in even when no log was kept
+    if let Err(e) = debug::ensure_log_dir() {
+        debug::log("start", format!("cannot make the log folder: {e}"));
+    }
     if let Some(log_path) = debug_log_path(&args) {
         debug::init(&log_path)
             .with_context(|| format!("cannot open the debug log {}", log_path.display()))?;
