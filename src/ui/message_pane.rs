@@ -446,11 +446,9 @@ fn markdown_rows(rows: &mut Vec<BlockRow>, text: &str, app: &App, lead: Option<S
         if let Some(lead) = &lead {
             spans.push(lead.clone());
         }
-        if row.is_empty() {
-            spans.push(Span::raw(" "));
-        } else {
-            spans.extend(row);
-        }
+        // A blank line stays empty: ratatui draws a row of blanks alone as
+        // two rows, an empty row as one.
+        spans.extend(row);
         rows.push(body_row(spans));
     }
 }
@@ -824,7 +822,8 @@ fn build_message_lines(
 
 /// Rows each line takes at `text_w`. Lines are wrapped before they get
 /// here, so nearly all fit in one row and only a wider one is measured
-/// the slow way, by wrapping it as the paragraph would.
+/// the slow way, by wrapping it as the paragraph would. A line of blanks
+/// alone is measured that way too: ratatui draws it as two rows.
 fn paragraph_line_heights(lines: &[Line<'static>], text_w: u16) -> Vec<u16> {
     lines
         .iter()
@@ -834,7 +833,9 @@ fn paragraph_line_heights(lines: &[Line<'static>], text_w: u16) -> Vec<u16> {
                 .iter()
                 .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
                 .sum();
-            if width <= text_w as usize {
+            let content = line.spans.iter().any(|s| !s.content.is_empty());
+            let blank_only = content && line.spans.iter().all(|s| s.content.trim().is_empty());
+            if width <= text_w as usize && !blank_only {
                 1
             } else {
                 Paragraph::new(Text::from(vec![line.clone()]))
@@ -843,6 +844,44 @@ fn paragraph_line_heights(lines: &[Line<'static>], text_w: u16) -> Vec<u16> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod height_tests {
+    use super::*;
+
+    /// The shortcut must agree with ratatui's own wrapping for every kind
+    /// of line: empty, blanks alone (two rows in ratatui), text with
+    /// leading or trailing blanks, wide characters, and lines that wrap.
+    #[test]
+    fn heights_match_what_ratatui_draws() {
+        let lines: Vec<Line<'static>> = [
+            "",
+            " ",
+            "   ",
+            "a b",
+            "  a",
+            "a  ",
+            "abcdefghij",
+            "abcdefghijk",
+            "\u{1F4CE} pic.png",
+            "\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}",
+            "word longerthanthewidth",
+            "\u{2800}\u{2800}\u{2800}\u{2800}",
+        ]
+        .into_iter()
+        .map(Line::from)
+        .collect();
+        for text_w in [4u16, 10, 20] {
+            let fast = paragraph_line_heights(&lines, text_w);
+            for (line, h) in lines.iter().zip(fast) {
+                let real = Paragraph::new(Text::from(vec![line.clone()]))
+                    .wrap(Wrap { trim: false })
+                    .line_count(text_w) as u16;
+                assert_eq!(h, real, "{:?} at width {text_w}", line.to_string());
+            }
+        }
+    }
 }
 
 /// Everything that decides what the message pane's lines look like. While
@@ -1805,4 +1844,346 @@ fn block(title: &str, focused: bool) -> Block<'static> {
         .borders(Borders::ALL)
         .border_style(crate::ui::theme::focused_border(focused))
         .style(Style::default().bg(crate::ui::theme::bg()))
+}
+
+#[cfg(test)]
+mod bottom_tests {
+    use crate::api::types::{
+        ChannelResponse, MessageResponse, UserPartialResponse, UserPrivateResponse,
+        WellKnownFluxerResponse,
+    };
+    use crate::app::{App, ServerSelection};
+    use crate::config::UiSettings;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn user(id: &str) -> UserPartialResponse {
+        UserPartialResponse {
+            id: id.into(),
+            username: id.into(),
+            discriminator: "0001".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Message `n`: text of a length that varies with `n`, some with a
+    /// second line or a link, always ending in a token that marks its
+    /// last row.
+    fn msg(n: u64, channel: &str) -> MessageResponse {
+        let base = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ";
+        let len = (n * 37 % 140) as usize;
+        let mut s: String = base.chars().cycle().take(len).collect();
+        if n.is_multiple_of(5) {
+            s.push_str("\nsecond line of the message");
+        }
+        if n.is_multiple_of(11) {
+            s.push_str("\n\nafter a blank line");
+        }
+        if n.is_multiple_of(7) {
+            s = format!("{s} https://example.org/{n}");
+        }
+        MessageResponse {
+            id: n.to_string(),
+            channel_id: channel.into(),
+            author: user(if n.is_multiple_of(3) { "ann" } else { "bob" }),
+            content: format!("m{n} {s} end{n}."),
+            timestamp: format!("2026-09-06T10:{:02}:{:02}.000Z", (n / 60) % 60, n % 60),
+            ..Default::default()
+        }
+    }
+
+    fn app_with(channels: &[&str]) -> App {
+        let me = UserPrivateResponse {
+            id: "me".into(),
+            ..Default::default()
+        };
+        let private: Vec<ChannelResponse> = channels
+            .iter()
+            .map(|c| ChannelResponse {
+                id: c.to_string(),
+                kind: 1,
+                recipients: vec![user("other")],
+                ..Default::default()
+            })
+            .collect();
+        App::new(
+            WellKnownFluxerResponse::default(),
+            me,
+            None,
+            Vec::new(),
+            private,
+            ServerSelection::DirectMessages,
+            Some(channels[0].to_string()),
+            UiSettings::default(),
+        )
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The pane's last content row: above its bottom border, which sits
+    /// above the three-row input box.
+    fn bottom_row(rows: &[String]) -> &str {
+        &rows[rows.len() - 5]
+    }
+
+    fn switch_to(app: &mut App, channel: &str) {
+        app.selected_channel_id = Some(channel.to_string());
+        app.selected_message_index = None;
+        app.message_scroll_from_bottom = 0;
+    }
+
+    fn assert_newest_at_bottom(app: &mut App, w: u16, h: u16, n: u64) {
+        let rows = draw(app, w, h);
+        let token = format!("end{n}.");
+        assert!(
+            bottom_row(&rows).contains(&token),
+            "{w}x{h}: message {n} not on the pane's bottom row:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_newest_message_ends_on_the_bottom_row() {
+        for (w, h) in [(60u16, 20u16), (80, 30), (100, 24), (37, 12)] {
+            let mut app = app_with(&["c1"]);
+            for n in 1..=40 {
+                app.upsert_message(msg(n, "c1"));
+            }
+            assert_newest_at_bottom(&mut app, w, h, 40);
+            for n in 41..=75 {
+                app.upsert_message(msg(n, "c1"));
+                assert_newest_at_bottom(&mut app, w, h, n);
+            }
+        }
+    }
+
+    /// A message with the trimmings: a picture attachment, a reaction, a
+    /// reply to the one before, a custom emoji.
+    fn rich(n: u64, channel: &str) -> MessageResponse {
+        use crate::api::types::{
+            MessageAttachmentResponse, MessageReactionResponse, MessageReferenceResponse,
+            ReactionEmojiResponse,
+        };
+        let mut m = msg(n, channel);
+        if n.is_multiple_of(2) {
+            m.attachments.push(MessageAttachmentResponse {
+                id: format!("a{n}"),
+                filename: "pic.png".into(),
+                url: Some(format!("https://x/{n}.png")),
+                content_type: Some("image/png".into()),
+                size: Some(1000),
+                width: Some(400),
+                height: Some(300),
+                ..Default::default()
+            });
+        }
+        if n.is_multiple_of(3) {
+            m.reactions.push(MessageReactionResponse {
+                count: 2,
+                me: n.is_multiple_of(6),
+                emoji: ReactionEmojiResponse {
+                    name: "😀".into(),
+                    ..Default::default()
+                },
+            });
+        }
+        if n.is_multiple_of(4) {
+            m.message_reference = Some(MessageReferenceResponse {
+                message_id: (n - 1).to_string(),
+                channel_id: channel.into(),
+                ..Default::default()
+            });
+            m.referenced_message = Some(Box::new(msg(n - 1, channel)));
+        }
+        if n.is_multiple_of(5) {
+            m.content = format!(
+                "{} <:kekw:{}> end{n}.",
+                m.content.trim_end_matches(&format!("end{n}.")),
+                900 + n
+            );
+        }
+        m
+    }
+
+    /// The pane's bottom row must be the last row of the pane's own
+    /// layout, rendered without a height limit: anything else means rows
+    /// were miscounted or the view is not at the bottom.
+    fn assert_bottom_matches_layout(app: &mut App, w: u16, h: u16) {
+        use ratatui::text::Text;
+        use ratatui::widgets::{Paragraph, Wrap};
+        let rows = draw(app, w, h);
+        let layout = app
+            .pane_layout
+            .borrow()
+            .clone()
+            .expect("a layout was built");
+        let sidebar = (w / 4).clamp(22, 50);
+        let text_w = w - sidebar - 2;
+        let total = (*layout.cum.last().unwrap()).max(1) as u16;
+        let mut t = Terminal::new(TestBackend::new(text_w, total)).unwrap();
+        t.draw(|f| {
+            f.render_widget(
+                Paragraph::new(Text::from(layout.lines.clone())).wrap(Wrap { trim: false }),
+                f.area(),
+            )
+        })
+        .unwrap();
+        let buf = t.backend().buffer().clone();
+        let expected: String = (0..text_w)
+            .map(|x| buf[(x, total - 1)].symbol().to_string())
+            .collect();
+        let pane_x = sidebar as usize + 1;
+        let actual: String = bottom_row(&rows)
+            .chars()
+            .skip(pane_x)
+            .take(text_w as usize)
+            .collect();
+        assert_eq!(
+            actual.trim_end(),
+            expected.trim_end(),
+            "{w}x{h}: the pane's bottom row is not the layout's last row:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn with_avatars_and_pictures_the_bottom_row_is_the_layouts_last() {
+        for (w, h) in [(60u16, 20u16), (80, 30), (100, 40), (40, 14)] {
+            let mut app = app_with(&["c1"]);
+            // pictures drawn by our own renderer: avatars and previews on
+            app.pixel_mode = true;
+            app.cell_px = (10, 20);
+            assert!(app.avatars_enabled() && app.inline_media_enabled());
+            for n in 1..=40 {
+                app.upsert_message(rich(n, "c1"));
+            }
+            assert_bottom_matches_layout(&mut app, w, h);
+            for n in 41..=75 {
+                app.upsert_message(rich(n, "c1"));
+                assert_bottom_matches_layout(&mut app, w, h);
+            }
+            app.selected_message_index = Some(app.active_messages().len() - 1);
+            assert_bottom_matches_layout(&mut app, w, h);
+        }
+    }
+
+    /// Real messages, replayed one arrival at a time: set
+    /// FLUXER_TUI_REPLAY to a JSON array of messages (newest first, as the
+    /// API answers) and FLUXER_TUI_REPLAY_CHANNEL to the channel object.
+    #[test]
+    fn replayed_real_messages_keep_the_bottom_row() {
+        let (Some(path), Some(channel_path)) = (
+            std::env::var_os("FLUXER_TUI_REPLAY"),
+            std::env::var_os("FLUXER_TUI_REPLAY_CHANNEL"),
+        ) else {
+            return;
+        };
+        let raw = std::fs::read_to_string(path).unwrap();
+        let mut messages: Vec<MessageResponse> = serde_json::from_str(&raw).unwrap();
+        messages.reverse();
+        let channel: ChannelResponse =
+            serde_json::from_str(&std::fs::read_to_string(channel_path).unwrap()).unwrap();
+        let gid = channel.guild_id.clone().expect("a guild channel");
+        for (w, h, pixel) in [
+            (100u16, 30u16, false),
+            (100, 30, true),
+            (120, 40, true),
+            (80, 24, false),
+        ] {
+            let me = UserPrivateResponse {
+                id: "me".into(),
+                ..Default::default()
+            };
+            let mut app = App::new(
+                WellKnownFluxerResponse::default(),
+                me,
+                None,
+                vec![crate::api::types::GuildResponse {
+                    id: gid.clone(),
+                    name: "g".into(),
+                    ..Default::default()
+                }],
+                Vec::new(),
+                ServerSelection::Guild(gid.clone()),
+                Some(channel.id.clone()),
+                UiSettings::default(),
+            );
+            app.guild_channels
+                .insert(gid.clone(), vec![channel.clone()]);
+            app.selected_channel_id = Some(channel.id.clone());
+            if pixel {
+                app.pixel_mode = true;
+                app.cell_px = (10, 20);
+            }
+            let (first, rest) = messages.split_at(messages.len() / 2);
+            app.set_channel_messages(&channel.id, first.to_vec());
+            assert_bottom_matches_layout(&mut app, w, h);
+            for m in rest {
+                app.upsert_message(m.clone());
+                assert_bottom_matches_layout(&mut app, w, h);
+            }
+        }
+    }
+
+    #[test]
+    fn switching_channels_while_messages_arrive_keeps_the_bottom() {
+        let (w, h) = (80u16, 30u16);
+        let mut app = app_with(&["c1", "c2"]);
+        for n in 1..=40 {
+            app.upsert_message(msg(n, "c1"));
+        }
+        for n in 100..=110 {
+            app.upsert_message(msg(n, "c2"));
+        }
+        assert_newest_at_bottom(&mut app, w, h, 40);
+        switch_to(&mut app, "c2");
+        assert_newest_at_bottom(&mut app, w, h, 110);
+        // updates in both channels while c2 is shown
+        app.upsert_message(msg(41, "c1"));
+        app.upsert_message(msg(111, "c2"));
+        assert_newest_at_bottom(&mut app, w, h, 111);
+        switch_to(&mut app, "c1");
+        assert_newest_at_bottom(&mut app, w, h, 41);
+        app.upsert_message(msg(42, "c1"));
+        assert_newest_at_bottom(&mut app, w, h, 42);
+        // an edit of the newest message, and one of an older one
+        let mut edited = msg(42, "c1");
+        edited.content = format!("{} and more words after the edit end42.", edited.content);
+        app.upsert_message(edited);
+        assert_newest_at_bottom(&mut app, w, h, 42);
+        let mut older = msg(30, "c1");
+        older.content = "short end30.".into();
+        app.upsert_message(older);
+        assert_newest_at_bottom(&mut app, w, h, 42);
+    }
+
+    #[test]
+    fn jumping_back_to_the_latest_after_scrolling_shows_it_whole() {
+        let (w, h) = (80u16, 30u16);
+        let mut app = app_with(&["c1"]);
+        for n in 1..=40 {
+            app.upsert_message(msg(n, "c1"));
+        }
+        assert_newest_at_bottom(&mut app, w, h, 40);
+        app.scroll_messages_up(3);
+        let _ = draw(&mut app, w, h);
+        app.upsert_message(msg(41, "c1"));
+        let _ = draw(&mut app, w, h);
+        app.jump_to_latest_message();
+        assert_newest_at_bottom(&mut app, w, h, 41);
+        // the pane changes size (the input box grows) and shrinks back
+        assert_newest_at_bottom(&mut app, w, h - 4, 41);
+        assert_newest_at_bottom(&mut app, w, h, 41);
+    }
 }
