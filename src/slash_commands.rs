@@ -59,7 +59,7 @@ pub static SLASH_COMMANDS: &[SlashCommandDef] = &[
     },
     SlashCommandDef {
         name: "/attach",
-        description: "Attach a file from disk (/attach ~/pic.png); Enter then sends it.",
+        description: "Attach a file: /attach ~/pic.png, or /attach alone to browse (any kind of file).",
         simple_append: None,
         requires_guild: false,
         requires_channel_perm: None,
@@ -123,6 +123,8 @@ pub enum OutgoingSlash {
     },
     /// Stage a file from disk for the next message.
     Attach(String),
+    /// Open the file picker.
+    AttachPick,
     Blocked(String),
     Normal,
 }
@@ -178,9 +180,7 @@ pub fn resolve_outgoing_slash(
         return OutgoingSlash::SendTts(body.to_string());
     }
     if t == "/attach" {
-        return OutgoingSlash::Blocked(
-            "Add a file path after /attach (e.g. /attach ~/pic.png).".to_string(),
-        );
+        return OutgoingSlash::AttachPick;
     }
     if let Some(rest) = t.strip_prefix("/attach ") {
         let path = rest.trim();

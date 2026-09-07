@@ -5,10 +5,13 @@ mod chafa;
 mod disk_cache;
 mod gif_anim;
 mod inline;
+mod local;
 mod open_external;
 mod prepare;
 
-pub use attachments::{StagedAttachment, from_clipboard, from_path};
+pub use attachments::{
+    StagedAttachment, content_type_for_extension, from_clipboard, from_path, human_size,
+};
 pub use audio::{Player, attachment_is_audio, format_duration, player_command};
 pub use cache::{Lookup, MediaCache};
 pub use chafa::chafa_from_bytes;
@@ -19,6 +22,10 @@ pub use inline::{
     attachment_picture, avatar_url, avatar_url_sized, block_px, default_avatar_color,
     default_avatar_key, default_avatar_url, embed_picture, parse_default_avatar_key, picture_cells,
     preview_limits, proxied_url, sixel_rows,
+};
+pub use local::{
+    LocalSource, file_url, image_dimensions_of, is_image, is_video, parse_file_url,
+    parse_staged_url, picture_bytes, staged_url,
 };
 pub use open_external::{open_file_path, write_temp_video_bytes};
 pub use prepare::prepare_pictures;

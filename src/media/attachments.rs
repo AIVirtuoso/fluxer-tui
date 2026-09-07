@@ -1,5 +1,6 @@
-//! Staging attachments for the next message: images grabbed from the system
-//! clipboard (Ctrl+V) and files named with `/attach <path>`.
+//! Staging attachments for the next message: images or files copied to the
+//! system clipboard (Ctrl+V), and files named with `/attach <path>` or
+//! picked in the file picker. Any kind of file goes.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -9,14 +10,44 @@ use std::process::Command;
 /// message.
 #[derive(Debug, Clone)]
 pub struct StagedAttachment {
+    /// Tells it from every other staged file, for its preview.
+    pub id: u64,
     pub filename: String,
     pub content_type: String,
     pub bytes: Vec<u8>,
+    /// Pixel size of an image, from its header.
+    pub dimensions: Option<(u32, u32)>,
 }
 
+static STAGED_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl StagedAttachment {
+    pub fn new(filename: String, content_type: String, bytes: Vec<u8>) -> Self {
+        let dimensions = if super::local::is_image(&content_type, &filename) {
+            super::local::image_dimensions(&bytes)
+        } else {
+            None
+        };
+        Self {
+            id: STAGED_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            filename,
+            content_type,
+            bytes,
+            dimensions,
+        }
+    }
+
     pub fn size_label(&self) -> String {
         human_size(self.bytes.len())
+    }
+
+    /// An image the client can show a preview of.
+    pub fn is_image(&self) -> bool {
+        self.dimensions.is_some()
+    }
+
+    pub fn is_video(&self) -> bool {
+        super::local::is_video(&self.content_type, &self.filename)
     }
 }
 
@@ -105,16 +136,49 @@ fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
         .with_context(|| format!("failed to run {cmd}"))
 }
 
-/// Read an image from the clipboard. Tries wl-paste (Wayland) first, then
-/// xclip (X11). Text on the clipboard is not an attachment, so that fails
-/// with a message naming what the clipboard actually holds.
-fn read_clipboard_image() -> Result<StagedAttachment> {
+const URI_LIST: &str = "text/uri-list";
+
+/// Files copied in a file manager arrive as a `text/uri-list`.
+fn offers_files<'a>(mut offered: impl Iterator<Item = &'a str>) -> bool {
+    offered.any(|t| t.trim().eq_ignore_ascii_case(URI_LIST))
+}
+
+/// Stage the files a `text/uri-list` names, in order, up to the limit.
+fn stage_uri_list(text: &str) -> Result<Vec<StagedAttachment>> {
+    let paths = super::local::uri_list_paths(text);
+    if paths.is_empty() {
+        bail!("the clipboard names no files");
+    }
+    let mut out = Vec::new();
+    for path in paths.iter().take(crate::app::MAX_ATTACHMENTS_PER_MESSAGE) {
+        if path.is_dir() {
+            continue;
+        }
+        out.push(stage_file(path)?);
+    }
+    if out.is_empty() {
+        bail!("the clipboard names only directories");
+    }
+    Ok(out)
+}
+
+/// Read what the clipboard holds: files copied in a file manager, else an
+/// image. Tries wl-paste (Wayland) first, then xclip (X11). Text on the
+/// clipboard is not an attachment, so that fails with a message naming
+/// what the clipboard actually holds.
+fn read_clipboard() -> Result<Vec<StagedAttachment>> {
     let mut last_err: Option<anyhow::Error> = None;
 
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         match run("wl-paste", &["--list-types"]) {
             Ok(list) if list.status.success() => {
                 let types = String::from_utf8_lossy(&list.stdout);
+                if offers_files(types.lines()) {
+                    let out = run("wl-paste", &["--no-newline", "--type", URI_LIST])?;
+                    if out.status.success() && !out.stdout.is_empty() {
+                        return stage_uri_list(&String::from_utf8_lossy(&out.stdout));
+                    }
+                }
                 let Some(mime) = pick_image_type(types.lines()) else {
                     let seen: Vec<&str> = types.lines().take(4).collect();
                     bail!(
@@ -130,11 +194,11 @@ fn read_clipboard_image() -> Result<StagedAttachment> {
                 if !out.status.success() || out.stdout.is_empty() {
                     bail!("wl-paste returned no data for {mime}");
                 }
-                return Ok(StagedAttachment {
-                    filename: clipboard_filename(&mime),
-                    content_type: mime,
-                    bytes: out.stdout,
-                });
+                return Ok(vec![StagedAttachment::new(
+                    clipboard_filename(&mime),
+                    mime,
+                    out.stdout,
+                )]);
             }
             Ok(list) => {
                 let msg = String::from_utf8_lossy(&list.stderr).trim().to_string();
@@ -147,18 +211,24 @@ fn read_clipboard_image() -> Result<StagedAttachment> {
     match run("xclip", &["-selection", "clipboard", "-t", "TARGETS", "-o"]) {
         Ok(list) if list.status.success() => {
             let types = String::from_utf8_lossy(&list.stdout);
+            if offers_files(types.lines()) {
+                let out = run("xclip", &["-selection", "clipboard", "-t", URI_LIST, "-o"])?;
+                if out.status.success() && !out.stdout.is_empty() {
+                    return stage_uri_list(&String::from_utf8_lossy(&out.stdout));
+                }
+            }
             let Some(mime) = pick_image_type(types.lines()) else {
-                bail!("no image on the clipboard");
+                bail!("no image or files on the clipboard");
             };
             let out = run("xclip", &["-selection", "clipboard", "-t", &mime, "-o"])?;
             if !out.status.success() || out.stdout.is_empty() {
                 bail!("xclip returned no data for {mime}");
             }
-            return Ok(StagedAttachment {
-                filename: clipboard_filename(&mime),
-                content_type: mime,
-                bytes: out.stdout,
-            });
+            return Ok(vec![StagedAttachment::new(
+                clipboard_filename(&mime),
+                mime,
+                out.stdout,
+            )]);
         }
         Ok(list) => {
             let msg = String::from_utf8_lossy(&list.stderr).trim().to_string();
@@ -176,8 +246,8 @@ fn read_clipboard_image() -> Result<StagedAttachment> {
     }))
 }
 
-pub async fn from_clipboard() -> Result<StagedAttachment> {
-    tokio::task::spawn_blocking(read_clipboard_image)
+pub async fn from_clipboard() -> Result<Vec<StagedAttachment>> {
+    tokio::task::spawn_blocking(read_clipboard)
         .await
         .context("clipboard task")?
 }
@@ -191,15 +261,13 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub async fn from_path(raw: &str) -> Result<StagedAttachment> {
-    let path = expand_home(raw.trim().trim_matches('"').trim_matches('\''));
-    let bytes = tokio::fs::read(&path)
-        .await
-        .with_context(|| format!("cannot read {}", path.display()))?;
+/// Stage a file of any kind from disk.
+fn stage_file(path: &Path) -> Result<StagedAttachment> {
+    let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     if bytes.is_empty() {
         bail!("{} is empty", path.display());
     }
-    let filename = Path::new(&path)
+    let filename = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .filter(|n| !n.is_empty())
@@ -208,9 +276,65 @@ pub async fn from_path(raw: &str) -> Result<StagedAttachment> {
         .extension()
         .map(|e| e.to_string_lossy().to_string())
         .unwrap_or_default();
-    Ok(StagedAttachment {
+    Ok(StagedAttachment::new(
         filename,
-        content_type: content_type_for_extension(&ext).to_string(),
+        content_type_for_extension(&ext).to_string(),
         bytes,
-    })
+    ))
+}
+
+pub async fn from_path(raw: &str) -> Result<StagedAttachment> {
+    let path = expand_home(raw.trim().trim_matches('"').trim_matches('\''));
+    tokio::task::spawn_blocking(move || stage_file(&path))
+        .await
+        .context("file task")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn any_kind_of_file_is_staged_with_its_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("notes.tar.xz");
+        std::fs::write(&p, b"not really an archive").unwrap();
+        let a = stage_file(&p).unwrap();
+        assert_eq!(a.filename, "notes.tar.xz");
+        assert_eq!(a.content_type, "application/octet-stream");
+        assert!(!a.is_image() && !a.is_video());
+        assert_eq!(a.size_label(), "21 B");
+
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(8, 4, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let p = dir.path().join("shot.png");
+        std::fs::write(&p, &png).unwrap();
+        let a = stage_file(&p).unwrap();
+        assert_eq!(a.content_type, "image/png");
+        assert_eq!(a.dimensions, Some((8, 4)));
+        assert!(a.is_image());
+        let b = StagedAttachment::new("clip.mp4".into(), "video/mp4".into(), vec![0; 4]);
+        assert!(b.is_video() && !b.is_image());
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn copied_files_are_preferred_over_an_image() {
+        assert!(offers_files(["image/png", "text/uri-list"].into_iter()));
+        assert!(!offers_files(["image/png", "text/plain"].into_iter()));
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a b.txt");
+        std::fs::write(&p, "x").unwrap();
+        let list = format!(
+            "file://{}\r\nfile://{}\r\n",
+            p.display().to_string().replace(' ', "%20"),
+            dir.path().display()
+        );
+        let staged = stage_uri_list(&list).unwrap();
+        assert_eq!(staged.len(), 1, "directories are skipped");
+        assert_eq!(staged[0].filename, "a b.txt");
+        assert!(stage_uri_list("# nothing\n").is_err());
+    }
 }

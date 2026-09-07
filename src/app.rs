@@ -725,6 +725,38 @@ pub struct ProfileView {
     pub scroll: u16,
 }
 
+/// One row of the file picker.
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// The file picker: a directory's entries, filtered as the user types.
+#[derive(Debug)]
+pub struct FilePicker {
+    pub dir: std::path::PathBuf,
+    pub entries: Vec<FileEntry>,
+    pub filtered: Vec<usize>,
+    pub selected: usize,
+    pub query: String,
+}
+
+impl FilePicker {
+    /// The entry under the cursor.
+    pub fn current(&self) -> Option<&FileEntry> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.entries.get(i))
+    }
+}
+
+/// Size of a staged picture's thumbnail in the compose box, in cells.
+pub const THUMB_COLS: u16 = 16;
+pub const THUMB_ROWS: u16 = 4;
+
 #[derive(Debug)]
 pub enum ProfileState {
     Loading,
@@ -849,6 +881,10 @@ pub struct App {
     pub ui_settings: UiSettings,
     /// The profile popup, while open.
     pub profile: Option<ProfileView>,
+    /// The file picker, while open.
+    pub file_picker: Option<FilePicker>,
+    /// Where the file picker last was, for the next time.
+    pub attach_dir: Option<std::path::PathBuf>,
     /// The external player an audio attachment is playing through.
     pub audio: Option<crate::media::Player>,
     /// `[media] audio_player`: empty picks a player from PATH.
@@ -968,6 +1004,8 @@ impl App {
             server_notification_scroll: 0,
             ui_settings,
             profile: None,
+            file_picker: None,
+            attach_dir: None,
             audio: None,
             audio_player_cmd: String::new(),
         };
@@ -2477,6 +2515,194 @@ impl App {
 
     pub fn dismiss_profile(&mut self) {
         self.profile = None;
+    }
+
+    /// Open the file picker where it last was, else in the home directory.
+    pub fn open_file_picker(&mut self) {
+        let dir = self
+            .attach_dir
+            .clone()
+            .filter(|d| d.is_dir())
+            .or_else(dirs::home_dir)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        self.dismiss_channel_picker();
+        self.dismiss_image_preview();
+        self.file_picker = Some(FilePicker {
+            dir: dir.clone(),
+            entries: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            query: String::new(),
+        });
+        self.file_picker_load(dir);
+    }
+
+    pub fn dismiss_file_picker(&mut self) {
+        self.file_picker = None;
+    }
+
+    /// Read `dir` into the picker: directories first, then files, by name.
+    /// Dotfiles are listed only while the filter starts with a dot.
+    fn file_picker_load(&mut self, dir: std::path::PathBuf) {
+        if self.file_picker.is_none() {
+            return;
+        }
+        let mut entries: Vec<FileEntry> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let meta = e.metadata().ok()?;
+                    let is_dir =
+                        meta.is_dir() || (meta.file_type().is_symlink() && e.path().is_dir());
+                    Some(FileEntry {
+                        name: e.file_name().to_string_lossy().to_string(),
+                        path: e.path(),
+                        is_dir,
+                        size: meta.len(),
+                    })
+                })
+                .collect(),
+            Err(err) => {
+                self.set_status(format!("Cannot read {}: {err}", dir.display()));
+                return;
+            }
+        };
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        if let Some(picker) = self.file_picker.as_mut() {
+            picker.dir = dir.clone();
+            picker.entries = entries;
+            picker.query.clear();
+            picker.selected = 0;
+        }
+        self.attach_dir = Some(dir);
+        self.filter_file_picker();
+    }
+
+    pub fn filter_file_picker(&mut self) {
+        let Some(picker) = self.file_picker.as_mut() else {
+            return;
+        };
+        let q = picker.query.to_lowercase();
+        let show_hidden = q.starts_with('.');
+        picker.filtered = picker
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| show_hidden || !e.name.starts_with('.'))
+            .filter(|(_, e)| q.is_empty() || e.name.to_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect();
+        picker.selected = picker.selected.min(picker.filtered.len().saturating_sub(1));
+    }
+
+    pub fn file_picker_move(&mut self, delta: i32) {
+        if let Some(picker) = self.file_picker.as_mut() {
+            let n = picker.filtered.len();
+            if n == 0 {
+                picker.selected = 0;
+                return;
+            }
+            let at = picker.selected as i64 + delta as i64;
+            picker.selected = at.clamp(0, n as i64 - 1) as usize;
+        }
+    }
+
+    /// Up one directory.
+    pub fn file_picker_parent(&mut self) {
+        let Some(parent) = self
+            .file_picker
+            .as_ref()
+            .and_then(|p| p.dir.parent().map(|d| d.to_path_buf()))
+        else {
+            return;
+        };
+        let from = self.file_picker.as_ref().map(|p| p.dir.clone());
+        self.file_picker_load(parent);
+        // land on the directory just left
+        if let (Some(from), Some(picker)) = (from, self.file_picker.as_mut())
+            && let Some(at) = picker
+                .filtered
+                .iter()
+                .position(|&i| picker.entries[i].path == from)
+        {
+            picker.selected = at;
+        }
+    }
+
+    /// Enter: descend into a directory (None), or the file to attach.
+    pub fn file_picker_confirm(&mut self) -> Option<std::path::PathBuf> {
+        let entry = self.file_picker.as_ref()?.current()?.clone();
+        if entry.is_dir {
+            self.file_picker_load(entry.path);
+            None
+        } else {
+            self.file_picker = None;
+            Some(entry.path)
+        }
+    }
+
+    /// The block a staged picture's thumbnail takes in the compose box,
+    /// when the terminal can draw one: an image at its own shape, a
+    /// video's first frame letterboxed into a 16:9 box.
+    pub fn staged_thumbnail_slot(&self, a: &crate::media::StagedAttachment) -> Option<MediaSlot> {
+        if !self.custom_emoji_inline_supported() {
+            return None;
+        }
+        let shape = if let Some(dims) = a.dimensions {
+            dims
+        } else if a.is_video() {
+            // a 16:9 frame, larger than any box so it is only scaled down
+            (1600, 900)
+        } else {
+            return None;
+        };
+        let (cols, rows) =
+            crate::media::picture_cells(shape, self.cell_px, (THUMB_COLS, THUMB_ROWS));
+        Some(MediaSlot::new(
+            crate::media::staged_url(a.id),
+            cols,
+            rows,
+            MediaKind::Picture,
+        ))
+    }
+
+    /// The block a file's preview takes in the file picker, within `max`.
+    pub fn file_preview_slot(&self, path: &std::path::Path, max: (u16, u16)) -> Option<MediaSlot> {
+        if !self.custom_emoji_inline_supported() || max.0 == 0 || max.1 == 0 {
+            return None;
+        }
+        let name = path.file_name()?.to_string_lossy().to_string();
+        let shape = if crate::media::is_video("", &name) {
+            (1600, 900)
+        } else if crate::media::is_image("", &name) {
+            crate::media::image_dimensions_of(path)?
+        } else {
+            return None;
+        };
+        let (cols, rows) = crate::media::picture_cells(shape, self.cell_px, max);
+        Some(MediaSlot::new(
+            crate::media::file_url(path),
+            cols,
+            rows,
+            MediaKind::Picture,
+        ))
+    }
+
+    /// Where a local media slot's bytes come from, for the fetch.
+    pub fn local_media_source(&self, url: &str) -> Option<crate::media::LocalSource> {
+        if let Some(id) = crate::media::parse_staged_url(url) {
+            let a = self.pending_attachments.iter().find(|a| a.id == id)?;
+            return Some(crate::media::LocalSource::Bytes {
+                filename: a.filename.clone(),
+                bytes: a.bytes.clone(),
+            });
+        }
+        crate::media::parse_file_url(url).map(crate::media::LocalSource::Path)
     }
 
     /// Whether Ctrl+O on this attachment should stop what plays rather
@@ -4714,5 +4940,131 @@ mod custom_emoji_tests {
             CUSTOM_EMOJI_CELLS as usize
         );
         assert!(!CUSTOM_EMOJI_PLACEHOLDER.chars().any(char::is_whitespace));
+    }
+}
+
+#[cfg(test)]
+mod file_picker_tests {
+    use super::*;
+
+    fn app() -> App {
+        let me = UserPrivateResponse {
+            id: "me".into(),
+            ..Default::default()
+        };
+        App::new(
+            WellKnownFluxerResponse::default(),
+            me,
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            UiSettings::default(),
+        )
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        let p = app.file_picker.as_ref().unwrap();
+        p.filtered
+            .iter()
+            .map(|&i| p.entries[i].name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_picker_lists_filters_descends_and_attaches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("photos")).unwrap();
+        std::fs::write(dir.path().join("photos/cat.png"), b"x").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"hello").unwrap();
+        std::fs::write(dir.path().join("archive.zip"), b"zz").unwrap();
+        std::fs::write(dir.path().join(".hidden"), b"h").unwrap();
+        let mut app = app();
+        app.attach_dir = Some(dir.path().to_path_buf());
+        app.open_file_picker();
+        // directories first, then files by name; dotfiles hidden
+        assert_eq!(names(&app), ["photos", "archive.zip", "notes.txt"]);
+        // typing filters; a leading dot shows dotfiles
+        app.file_picker.as_mut().unwrap().query = "not".into();
+        app.filter_file_picker();
+        assert_eq!(names(&app), ["notes.txt"]);
+        app.file_picker.as_mut().unwrap().query = ".hid".into();
+        app.filter_file_picker();
+        assert_eq!(names(&app), [".hidden"]);
+        app.file_picker.as_mut().unwrap().query.clear();
+        app.filter_file_picker();
+        // Enter on a directory descends, on a file attaches and closes
+        app.file_picker_move(0);
+        assert!(app.file_picker_confirm().is_none());
+        assert_eq!(names(&app), ["cat.png"]);
+        assert_eq!(
+            app.file_picker.as_ref().unwrap().dir,
+            dir.path().join("photos")
+        );
+        // back up: the cursor lands on the directory just left
+        app.file_picker_parent();
+        assert_eq!(app.file_picker.as_ref().unwrap().dir, dir.path());
+        assert_eq!(
+            app.file_picker.as_ref().unwrap().current().unwrap().name,
+            "photos"
+        );
+        app.file_picker_move(10);
+        assert_eq!(
+            app.file_picker.as_ref().unwrap().current().unwrap().name,
+            "notes.txt"
+        );
+        let picked = app.file_picker_confirm();
+        assert_eq!(picked, Some(dir.path().join("notes.txt")));
+        assert!(app.file_picker.is_none());
+        // the picker remembers where it was
+        assert_eq!(app.attach_dir.as_deref(), Some(dir.path()));
+    }
+
+    #[test]
+    fn staged_pictures_get_thumbnails_where_pictures_can_be_drawn() {
+        let mut app = app();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(200, 100, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let shot = crate::media::StagedAttachment::new("shot.png".into(), "image/png".into(), png);
+        let clip =
+            crate::media::StagedAttachment::new("clip.mp4".into(), "video/mp4".into(), vec![0; 8]);
+        let doc = crate::media::StagedAttachment::new(
+            "doc.pdf".into(),
+            "application/pdf".into(),
+            vec![0; 8],
+        );
+        // a terminal without pictures: no thumbnails
+        assert!(app.staged_thumbnail_slot(&shot).is_none());
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        let s = app.staged_thumbnail_slot(&shot).unwrap();
+        assert_eq!(
+            (s.cols, s.rows),
+            (16, 4),
+            "a 2:1 picture fills the 16x4 box"
+        );
+        assert_eq!(s.url, crate::media::staged_url(shot.id));
+        let v = app.staged_thumbnail_slot(&clip).unwrap();
+        assert_eq!((v.cols, v.rows), (14, 4), "16:9 in a 16x4 box");
+        assert!(app.staged_thumbnail_slot(&doc).is_none());
+        app.pending_attachments = vec![shot.clone(), doc];
+        match app.local_media_source(&crate::media::staged_url(shot.id)) {
+            Some(crate::media::LocalSource::Bytes { filename, bytes }) => {
+                assert_eq!(filename, "shot.png");
+                assert_eq!(bytes, shot.bytes);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            app.local_media_source(&crate::media::staged_url(999))
+                .is_none()
+        );
+        assert!(matches!(
+            app.local_media_source("file:///tmp/x.png"),
+            Some(crate::media::LocalSource::Path(_))
+        ));
     }
 }

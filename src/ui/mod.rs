@@ -2,6 +2,7 @@ pub mod ansi_line;
 pub mod channel_picker;
 pub mod command_popup;
 pub mod emoji_popup;
+pub mod file_picker;
 pub mod help_overlay;
 pub mod image_preview;
 pub mod input_bar;
@@ -107,6 +108,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {
         profile_overlay::render(frame, area, app);
+    } else if app.file_picker.is_some() {
+        file_picker::render(frame, area, app);
     } else if app.channel_picker.is_some() {
         channel_picker::render(frame, area, app);
     }
@@ -127,6 +130,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             || app.show_server_notifications
             || app.profile.is_some()
             || app.image_preview.is_some()
+            || app.file_picker.is_some()
             || app.channel_picker.is_some()
             || app.emoji_autocomplete.is_some()
             || app.mention_autocomplete.is_some()

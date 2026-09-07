@@ -1,10 +1,107 @@
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, THUMB_ROWS};
 use crate::ui::input_word_wrap;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
+
+/// Rows the staged files take above the text: their names, under their
+/// thumbnails when any is a picture or a video the terminal can draw.
+pub fn attachment_strip_rows(app: &App) -> u16 {
+    if app.pending_attachments.is_empty() {
+        return 0;
+    }
+    let thumbs = app
+        .pending_attachments
+        .iter()
+        .any(|a| app.staged_thumbnail_slot(a).is_some());
+    if thumbs { THUMB_ROWS + 1 } else { 1 }
+}
+
+/// The strip: one card per staged file, side by side, `width` cells wide.
+/// A card is its thumbnail's marker cells (the media overlay draws the
+/// picture there) over its name and size; files without a picture get
+/// a paper clip. Cards that do not fit are counted at the end.
+fn attachment_strip(app: &App, width: u16) -> Vec<Line<'static>> {
+    let rows = attachment_strip_rows(app) as usize;
+    if rows == 0 {
+        return Vec::new();
+    }
+    let thumb_rows = rows - 1;
+    let dim = crate::ui::theme::dim_style();
+    let muted = crate::ui::theme::muted_style();
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new(); rows];
+    let mut x = 0usize;
+    let mut shown = 0usize;
+    for a in &app.pending_attachments {
+        let slot = app.staged_thumbnail_slot(a);
+        let (cols, prows) = slot
+            .as_ref()
+            .map(|s| (s.cols as usize, s.rows as usize))
+            .unwrap_or((0, 0));
+        let label = format!("{} {}", a.filename, a.size_label());
+        let card_w = cols.max(label.width().min(20)).max(6);
+        if x + card_w > width as usize {
+            break;
+        }
+        let gap = if shown > 0 { 2 } else { 0 };
+        let k = slot.map(|s| app.register_media_slot(s));
+        for (r, line) in lines.iter_mut().enumerate().take(thumb_rows) {
+            line.push(Span::raw(" ".repeat(gap)));
+            match k {
+                Some(k) if r < prows => {
+                    line.push(Span::styled(
+                        "\u{2800}".repeat(cols),
+                        crate::app::media_marker_style(k, r as u16),
+                    ));
+                    line.push(Span::raw(" ".repeat(card_w - cols)));
+                }
+                None if r == thumb_rows / 2 => {
+                    let mark = "\u{1F4CE}";
+                    let pad = card_w.saturating_sub(2) / 2;
+                    line.push(Span::raw(" ".repeat(pad)));
+                    line.push(Span::styled(mark, muted));
+                    line.push(Span::raw(" ".repeat(card_w.saturating_sub(pad + 2))));
+                }
+                _ => line.push(Span::raw(" ".repeat(card_w))),
+            }
+        }
+        let name = fit(&label, card_w);
+        let pad = card_w.saturating_sub(name.width());
+        let name_line = &mut lines[rows - 1];
+        name_line.push(Span::raw(" ".repeat(gap)));
+        name_line.push(Span::styled(name, dim));
+        name_line.push(Span::raw(" ".repeat(pad)));
+        x += gap + card_w;
+        shown += 1;
+    }
+    let left = app.pending_attachments.len().saturating_sub(shown);
+    if left > 0 {
+        lines[rows - 1].push(Span::styled(format!("  +{left} more"), muted));
+    }
+    lines.into_iter().map(Line::from).collect()
+}
+
+/// `s` cut to `width` cells, with an ellipsis when something was cut.
+fn fit(s: &str, width: usize) -> String {
+    if s.width() <= width {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w + 1 > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('\u{2026}');
+    out
+}
 
 fn input_span_style() -> Style {
     Style::default().fg(crate::ui::theme::text())
@@ -20,18 +117,20 @@ pub fn input_display_row_count(app: &App, inner_width: u16) -> u16 {
     if !can_type {
         return 1;
     }
+    let strip = attachment_strip_rows(app);
     if !app.input.is_empty() {
         return input_word_wrap::wrapped_row_count(
             &app.input_display_plain(),
             inner_width,
             input_span_style(),
-        );
+        )
+        .saturating_add(strip);
     }
     let mut n = 1u16;
     if app.others_typing_phrase().is_some() {
         n = n.saturating_add(1);
     }
-    n
+    n.saturating_add(strip)
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
@@ -150,8 +249,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         blk = blk.title(right_title);
     }
 
-    let paragraph = if can_type && !app.input.is_empty() {
-        Paragraph::new(Text::from(app.input_display(true)))
+    // the staged files sit above the text
+    let inner_w = area.width.saturating_sub(2).max(1);
+    let mut lines: Vec<Line<'static>> = if can_type {
+        attachment_strip(app, inner_w)
+    } else {
+        Vec::new()
+    };
+    let strip_rows = lines.len() as u16;
+    if can_type && !app.input.is_empty() {
+        lines.extend(app.input_display(true));
     } else if can_type
         && app.input.is_empty()
         && let (Some(phrase), Some(ph)) = (others_typing.as_ref(), placeholder.as_ref())
@@ -160,19 +267,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
             .fg(crate::ui::theme::typing_others())
             .add_modifier(Modifier::ITALIC);
         let typing_text = typing_line_with_dots(phrase, typing_dots);
-        Paragraph::new(Text::from(vec![
-            Line::from(Span::styled(typing_text, typing_style)),
-            Line::from(Span::styled(ph.clone(), style)),
-        ]))
+        lines.push(Line::from(Span::styled(typing_text, typing_style)));
+        lines.push(Line::from(Span::styled(ph.clone(), style)));
     } else {
-        Paragraph::new(Line::from(Span::styled(content, style)))
+        lines.push(Line::from(Span::styled(content, style)));
     }
-    .block(blk)
-    .wrap(ratatui::widgets::Wrap { trim: false });
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(blk)
+        .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
     if focused && can_type && !app.input.is_empty() {
-        let inner_w = area.width.saturating_sub(2).max(1);
         let (col, row) = input_word_wrap::eol_cursor_col_row(
             &app.input_display_plain(),
             inner_w,
@@ -180,7 +285,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         );
         let max_x = area.x + area.width.saturating_sub(2);
         let x = (area.x + 1 + col).min(max_x);
-        let y = area.y + 1 + row;
+        let y = area.y + 1 + strip_rows + row;
         Some((x, y))
     } else if focused && can_type {
         let extra = if app.input.is_empty() && app.others_typing_phrase().is_some() {
@@ -188,8 +293,107 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         } else {
             0
         };
-        Some((area.x + 1, area.y + 1 + extra))
+        Some((area.x + 1, area.y + 1 + strip_rows + extra))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::{ChannelResponse, UserPartialResponse, UserPrivateResponse};
+    use crate::app::ServerSelection;
+
+    fn dm_app() -> App {
+        let me = UserPrivateResponse {
+            id: "me".into(),
+            ..Default::default()
+        };
+        let channel = ChannelResponse {
+            id: "c1".into(),
+            kind: 1,
+            recipients: vec![UserPartialResponse {
+                id: "o".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        App::new(
+            Default::default(),
+            me,
+            None,
+            Vec::new(),
+            vec![channel],
+            ServerSelection::DirectMessages,
+            Some("c1".into()),
+            Default::default(),
+        )
+    }
+
+    #[test]
+    fn staged_files_take_a_strip_above_the_text() {
+        let mut app = dm_app();
+        assert!(app.active_channel_is_text() && app.can_send_in_active_channel());
+        assert_eq!(input_display_row_count(&app, 60), 1);
+        app.pending_attachments
+            .push(crate::media::StagedAttachment::new(
+                "notes.txt".into(),
+                "text/plain".into(),
+                b"hi".to_vec(),
+            ));
+        // names only where pictures cannot be drawn
+        assert_eq!(attachment_strip_rows(&app), 1);
+        assert_eq!(input_display_row_count(&app, 60), 2);
+        let lines = attachment_strip(&app, 60);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].to_string().contains("notes.txt 2 B"));
+
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(40, 40, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        app.pending_attachments
+            .push(crate::media::StagedAttachment::new(
+                "shot.png".into(),
+                "image/png".into(),
+                png,
+            ));
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        assert_eq!(attachment_strip_rows(&app), THUMB_ROWS + 1);
+        app.input = "hello".into();
+        assert_eq!(input_display_row_count(&app, 60), THUMB_ROWS + 2);
+        let lines = attachment_strip(&app, 60);
+        assert_eq!(lines.len() as u16, THUMB_ROWS + 1);
+        // the picture's marker cells sit on the thumbnail rows
+        let slots = app.media_slots.borrow();
+        assert_eq!(slots.len(), 1);
+        let marked = lines[0]
+            .spans
+            .iter()
+            .filter(|s| crate::app::media_marker(s.style) == Some((0, 0)))
+            .count();
+        assert_eq!(marked, 1, "{:?}", lines[0]);
+        assert!(lines[THUMB_ROWS as usize].to_string().contains("shot.png"));
+    }
+
+    #[test]
+    fn cards_that_do_not_fit_are_counted() {
+        let mut app = dm_app();
+        for i in 0..6 {
+            app.pending_attachments
+                .push(crate::media::StagedAttachment::new(
+                    format!("a-rather-long-file-name-{i}.bin"),
+                    "application/octet-stream".into(),
+                    vec![0; 10],
+                ));
+        }
+        let lines = attachment_strip(&app, 50);
+        assert!(
+            lines[0].to_string().contains("more"),
+            "{:?}",
+            lines[0].to_string()
+        );
     }
 }
