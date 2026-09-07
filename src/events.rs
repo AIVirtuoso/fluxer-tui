@@ -157,6 +157,8 @@ pub enum AppEvent {
 pub struct EventEffects {
     pub persist_token: Option<String>,
     pub chafa_fallback: Option<(String, Vec<u8>)>,
+    /// Messages to announce outside the client.
+    pub notify: Vec<crate::notify::Notification>,
 }
 
 pub fn apply_event(
@@ -351,6 +353,9 @@ pub fn apply_event(
                 if let Ok(message) = serde_json::from_value::<MessageResponse>(payload) {
                     app.clear_typing_for_message(&message.channel_id, &message.author.id);
                     if app.upsert_message(message.clone()) {
+                        if let Some(n) = app.notification_for(&message) {
+                            effects.notify.push(n);
+                        }
                         app.on_gateway_message_create(&message);
                     }
                 }

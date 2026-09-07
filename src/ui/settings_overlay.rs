@@ -286,6 +286,53 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("    ", text),
         Span::styled(format!("{}  ·  {}", avatars_alt.0, avatars_alt.1), muted),
     ]));
+    use crate::config::NotifyMode;
+    let notify_label = |m: NotifyMode| match m {
+        NotifyMode::Auto => ("Auto", "notify-send where there is a display"),
+        NotifyMode::Desktop => ("Desktop", "notify-send (libnotify)"),
+        NotifyMode::Mail => ("Mail", "GNU mail to the login user (for the console)"),
+        NotifyMode::Off => ("Off", "No notifications outside the client"),
+    };
+    let notify_next = match app.ui_settings.notifications {
+        NotifyMode::Auto => NotifyMode::Desktop,
+        NotifyMode::Desktop => NotifyMode::Mail,
+        NotifyMode::Mail => NotifyMode::Off,
+        NotifyMode::Off => NotifyMode::Auto,
+    };
+    let notify_primary = notify_label(app.ui_settings.notifications);
+    let notify_alt = notify_label(notify_next);
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "  Notifications (mentions and direct messages)",
+        dim,
+    )]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", text),
+        Span::styled(
+            if app.settings_cursor == 6 {
+                "▸ "
+            } else {
+                "  "
+            },
+            if app.settings_cursor == 6 {
+                accent
+            } else {
+                muted
+            },
+        ),
+        Span::styled(
+            format!("{}  ·  {}", notify_primary.0, notify_primary.1),
+            panel.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    ", text),
+        Span::styled(
+            format!("next: {}  ·  {}", notify_alt.0, notify_alt.1),
+            muted,
+        ),
+    ]));
     let block = Block::default()
         .title(Line::from(Span::styled(" Settings ", accent)))
         .borders(Borders::ALL)
@@ -304,4 +351,68 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     )]))
     .alignment(Alignment::Center);
     frame.render_widget(hint, body[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::NotifyMode;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn drawn(app: &App) -> String {
+        let mut t = Terminal::new(TestBackend::new(90, 44)).unwrap();
+        t.draw(|f| render(f, f.area(), app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..44)
+            .map(|y| {
+                (0..90)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_notifications_row_shows_the_mode_and_cycles_through_all_four() {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            crate::app::ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        app.settings_cursor = App::UI_SETTINGS_LAST_ROW;
+        assert_eq!(app.ui_settings.notifications, NotifyMode::Auto);
+        let s = drawn(&app);
+        assert!(
+            s.contains("Notifications (mentions and direct messages)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("▸ Auto  ·  notify-send where there is a display"),
+            "{s}"
+        );
+        let mut seen = vec![app.ui_settings.notifications];
+        for _ in 0..3 {
+            app.toggle_settings_selection();
+            seen.push(app.ui_settings.notifications);
+        }
+        assert_eq!(
+            seen,
+            [
+                NotifyMode::Auto,
+                NotifyMode::Desktop,
+                NotifyMode::Mail,
+                NotifyMode::Off
+            ]
+        );
+        assert!(drawn(&app).contains("▸ Off  ·  No notifications outside the client"));
+        app.toggle_settings_selection();
+        assert_eq!(app.ui_settings.notifications, NotifyMode::Auto);
+    }
 }

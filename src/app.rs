@@ -1013,7 +1013,7 @@ impl App {
         app
     }
 
-    pub const UI_SETTINGS_LAST_ROW: usize = 5;
+    pub const UI_SETTINGS_LAST_ROW: usize = 6;
     pub const SERVER_NOTIFICATION_LAST_ROW: usize = 5;
     pub const HISTORY_AUTOLOAD_THRESHOLD_ROWS: u16 = 3;
     pub const TRANSIENT_STATUS_DURATION: Duration = Duration::from_millis(1800);
@@ -1300,8 +1300,90 @@ impl App {
             5 => {
                 self.ui_settings.avatars = !self.ui_settings.avatars;
             }
+            6 => {
+                use crate::config::NotifyMode;
+                self.ui_settings.notifications = match self.ui_settings.notifications {
+                    NotifyMode::Auto => NotifyMode::Desktop,
+                    NotifyMode::Desktop => NotifyMode::Mail,
+                    NotifyMode::Mail => NotifyMode::Off,
+                    NotifyMode::Off => NotifyMode::Auto,
+                };
+            }
             _ => {}
         }
+    }
+
+    /// What to announce about a message that just arrived, if anything: a
+    /// direct message or a mention, wherever it lands (the terminal may
+    /// well be out of sight), or, when asked for, any message in a
+    /// community channel set to all messages other than the one being
+    /// read; never the user's own.
+    pub fn notification_for(
+        &self,
+        message: &MessageResponse,
+    ) -> Option<crate::notify::Notification> {
+        if message.author.id == self.me.id {
+            return None;
+        }
+        let channel = self.channel_by_id(&message.channel_id);
+        let reading_it = self.active_channel_id().as_deref() == Some(message.channel_id.as_str());
+        let wanted = self.message_notifies_me(message)
+            || (self.ui_settings.notify_all_messages
+                && !reading_it
+                && channel.as_ref().is_some_and(|c| {
+                    c.guild_id.is_some()
+                        && self.channel_notification_visibility(c)
+                            == NotificationVisibility::AllMessages
+                }));
+        if !wanted {
+            return None;
+        }
+        let guild_id = channel.as_ref().and_then(|c| c.guild_id.clone());
+        let author = self.shown_name_for_user(guild_id.as_deref(), &message.author);
+        let place = match (&channel, &guild_id) {
+            (Some(c), Some(gid)) => {
+                let guild = self
+                    .guilds
+                    .iter()
+                    .find(|g| &g.id == gid)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_default();
+                format!("#{} \u{00B7} {}", c.name, guild)
+            }
+            _ => "Direct message".to_string(),
+        };
+        let title = match (&channel, &guild_id) {
+            (Some(c), Some(_)) => format!("{author} in #{}", c.name),
+            _ => format!("{author} (direct message)"),
+        };
+        let mut body: String = crate::ui::message_markdown::content_lines(&message.content, self)
+            .iter()
+            .map(|spans| spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        const MAX: usize = 300;
+        if body.chars().count() > MAX {
+            body = body.chars().take(MAX).collect::<String>() + "\u{2026}";
+        }
+        if !message.attachments.is_empty() {
+            let n = message.attachments.len();
+            let files = if n == 1 {
+                message.attachments[0].filename.clone()
+            } else {
+                format!("{n} files")
+            };
+            if body.is_empty() {
+                body = format!("[{files}]");
+            } else {
+                body = format!("{body} [{files}]");
+            }
+        }
+        if body.is_empty() {
+            body = "(no text)".to_string();
+        }
+        Some(crate::notify::Notification { title, body, place })
     }
 
     pub fn suppress_everyone_enabled(&self, guild_id: Option<&str>) -> bool {
@@ -5066,5 +5148,140 @@ mod file_picker_tests {
             app.local_media_source("file:///tmp/x.png"),
             Some(crate::media::LocalSource::Path(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    fn app() -> App {
+        let me = UserPrivateResponse {
+            id: "me".into(),
+            username: "me".into(),
+            ..Default::default()
+        };
+        let dm = ChannelResponse {
+            id: "dm".into(),
+            kind: 1,
+            recipients: vec![UserPartialResponse {
+                id: "ann".into(),
+                username: "ann".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut app = App::new(
+            WellKnownFluxerResponse::default(),
+            me,
+            None,
+            vec![GuildResponse {
+                id: "g1".into(),
+                name: "Linux Hub".into(),
+                ..Default::default()
+            }],
+            vec![dm],
+            ServerSelection::Guild("g1".into()),
+            Some("general".into()),
+            UiSettings::default(),
+        );
+        app.guild_channels.insert(
+            "g1".into(),
+            vec![
+                ChannelResponse {
+                    id: "general".into(),
+                    guild_id: Some("g1".into()),
+                    name: "general".into(),
+                    ..Default::default()
+                },
+                ChannelResponse {
+                    id: "art".into(),
+                    guild_id: Some("g1".into()),
+                    name: "art".into(),
+                    ..Default::default()
+                },
+            ],
+        );
+        app.selected_channel_id = Some("general".into());
+        app
+    }
+
+    fn msg(channel: &str, author: &str, text: &str) -> MessageResponse {
+        MessageResponse {
+            id: "1".into(),
+            channel_id: channel.into(),
+            author: UserPartialResponse {
+                id: author.into(),
+                username: author.into(),
+                ..Default::default()
+            },
+            content: text.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn direct_messages_and_mentions_are_announced_others_are_not() {
+        let app = app();
+        let dm = app.notification_for(&msg("dm", "ann", "hey you")).unwrap();
+        assert_eq!(dm.title, "ann (direct message)");
+        assert_eq!(dm.body, "hey you");
+        assert_eq!(dm.place, "Direct message");
+
+        let mut mention = msg("art", "ann", "look <@me> at this");
+        mention.mentions.push(UserPartialResponse {
+            id: "me".into(),
+            username: "me".into(),
+            ..Default::default()
+        });
+        let n = app.notification_for(&mention).unwrap();
+        assert_eq!(n.title, "ann in #art");
+        assert_eq!(n.place, "#art \u{00B7} Linux Hub");
+        assert!(
+            n.body.starts_with("look @") && n.body.ends_with("at this"),
+            "{}",
+            n.body
+        );
+
+        assert!(
+            app.notification_for(&msg("art", "ann", "no mention"))
+                .is_none()
+        );
+        // a mention in the channel being read still counts (the terminal
+        // may be out of sight); one's own messages never do
+        let mut here = msg("general", "ann", "<@me> here");
+        here.mentions.push(UserPartialResponse {
+            id: "me".into(),
+            ..Default::default()
+        });
+        assert!(app.notification_for(&here).is_some());
+        assert!(app.notification_for(&msg("dm", "me", "my own")).is_none());
+    }
+
+    #[test]
+    fn all_messages_can_be_asked_for_and_files_are_named() {
+        let mut app = app();
+        app.ui_settings.notify_all_messages = true;
+        // all messages: except in the channel being read
+        assert!(
+            app.notification_for(&msg("general", "ann", "chatter"))
+                .is_none()
+        );
+        assert!(
+            app.notification_for(&msg("art", "ann", "chatter"))
+                .is_some()
+        );
+        let mut m = msg("art", "ann", "");
+        m.attachments
+            .push(crate::api::types::MessageAttachmentResponse {
+                filename: "cat.png".into(),
+                ..Default::default()
+            });
+        let n = app.notification_for(&m).unwrap();
+        assert_eq!(n.body, "[cat.png]");
+        let long = "x".repeat(400);
+        let n = app.notification_for(&msg("art", "ann", &long)).unwrap();
+        assert_eq!(n.body.chars().count(), 301);
+        assert!(n.body.ends_with('\u{2026}'));
     }
 }

@@ -17,6 +17,21 @@ pub enum Theme {
     Fluxer,
 }
 
+/// How messages that concern the user are announced outside the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyMode {
+    /// notify-send where there is a display, nothing elsewhere.
+    #[default]
+    Auto,
+    /// libnotify's notify-send.
+    Desktop,
+    /// GNU mail to the login user (or `notify_mail_to`): for the console,
+    /// and only ever by choice.
+    Mail,
+    Off,
+}
+
 /// When to paint the screen ourselves through DRM instead of using the
 /// terminal (see src/console).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -73,6 +88,17 @@ pub struct UiSettings {
     /// Profile pictures beside messages.
     #[serde(default = "default_true")]
     pub avatars: bool,
+    /// Where notifications go: see [`NotifyMode`].
+    pub notifications: NotifyMode,
+    /// Recipient of mailed notifications; the login user when empty.
+    pub notify_mail_to: String,
+    /// The mail program; `mail` when empty.
+    pub notify_mail_command: String,
+    /// The desktop program; `notify-send` when empty.
+    pub notify_desktop_command: String,
+    /// Also notify for every message in community channels set to "all
+    /// messages", not only mentions and direct messages.
+    pub notify_all_messages: bool,
 }
 
 const fn default_true() -> bool {
@@ -89,6 +115,11 @@ impl Default for UiSettings {
             performance_mode: false,
             inline_media: true,
             avatars: true,
+            notifications: NotifyMode::Auto,
+            notify_mail_to: String::new(),
+            notify_mail_command: String::new(),
+            notify_desktop_command: String::new(),
+            notify_all_messages: false,
         }
     }
 }
