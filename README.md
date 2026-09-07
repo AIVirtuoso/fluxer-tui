@@ -18,11 +18,14 @@ cargo run --release
 
 ## Install with cargo
 
-The fork installs straight from git, like upstream:
+The fork installs straight from git, like upstream. Name the package: the
+repository also holds `scripts/gen-emoji-aliases`, a small tool that
+generates the emoji alias table, and cargo asks which one to install
+otherwise.
 
 ```bash
-cargo install --git https://github.com/AIVirtuoso/fluxer-tui
-# a branch: cargo install --git https://github.com/AIVirtuoso/fluxer-tui --branch <branch>
+cargo install --git https://github.com/AIVirtuoso/fluxer-tui fluxer-tui
+# a branch: cargo install --git https://github.com/AIVirtuoso/fluxer-tui --branch <branch> fluxer-tui
 ```
 
 This puts `fluxer-tui` in `~/.cargo/bin`. The crate uses edition 2024, so
