@@ -16,6 +16,24 @@ cargo build --release
 cargo run --release
 ```
 
+## Install with cargo
+
+The fork installs straight from git, like upstream:
+
+```bash
+cargo install --git https://github.com/AIVirtuoso/fluxer-tui
+# a branch: cargo install --git https://github.com/AIVirtuoso/fluxer-tui --branch <branch>
+```
+
+This puts `fluxer-tui` in `~/.cargo/bin`. The crate uses edition 2024, so
+Rust 1.85 or newer is needed; the console-mode dependencies (drm, swash)
+are pure Rust, so no C libraries have to be installed. A few tools are
+looked up on PATH at runtime and are optional: `chafa` for text-art
+pictures on a terminal without a graphics protocol, `wl-copy` or `xclip`
+for pasting, and `fc-match` (fontconfig) only when running on a Linux
+virtual console, where the UI is drawn through DRM (see `[console]`
+below).
+
 ## Trying a branch without a full rebuild
 
 `nix run github:AIVirtuoso/fluxer-tui/<branch>` builds the package in the
