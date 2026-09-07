@@ -27,6 +27,47 @@ pub enum ApiError {
     },
 }
 
+/// How long one page of a member list may take before it is given up on.
+const MEMBERS_PAGE_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[derive(Debug, Error)]
+#[error("no answer within {0} seconds")]
+pub struct MembersTimeout(pub u64);
+
+/// Why a member list could not be fetched, as far as the client can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembersFailure {
+    /// The server did not answer, or not in time (a 5xx from its gateway,
+    /// a timeout, no connection): worth trying again later.
+    Unavailable,
+    /// The community does not let this user list its members: not worth
+    /// trying again.
+    Forbidden,
+    Other,
+}
+
+pub fn members_failure(err: &anyhow::Error) -> MembersFailure {
+    if let Some(ApiError::Response { status, .. }) = err.downcast_ref::<ApiError>() {
+        return match *status {
+            StatusCode::FORBIDDEN => MembersFailure::Forbidden,
+            s if s.is_server_error() || s == StatusCode::REQUEST_TIMEOUT => {
+                MembersFailure::Unavailable
+            }
+            _ => MembersFailure::Other,
+        };
+    }
+    if err.downcast_ref::<MembersTimeout>().is_some()
+        || err.chain().any(|cause| {
+            cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|e| e.is_timeout() || e.is_connect())
+        })
+    {
+        return MembersFailure::Unavailable;
+    }
+    MembersFailure::Other
+}
+
 #[derive(Debug, Clone)]
 pub struct FluxerHttpClient {
     inner: reqwest::Client,
@@ -162,10 +203,16 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Every member of a community, page by page. The pages that arrived
+    /// before a page failed come back together with the error that stopped
+    /// the fetch: a list that is only partly there is still worth having.
     pub async fn guild_members(
         &self,
         guild_id: &str,
-    ) -> Result<Vec<crate::api::types::GuildMemberResponse>> {
+    ) -> (
+        Vec<crate::api::types::GuildMemberResponse>,
+        Option<anyhow::Error>,
+    ) {
         #[derive(Serialize)]
         struct MembersQuery<'a> {
             limit: u32,
@@ -180,15 +227,25 @@ impl FluxerHttpClient {
                 limit: 1000,
                 after: after.as_deref(),
             };
-            let batch = self
+            let path = format!("/guilds/{guild_id}/members");
+            let page = self
                 .send_json::<MembersQuery, (), Vec<crate::api::types::GuildMemberResponse>>(
                     Method::GET,
-                    &format!("/guilds/{guild_id}/members"),
+                    &path,
                     Some(&query),
                     None::<&()>,
                     false,
-                )
-                .await?;
+                );
+            let batch = match tokio::time::timeout(MEMBERS_PAGE_TIMEOUT, page).await {
+                Ok(Ok(batch)) => batch,
+                Ok(Err(err)) => return (all, Some(err)),
+                Err(_) => {
+                    return (
+                        all,
+                        Some(MembersTimeout(MEMBERS_PAGE_TIMEOUT.as_secs()).into()),
+                    );
+                }
+            };
             let n = batch.len();
             if n == 0 {
                 break;
@@ -201,7 +258,7 @@ impl FluxerHttpClient {
             sleep(Duration::from_millis(400)).await;
             after = Some(last_id);
         }
-        Ok(all)
+        (all, None)
     }
 
     pub async fn guild_emojis(
@@ -778,5 +835,54 @@ mod tests {
         );
         assert_eq!(url_host("/channels/1/messages"), None);
         assert_eq!(url_host("https:///nohost"), None);
+    }
+}
+
+#[cfg(test)]
+mod members_failure_tests {
+    use super::*;
+
+    fn response(status: StatusCode) -> anyhow::Error {
+        ApiError::Response {
+            status,
+            code: None,
+            message: "Gateway timeout.".into(),
+            body: Value::Null,
+        }
+        .into()
+    }
+
+    #[test]
+    fn a_gateway_timeout_and_a_slow_page_are_unavailable_a_403_is_forbidden() {
+        assert_eq!(
+            members_failure(&response(StatusCode::GATEWAY_TIMEOUT)),
+            MembersFailure::Unavailable
+        );
+        assert_eq!(
+            members_failure(&response(StatusCode::BAD_GATEWAY)),
+            MembersFailure::Unavailable
+        );
+        assert_eq!(
+            members_failure(&MembersTimeout(45).into()),
+            MembersFailure::Unavailable
+        );
+        assert_eq!(
+            members_failure(&response(StatusCode::FORBIDDEN)),
+            MembersFailure::Forbidden
+        );
+        assert_eq!(
+            members_failure(&response(StatusCode::NOT_FOUND)),
+            MembersFailure::Other
+        );
+        assert_eq!(
+            members_failure(&anyhow!("something else")),
+            MembersFailure::Other
+        );
+    }
+
+    #[test]
+    fn the_classification_survives_added_context() {
+        let err = response(StatusCode::GATEWAY_TIMEOUT).context("members page 3");
+        assert_eq!(members_failure(&err), MembersFailure::Unavailable);
     }
 }

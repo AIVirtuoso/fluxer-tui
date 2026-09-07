@@ -813,6 +813,9 @@ pub struct App {
     pub loading_emojis: HashSet<String>,
     pub loading_roles: HashSet<String>,
     pub guild_roles_forbidden: HashSet<String>,
+    /// Communities that answered the member list request with 403: asking
+    /// again would only fail again.
+    pub guild_members_forbidden: HashSet<String>,
     pub messages_older_exhausted: HashSet<String>,
     pub loading_older_messages: HashSet<String>,
     pub show_help: bool,
@@ -963,6 +966,7 @@ impl App {
             loading_emojis: HashSet::new(),
             loading_roles: HashSet::new(),
             guild_roles_forbidden: HashSet::new(),
+            guild_members_forbidden: HashSet::new(),
             messages_older_exhausted: HashSet::new(),
             loading_older_messages: HashSet::new(),
             show_help: false,
@@ -3234,8 +3238,43 @@ impl App {
             members.iter().map(|member| member.user.clone()),
         );
         self.guild_members.insert(guild_id.to_string(), members);
-        self.loading_members.remove(guild_id);
-        self.api_backoff_clear(&format!("members:{guild_id}"));
+    }
+
+    /// What the status line says when a community's member list could not
+    /// be fetched: plain words, and that @mentions still work from the
+    /// members seen so far.
+    pub fn members_failure_status(
+        &self,
+        guild_id: &str,
+        failure: crate::api::client::MembersFailure,
+        got_some: bool,
+        detail: &str,
+    ) -> String {
+        use crate::api::client::MembersFailure;
+        let name = self
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "this community".to_string());
+        let seen_so_far = "@mentions offer the members seen so far";
+        let retry_min = Self::API_FAILURE_BACKOFF_SECS.div_ceil(60);
+        match failure {
+            MembersFailure::Unavailable if got_some => format!(
+                "Only part of the member list of {name} arrived before the server timed out; \
+                 the rest is tried again in {retry_min} min."
+            ),
+            MembersFailure::Unavailable => format!(
+                "The member list of {name} is unavailable (the server timed out); \
+                 {seen_so_far}, and it is tried again in {retry_min} min."
+            ),
+            MembersFailure::Forbidden => {
+                format!("{name} does not let you list its members; {seen_so_far}.")
+            }
+            MembersFailure::Other => {
+                format!("Could not load the member list of {name}: {detail}")
+            }
+        }
     }
 
     pub fn ingest_gateway_guild_members(
@@ -5283,5 +5322,68 @@ mod notification_tests {
         let n = app.notification_for(&msg("art", "ann", &long)).unwrap();
         assert_eq!(n.body.chars().count(), 301);
         assert!(n.body.ends_with('\u{2026}'));
+    }
+}
+
+#[cfg(test)]
+mod members_failure_status_tests {
+    use super::*;
+    use crate::api::client::MembersFailure;
+    use crate::api::types::{GuildResponse, UserPrivateResponse, WellKnownFluxerResponse};
+    use crate::config::UiSettings;
+
+    fn app_with_guild() -> App {
+        let mut app = App::new(
+            WellKnownFluxerResponse::default(),
+            UserPrivateResponse {
+                id: "me".to_string(),
+                ..UserPrivateResponse::default()
+            },
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            UiSettings::default(),
+        );
+        app.guilds.push(GuildResponse {
+            id: "g1".to_string(),
+            name: "Linux Hub".to_string(),
+            ..GuildResponse::default()
+        });
+        app
+    }
+
+    #[test]
+    fn the_status_names_the_community_and_says_what_still_works() {
+        let app = app_with_guild();
+        let s = app.members_failure_status("g1", MembersFailure::Unavailable, false, "504");
+        assert!(
+            s.starts_with("The member list of Linux Hub is unavailable"),
+            "{s}"
+        );
+        assert!(s.contains("@mentions offer the members seen so far"), "{s}");
+        assert!(s.contains("tried again in 3 min"), "{s}");
+
+        let s = app.members_failure_status("g1", MembersFailure::Unavailable, true, "504");
+        assert!(
+            s.starts_with("Only part of the member list of Linux Hub"),
+            "{s}"
+        );
+
+        let s = app.members_failure_status("g1", MembersFailure::Forbidden, false, "403");
+        assert_eq!(
+            s,
+            "Linux Hub does not let you list its members; @mentions offer the members seen so far."
+        );
+
+        let s = app.members_failure_status("g1", MembersFailure::Other, false, "400 Bad Request");
+        assert_eq!(
+            s,
+            "Could not load the member list of Linux Hub: 400 Bad Request"
+        );
+
+        let s = app.members_failure_status("unknown", MembersFailure::Forbidden, false, "");
+        assert!(s.starts_with("this community does not let you"), "{s}");
     }
 }

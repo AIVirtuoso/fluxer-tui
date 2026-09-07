@@ -1467,6 +1467,7 @@ fn handle_key_event(
             if let Some(guild_id) = app.active_guild_id() {
                 app.loading_channels.remove(&guild_id);
                 app.guild_members_synced.remove(&guild_id);
+                app.guild_members_forbidden.remove(&guild_id);
                 app.loading_members.remove(&guild_id);
                 app.api_backoff_clear_guild(&guild_id);
             }
@@ -1544,6 +1545,7 @@ fn schedule_needed_fetches(
             spawn_guild_roles_load(client.clone(), event_tx.clone(), guild_id.clone());
         }
         if !app.guild_members_synced.contains(&guild_id)
+            && !app.guild_members_forbidden.contains(&guild_id)
             && !app.loading_members.contains(&guild_id)
             && app.api_backoff_can_try(&format!("members:{guild_id}"))
             && app.loading_members.insert(guild_id.clone())
@@ -1570,7 +1572,9 @@ fn schedule_guild_members_fetch_for_mentions(
     let Some(guild_id) = app.guild_id_for_active_channel() else {
         return false;
     };
-    if app.guild_members_synced.contains(&guild_id) {
+    if app.guild_members_synced.contains(&guild_id)
+        || app.guild_members_forbidden.contains(&guild_id)
+    {
         return false;
     }
     if !app.api_backoff_can_try(&format!("members:{guild_id}")) {
@@ -1611,14 +1615,17 @@ fn spawn_guild_members_load(
     guild_id: String,
 ) {
     tokio::spawn(async move {
-        match client.guild_members(&guild_id).await {
-            Ok(members) => {
+        let (members, error) = client.guild_members(&guild_id).await;
+        match error {
+            None => {
                 let _ = event_tx.send(AppEvent::GuildMembersLoaded { guild_id, members });
             }
-            Err(err) => {
+            Some(err) => {
                 let _ = event_tx.send(AppEvent::GuildMembersFailed {
                     guild_id,
-                    message: format!("Failed to load guild members: {err}"),
+                    partial: members,
+                    failure: crate::api::client::members_failure(&err),
+                    detail: format!("{err:#}"),
                 });
             }
         }
