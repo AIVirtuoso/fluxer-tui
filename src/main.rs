@@ -608,20 +608,6 @@ fn handle_key_event(
         return;
     }
 
-    if app.profile.is_some() {
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('p') => {
-                app.dismiss_profile();
-            }
-            KeyCode::Up | KeyCode::Char('k') => app.profile_scroll(-1),
-            KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
-            KeyCode::PageUp => app.profile_scroll(-12),
-            KeyCode::PageDown => app.profile_scroll(12),
-            _ => {}
-        }
-        return;
-    }
-
     if app.show_settings {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.show_settings = false,
@@ -700,6 +686,26 @@ fn handle_key_event(
             KeyCode::Down | KeyCode::Char('j') if chafa_scroll => app.image_preview_scroll(1),
             KeyCode::PageUp if chafa_scroll => app.image_preview_scroll(-12),
             KeyCode::PageDown if chafa_scroll => app.image_preview_scroll(12),
+            _ => {}
+        }
+        return;
+    }
+
+    if app.profile.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.dismiss_profile(),
+            // p again: the picture full size, over the popup
+            KeyCode::Char('p') => match app.profile_picture() {
+                Some((url, title)) => {
+                    app.start_image_preview_loading(title.clone());
+                    spawn_image_preview(client.clone(), event_tx.clone(), url, title);
+                }
+                None => app.set_status("No profile picture to show."),
+            },
+            KeyCode::Up | KeyCode::Char('k') => app.profile_scroll(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
+            KeyCode::PageUp => app.profile_scroll(-12),
+            KeyCode::PageDown => app.profile_scroll(12),
             _ => {}
         }
         return;

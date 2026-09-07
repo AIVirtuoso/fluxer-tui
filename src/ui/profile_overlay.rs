@@ -1,7 +1,7 @@
 //! The profile popup (`p` on a selected message): what the web app's
 //! profile card shows, from `GET /users/{id}/profile`.
 
-use crate::api::types::{GuildMemberResponse, UserProfileResponse, user_flags};
+use crate::api::types::{UserProfileResponse, user_flags};
 use crate::app::{App, ProfileState, ProfileView};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -67,7 +67,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     // The avatar sits in the blank left margin of the header rows; the
     // media overlay draws the picture over these marker cells.
     if avatar && scroll == 0 {
-        let member = member_of(app, view);
+        let member = app.profile_member();
         let slot = app.avatar_slot_sized(
             view.guild_id.as_deref(),
             &view.user,
@@ -88,27 +88,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let hint = Paragraph::new(Line::from(Span::styled(
-        "↑/↓ scroll  ·  Esc / q close",
+        "↑/↓ scroll  ·  p picture  ·  Esc / q close",
         crate::ui::theme::muted_style(),
     )))
     .alignment(Alignment::Center);
     frame.render_widget(hint, hint_area);
-}
-
-/// The member data for the popup's guild: from the profile once loaded,
-/// from the roster before that.
-fn member_of(app: &App, view: &ProfileView) -> Option<GuildMemberResponse> {
-    if let ProfileState::Ready(profile) = &view.state
-        && let Some(m) = profile.guild_member.as_ref()
-    {
-        return Some(m.clone());
-    }
-    let gid = view.guild_id.as_deref()?;
-    app.guild_members
-        .get(gid)?
-        .iter()
-        .find(|m| m.user.id == view.user_id)
-        .cloned()
 }
 
 fn build_lines(app: &App, view: &ProfileView, width: usize, avatar: bool) -> Vec<Line<'static>> {
@@ -122,7 +106,7 @@ fn build_lines(app: &App, view: &ProfileView, width: usize, avatar: bool) -> Vec
         ProfileState::Ready(p) => Some(p.as_ref()),
         _ => None,
     };
-    let member = member_of(app, view);
+    let member = app.profile_member();
     let gid = view.guild_id.as_deref();
     let guild_name = gid.and_then(|g| {
         app.guilds

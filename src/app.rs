@@ -2400,6 +2400,67 @@ impl App {
         self.profile = None;
     }
 
+    /// The member data for the profile popup's guild: from the profile
+    /// once loaded, from the roster before that.
+    pub fn profile_member(&self) -> Option<GuildMemberResponse> {
+        let view = self.profile.as_ref()?;
+        if let ProfileState::Ready(profile) = &view.state
+            && let Some(m) = profile.guild_member.as_ref()
+        {
+            return Some(m.clone());
+        }
+        let gid = view.guild_id.as_deref()?;
+        self.guild_members
+            .get(gid)?
+            .iter()
+            .find(|m| m.user.id == view.user_id)
+            .cloned()
+    }
+
+    /// The picture the profile popup shows, at full size, with a title for
+    /// the preview: the guild avatar, the user's own, or the web app's
+    /// default one. None when there is nothing to fetch.
+    pub fn profile_picture(&self) -> Option<(String, String)> {
+        let view = self.profile.as_ref()?;
+        let user = &view.user;
+        let member = self.profile_member();
+        let base = self.media_base_url();
+        let gid = view.guild_id.as_deref();
+        let member_avatar = member
+            .as_ref()
+            .and_then(|m| m.avatar.as_deref())
+            .filter(|h| !h.is_empty());
+        let url = match (gid, member_avatar, user.avatar.as_deref()) {
+            (Some(_), Some(hash), _) => crate::media::avatar_url_sized(
+                &base,
+                gid,
+                &user.id,
+                hash,
+                crate::media::AVATAR_PREVIEW_PX,
+            ),
+            (_, _, Some(hash)) if !hash.is_empty() => crate::media::avatar_url_sized(
+                &base,
+                None,
+                &user.id,
+                hash,
+                crate::media::AVATAR_PREVIEW_PX,
+            ),
+            _ => {
+                let cdn = self.static_cdn_url();
+                if cdn.is_empty() {
+                    return None;
+                }
+                crate::media::default_avatar_url(&cdn, &user.id)
+            }
+        };
+        let name = member
+            .as_ref()
+            .and_then(|m| m.nick.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| display_name(user));
+        Some((url, format!("{name} · profile picture")))
+    }
+
     pub fn profile_scroll(&mut self, delta: i32) {
         if let Some(view) = self.profile.as_mut() {
             view.scroll = view.scroll.saturating_add_signed(delta as i16);

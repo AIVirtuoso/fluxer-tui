@@ -103,10 +103,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         settings_overlay::render(frame, area, app);
     } else if app.show_server_notifications {
         server_notifications_overlay::render(frame, area, app);
-    } else if app.profile.is_some() {
-        profile_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
+    } else if app.profile.is_some() {
+        profile_overlay::render(frame, area, app);
     } else if app.channel_picker.is_some() {
         channel_picker::render(frame, area, app);
     }
