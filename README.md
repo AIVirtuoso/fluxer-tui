@@ -273,6 +273,35 @@ size. **Ctrl+O** shows the last staged picture or video full size,
 preview is its first frame, which `ffmpeg` on PATH provides; without it
 videos are listed by name.
 
+## Message formatting
+
+Messages are drawn with the markup Fluxer's own parser understands, so
+what you see is what the web app shows:
+
+- **Inline:** `**bold**`, `*italic*` or `_italic_`, `***both***`,
+  `__underline__`, `~~strikethrough~~`, `||spoiler||` (dimmed), `` `code` ``
+  (double backticks keep a backtick inside), and `\` before any marker
+  to show it as typed. An underscore inside a word is just an underscore.
+- **Links:** bare `https://` addresses, `<https://...>`, and
+  `[label](https://...)`, which shows the label underlined with the
+  link's host in brackets, so a label cannot pretend to be somewhere
+  else; a label that is itself a different address is shown as written.
+- **Mentions and more:** `@user`, `@role`, `#channel`, `@everyone`,
+  `@here`, slash commands, `<t:...>` timestamps in all nine styles in
+  your local time (and `R` as "3 hours ago"), community emoji and
+  `:shortcodes:`.
+- **Blocks:** `# `, `## `, `### `, `#### ` headings; `-# ` small print;
+  `> ` quotes and `>>> ` for the rest of the message; `> [!NOTE]`,
+  `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` and `[!CAUTION]` callouts with
+  a badge and a coloured bar; `- `, `* ` and `1. ` lists, nested by two
+  spaces of indent; fenced code blocks with an optional language, drawn
+  with a bar in the margin; `||` spoilers spanning several lines; and
+  tables with `|` cells and `:--`, `:-:`, `--:` alignment.
+
+Bold, italic and the other inline marks may run across lines; code
+spans may not. Blank lines are kept, except at the start and end of a
+message and around a heading.
+
 ## Notifications
 
 A direct message, or a message that mentions you (directly, through one

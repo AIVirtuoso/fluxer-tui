@@ -5228,7 +5228,7 @@ mod notification_tests {
         assert_eq!(dm.body, "hey you");
         assert_eq!(dm.place, "Direct message");
 
-        let mut mention = msg("art", "ann", "look <@me> at this");
+        let mut mention = msg("art", "ann", "look <@1234> at this");
         mention.mentions.push(UserPartialResponse {
             id: "me".into(),
             username: "me".into(),
