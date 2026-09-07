@@ -189,6 +189,36 @@ size. **Ctrl+O** shows the last staged picture or video full size,
 preview is its first frame, which `ffmpeg` on PATH provides; without it
 videos are listed by name.
 
+## Notifications
+
+A direct message, or a message that mentions you (directly, through one
+of your roles, or with @everyone unless you suppress those) in a channel
+you are not reading, is announced outside the client by a program that
+does that:
+
+- on a desktop, libnotify's `notify-send`;
+- on a Linux console, GNU `mail`: the message is mailed to you locally,
+  so the console's "You have new mail" is the notification, and `mail`
+  reads it.
+
+The **Notifications** row in the settings overlay (**F2**) picks the
+mode: **Auto** (the default: notify-send where there is a display, mail
+on the console, nothing elsewhere), **Desktop**, **Mail** or **Off**.
+The config file has the rest:
+
+```toml
+[ui]
+notifications = "auto"      # auto | desktop | mail | off
+notify_mail_to = ""         # recipient; the login user when empty
+notify_mail_command = ""    # the mail program; "mail" when empty
+notify_desktop_command = "" # the desktop program; "notify-send" when empty
+notify_all_messages = false # also every message in channels set to all messages
+```
+
+Nothing is announced for your own messages or for the channel you are
+reading, and a channel's own notification settings (muted, mentions
+only) are respected.
+
 ## Interface overview
 
 The UI has four **focus** areas, cycled with **Tab** / **Shift+Tab** (or **h**/**l** / **Left**/**Right**):

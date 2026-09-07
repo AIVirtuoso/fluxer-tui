@@ -6,6 +6,7 @@ mod console;
 mod emoji;
 mod events;
 mod media;
+mod notify;
 mod permissions;
 mod slash_commands;
 mod ui;
@@ -324,6 +325,24 @@ async fn main() -> Result<()> {
                 if let Some((title, bytes)) = effects.chafa_fallback {
                     let (cols, rows) = app.chafa_preview_cells;
                     spawn_image_chafa_fallback(event_tx.clone(), title, bytes, cols, rows);
+                }
+                if !effects.notify.is_empty()
+                    && let Some(backend) = notify::backend(
+                        app.ui_settings.notifications,
+                        notify::on_console(app.pixel_mode),
+                        notify::has_display(),
+                    )
+                {
+                    for n in effects.notify {
+                        notify::send(
+                            backend,
+                            n,
+                            notify::mail_recipient(&app.ui_settings.notify_mail_to),
+                            app.ui_settings.notify_mail_command.clone(),
+                            app.ui_settings.notify_desktop_command.clone(),
+                            event_tx.clone(),
+                        );
+                    }
                 }
                 schedule_needed_fetches(&mut app, authed_client.clone(), event_tx.clone());
                 ensure_lazy_guild_subscription(&mut app, &gateway_cmd_tx);

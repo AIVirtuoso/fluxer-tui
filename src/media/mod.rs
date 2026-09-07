@@ -12,7 +12,7 @@ mod prepare;
 pub use attachments::{
     StagedAttachment, content_type_for_extension, from_clipboard, from_path, human_size,
 };
-pub use audio::{Player, attachment_is_audio, format_duration, player_command};
+pub use audio::{Player, attachment_is_audio, format_duration, on_path, player_command};
 pub use cache::{Lookup, MediaCache};
 pub use chafa::chafa_from_bytes;
 pub use disk_cache::DiskCache;
