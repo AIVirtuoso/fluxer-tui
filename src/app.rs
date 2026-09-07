@@ -2594,10 +2594,14 @@ impl App {
     }
 
     /// The status line is where errors show, and they are gone a moment
-    /// later: the debug log keeps them. Paths lose the home directory.
+    /// later: the debug log keeps them, without the names of files and
+    /// with the home directory as `~`.
     fn log_status(&self) {
         if !self.status_message.is_empty() {
-            crate::debug::log("status", crate::debug::scrub_path(&self.status_message));
+            crate::debug::log(
+                "status",
+                crate::debug::scrub_file_names(&crate::debug::scrub_path(&self.status_message)),
+            );
         }
     }
 

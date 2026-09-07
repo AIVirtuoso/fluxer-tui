@@ -167,6 +167,48 @@ pub fn scrub_path(text: &str) -> String {
     }
 }
 
+/// Words that name a file (`cat.png`, `~/pics/cat.png`, `/tmp/x.toml`)
+/// become `<file>`: the client's status lines mention files it attached
+/// or could not read, and the name helps nobody but its owner. A word
+/// with a version-like tail (`0.7.5`) or a plain word stays.
+pub fn scrub_file_names(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (word, tail) = rest.split_at(word_end);
+        let space_end = tail
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(tail.len());
+        let (spaces, after) = tail.split_at(space_end);
+        out.push_str(&scrub_word(word));
+        out.push_str(spaces);
+        rest = after;
+    }
+    out
+}
+
+fn scrub_word(word: &str) -> String {
+    const PUNCT: &[char] = &[
+        '(', ')', '[', ']', '"', '\'', ',', ':', ';', '.', '\u{2026}', '!', '?',
+    ];
+    let core = word.trim_matches(PUNCT);
+    let lead = &word[..word.len() - word.trim_start_matches(PUNCT).len()];
+    let trail = &word[lead.len() + core.len()..];
+    let looks_like_file = !core.contains("://")
+        && core.rsplit_once('.').is_some_and(|(stem, ext)| {
+            !stem.is_empty()
+                && (1..=5).contains(&ext.len())
+                && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+                && ext.bytes().any(|b| b.is_ascii_alphabetic())
+        });
+    if looks_like_file {
+        format!("{lead}<file>{trail}")
+    } else {
+        word.to_string()
+    }
+}
+
 /// Scheme and host of a URL, nothing after: which server was talked to,
 /// not what was asked of it.
 pub fn url_host(url: &str) -> String {
@@ -261,6 +303,30 @@ mod tests {
         assert_eq!(
             s,
             "{guilds:arr(1) of {id:1 properties:obj(2) roles:arr(2)} session_id:str(9)}"
+        );
+    }
+
+    #[test]
+    fn file_names_in_status_lines_are_not_kept() {
+        assert_eq!(
+            scrub_file_names("Attached cat.png (136 B). Enter sends, Ctrl+X removes."),
+            "Attached <file> (136 B). Enter sends, Ctrl+X removes."
+        );
+        assert_eq!(
+            scrub_file_names("Reading ~/pics/holiday 2026.jpeg\u{2026}"),
+            "Reading ~/pics/holiday <file>\u{2026}"
+        );
+        assert_eq!(
+            scrub_file_names("Removed /tmp/notes.toml."),
+            "Removed <file>."
+        );
+        assert_eq!(
+            scrub_file_names("fluxer-tui 0.7.5 needs mpv (see https://x.org/a.html)"),
+            "fluxer-tui 0.7.5 needs mpv (see https://x.org/a.html)"
+        );
+        assert_eq!(
+            scrub_file_names("Failed to load: 504 Gateway Timeout."),
+            "Failed to load: 504 Gateway Timeout."
         );
     }
 
