@@ -33,7 +33,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             }
         }
         Focus::Input => {
-            " · Ctrl+F file · Ctrl+V paste · Ctrl+K picker · Ctrl+N/P channel · Ctrl+H help"
+            if app.input_mark || app.input_selection().is_some() {
+                " · selecting: Ctrl+C copy · Ctrl+X cut · Ctrl+B/I/S mark · Esc drop"
+            } else {
+                " · Alt+Enter newline · Ctrl+F file · Ctrl+V paste · Ctrl+K picker · Ctrl+H help"
+            }
         }
     };
 

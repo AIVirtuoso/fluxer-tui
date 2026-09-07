@@ -789,7 +789,21 @@ pub struct App {
     pub selected_server: ServerSelection,
     pub selected_channel_id: Option<String>,
     pub focus: Focus,
+    /// The compose text before the cursor. Typing and the autocompletes
+    /// work on its end; see `compose.rs` for the cursor model.
     pub input: String,
+    /// The compose text after the cursor.
+    pub input_tail: String,
+    /// Selection anchor as a byte offset into the full compose text; the
+    /// selection runs between it and the cursor.
+    pub input_anchor: Option<usize>,
+    /// Ctrl+Space set a mark: plain movement keys extend the selection.
+    pub input_mark: bool,
+    pub input_history: Vec<crate::compose::InputSnapshot>,
+    pub input_redo: Vec<crate::compose::InputSnapshot>,
+    pub input_last_edit: Option<crate::compose::InputEditKind>,
+    /// Text cut or copied from the compose box (Alt+V puts it back).
+    pub cut_buffer: String,
     /// Files staged with Ctrl+V or /attach, uploaded with the next message.
     pub pending_attachments: Vec<crate::media::StagedAttachment>,
     pub message_scroll_from_bottom: u16,
@@ -959,6 +973,13 @@ impl App {
             selected_channel_id,
             focus: Focus::Channels,
             input: String::new(),
+            input_tail: String::new(),
+            input_anchor: None,
+            input_mark: false,
+            input_history: Vec::new(),
+            input_redo: Vec::new(),
+            input_last_edit: None,
+            cut_buffer: String::new(),
             pending_attachments: Vec::new(),
             message_scroll_from_bottom: 0,
             message_scroll_max: 0,
@@ -1924,7 +1945,7 @@ impl App {
             channel_id: msg.channel_id.clone(),
             message_id: msg.id.clone(),
         });
-        self.input = msg.content.clone();
+        self.set_input(msg.content.clone());
     }
 
     pub fn active_channel(&self) -> Option<ChannelResponse> {
@@ -2289,43 +2310,99 @@ impl App {
     /// their picture (or `:name:` while it loads), everything else verbatim.
     /// One `Line` per raw line. `register` claims overlay slots for the
     /// pictures; pass false when only measuring.
+    /// The compose text as styled lines: custom emoji tokens become their
+    /// placeholder (or `:name:` when the picture is not there), the
+    /// selection is highlighted.
     pub fn input_display(&self, register: bool) -> Vec<Line<'static>> {
+        let text = self.input_text();
+        self.display_compose_text(&text, register, self.input_selection())
+    }
+
+    /// `input_display` for any text; `selection` is a byte range of it.
+    pub fn display_compose_text(
+        &self,
+        text: &str,
+        register: bool,
+        selection: Option<(usize, usize)>,
+    ) -> Vec<Line<'static>> {
         let text_style = Style::default().fg(crate::ui::theme::text());
         let name_style = Style::default().fg(crate::ui::theme::emoji_unknown());
+        let sel_style = crate::ui::theme::compose_selection_style();
         let mut lines = Vec::new();
-        for raw_line in self.input.split('\n') {
+        let mut line_offset = 0usize;
+        for raw_line in text.split('\n') {
             let mut spans: Vec<Span<'static>> = Vec::new();
             let mut rest = raw_line;
+            let mut at = line_offset;
+            let push_text = |spans: &mut Vec<Span<'static>>, seg: &str, at: usize| {
+                if seg.is_empty() {
+                    return;
+                }
+                match selection {
+                    Some((s, e)) if s < at + seg.len() && e > at => {
+                        let s = s.saturating_sub(at).min(seg.len());
+                        let e = (e - at).min(seg.len());
+                        if s > 0 {
+                            spans.push(Span::styled(seg[..s].to_string(), text_style));
+                        }
+                        spans.push(Span::styled(seg[s..e].to_string(), sel_style));
+                        if e < seg.len() {
+                            spans.push(Span::styled(seg[e..].to_string(), text_style));
+                        }
+                    }
+                    _ => spans.push(Span::styled(seg.to_string(), text_style)),
+                }
+            };
             while !rest.is_empty() {
                 let Some(lt) = rest.find('<') else {
-                    spans.push(Span::styled(rest.to_string(), text_style));
+                    push_text(&mut spans, rest, at);
                     break;
                 };
                 if lt > 0 {
-                    spans.push(Span::styled(rest[..lt].to_string(), text_style));
+                    push_text(&mut spans, &rest[..lt], at);
+                    at += lt;
                 }
                 match parse_custom_emoji_token(&rest[lt..]) {
                     Some(tok) => {
+                        let selected =
+                            matches!(selection, Some((s, e)) if s <= at && e >= at + tok.len);
                         match self.custom_emoji_placeholder_inner(tok.id, tok.animated, register) {
                             Some(ph) => spans.push(ph),
-                            None => spans.push(Span::styled(format!(":{}:", tok.name), name_style)),
+                            None => spans.push(Span::styled(
+                                format!(":{}:", tok.name),
+                                if selected { sel_style } else { name_style },
+                            )),
                         }
                         rest = &rest[lt + tok.len..];
+                        at += tok.len;
                     }
                     None => {
-                        spans.push(Span::styled("<".to_string(), text_style));
+                        push_text(&mut spans, "<", at);
                         rest = &rest[lt + 1..];
+                        at += 1;
                     }
                 }
             }
             lines.push(Line::from(spans));
+            line_offset += raw_line.len() + 1;
         }
         lines
     }
 
     /// `input_display` flattened to text, for width and cursor arithmetic.
     pub fn input_display_plain(&self) -> String {
-        self.input_display(false)
+        let text = self.input_text();
+        self.display_plain_of(&text)
+    }
+
+    /// The text before the cursor, flattened the same way, so the cursor
+    /// can be placed in the wrapped display.
+    pub fn input_head_display_plain(&self) -> String {
+        self.display_plain_of(&self.input)
+    }
+
+    fn display_plain_of(&self, text: &str) -> String {
+        self.display_compose_text(text, false, None)
             .iter()
             .map(|l| {
                 l.spans
@@ -3907,7 +3984,7 @@ impl App {
         let api = encode_reaction_for_api(&emoji.insert);
         self.reaction_target = None;
         self.emoji_autocomplete = None;
-        self.input.clear();
+        self.clear_input();
         Some((ch_id, msg_id, api))
     }
 

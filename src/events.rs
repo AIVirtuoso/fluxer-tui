@@ -231,10 +231,11 @@ pub fn apply_event(
             attachments,
         } => {
             if !content.is_empty() {
-                if app.input.trim().is_empty() {
-                    app.input = content;
+                if app.input_text().trim().is_empty() {
+                    app.set_input(content);
                 } else {
-                    app.input = format!("{content} {}", app.input);
+                    let rest = app.input_text();
+                    app.set_input(format!("{content} {rest}"));
                 }
             }
             app.pending_attachments.extend(attachments);
@@ -632,7 +633,7 @@ pub fn apply_event(
             app.message_scroll_from_bottom = 0;
             app.forward_mode = false;
             app.edit_target = None;
-            app.input.clear();
+            app.clear_input();
         }
         AppEvent::MessageDeleted {
             channel_id,
