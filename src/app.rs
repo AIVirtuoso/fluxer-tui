@@ -630,6 +630,9 @@ pub struct ReplyState {
     pub source_guild_id: Option<String>,
 }
 
+/// The message length limit, in chars, that the compose box enforces.
+pub const INPUT_MAX_CHARS: usize = 2000;
+
 #[derive(Debug, Clone)]
 pub struct EditState {
     pub channel_id: String,

@@ -162,11 +162,35 @@ fn stage_uri_list(text: &str) -> Result<Vec<StagedAttachment>> {
     Ok(out)
 }
 
+/// What Ctrl+V found on the clipboard.
+#[derive(Debug, Clone)]
+pub enum ClipboardContent {
+    /// Files copied in a file manager, or an image: staged as attachments.
+    Files(Vec<StagedAttachment>),
+    /// Plain text: goes into the compose box at the cursor.
+    Text(String),
+}
+
+/// Plain text is offered under one of these names (the X11 ones are
+/// what xclip lists as TARGETS).
+fn offers_text<'a>(mut offered: impl Iterator<Item = &'a str>) -> Option<&'static str> {
+    let names: [&'static str; 5] = [
+        "text/plain;charset=utf-8",
+        "text/plain",
+        "UTF8_STRING",
+        "STRING",
+        "TEXT",
+    ];
+    offered.find_map(|t| {
+        let t = t.trim();
+        names.iter().copied().find(|n| n.eq_ignore_ascii_case(t))
+    })
+}
+
 /// Read what the clipboard holds: files copied in a file manager, else an
-/// image. Tries wl-paste (Wayland) first, then xclip (X11). Text on the
-/// clipboard is not an attachment, so that fails with a message naming
-/// what the clipboard actually holds.
-fn read_clipboard() -> Result<Vec<StagedAttachment>> {
+/// image, else text. Tries wl-paste (Wayland) first, then xclip (X11).
+/// Anything else fails with a message naming what the clipboard holds.
+fn read_clipboard() -> Result<ClipboardContent> {
     let mut last_err: Option<anyhow::Error> = None;
 
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -176,10 +200,19 @@ fn read_clipboard() -> Result<Vec<StagedAttachment>> {
                 if offers_files(types.lines()) {
                     let out = run("wl-paste", &["--no-newline", "--type", URI_LIST])?;
                     if out.status.success() && !out.stdout.is_empty() {
-                        return stage_uri_list(&String::from_utf8_lossy(&out.stdout));
+                        return stage_uri_list(&String::from_utf8_lossy(&out.stdout))
+                            .map(ClipboardContent::Files);
                     }
                 }
                 let Some(mime) = pick_image_type(types.lines()) else {
+                    if let Some(name) = offers_text(types.lines()) {
+                        let out = run("wl-paste", &["--no-newline", "--type", name])?;
+                        if out.status.success() {
+                            return Ok(ClipboardContent::Text(
+                                String::from_utf8_lossy(&out.stdout).into_owned(),
+                            ));
+                        }
+                    }
                     let seen: Vec<&str> = types.lines().take(4).collect();
                     bail!(
                         "no image on the clipboard (it holds: {})",
@@ -194,11 +227,11 @@ fn read_clipboard() -> Result<Vec<StagedAttachment>> {
                 if !out.status.success() || out.stdout.is_empty() {
                     bail!("wl-paste returned no data for {mime}");
                 }
-                return Ok(vec![StagedAttachment::new(
+                return Ok(ClipboardContent::Files(vec![StagedAttachment::new(
                     clipboard_filename(&mime),
                     mime,
                     out.stdout,
-                )]);
+                )]));
             }
             Ok(list) => {
                 let msg = String::from_utf8_lossy(&list.stderr).trim().to_string();
@@ -214,21 +247,30 @@ fn read_clipboard() -> Result<Vec<StagedAttachment>> {
             if offers_files(types.lines()) {
                 let out = run("xclip", &["-selection", "clipboard", "-t", URI_LIST, "-o"])?;
                 if out.status.success() && !out.stdout.is_empty() {
-                    return stage_uri_list(&String::from_utf8_lossy(&out.stdout));
+                    return stage_uri_list(&String::from_utf8_lossy(&out.stdout))
+                        .map(ClipboardContent::Files);
                 }
             }
             let Some(mime) = pick_image_type(types.lines()) else {
-                bail!("no image or files on the clipboard");
+                if let Some(name) = offers_text(types.lines()) {
+                    let out = run("xclip", &["-selection", "clipboard", "-t", name, "-o"])?;
+                    if out.status.success() {
+                        return Ok(ClipboardContent::Text(
+                            String::from_utf8_lossy(&out.stdout).into_owned(),
+                        ));
+                    }
+                }
+                bail!("no text, image or files on the clipboard");
             };
             let out = run("xclip", &["-selection", "clipboard", "-t", &mime, "-o"])?;
             if !out.status.success() || out.stdout.is_empty() {
                 bail!("xclip returned no data for {mime}");
             }
-            return Ok(vec![StagedAttachment::new(
+            return Ok(ClipboardContent::Files(vec![StagedAttachment::new(
                 clipboard_filename(&mime),
                 mime,
                 out.stdout,
-            )]);
+            )]));
         }
         Ok(list) => {
             let msg = String::from_utf8_lossy(&list.stderr).trim().to_string();
@@ -246,7 +288,7 @@ fn read_clipboard() -> Result<Vec<StagedAttachment>> {
     }))
 }
 
-pub async fn from_clipboard() -> Result<Vec<StagedAttachment>> {
+pub async fn from_clipboard() -> Result<ClipboardContent> {
     tokio::task::spawn_blocking(read_clipboard)
         .await
         .context("clipboard task")?
@@ -324,6 +366,15 @@ mod tests {
     fn copied_files_are_preferred_over_an_image() {
         assert!(offers_files(["image/png", "text/uri-list"].into_iter()));
         assert!(!offers_files(["image/png", "text/plain"].into_iter()));
+        assert_eq!(
+            offers_text(["image/png", "text/plain;charset=utf-8"].into_iter()),
+            Some("text/plain;charset=utf-8")
+        );
+        assert_eq!(
+            offers_text(["TARGETS", "UTF8_STRING"].into_iter()),
+            Some("UTF8_STRING")
+        );
+        assert_eq!(offers_text(["image/png"].into_iter()), None);
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("a b.txt");
         std::fs::write(&p, "x").unwrap();

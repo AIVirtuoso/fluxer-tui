@@ -94,7 +94,7 @@ own section or table row further down.
   support and will not get any.
 - **Attach any kind of file.** A file picker (**Ctrl+F** or `/attach`),
   `/attach <path>`, and **Ctrl+V** for the image or the files on the
-  clipboard; up to ten per message, with previews of staged pictures
+  clipboard (text on it is pasted into the message instead); up to ten per message, with previews of staged pictures
   and videos (see "Attaching files"). Upstream sends text only.
 
 **Sound and notifications**
@@ -389,9 +389,9 @@ deletion.
 - **Cut, copy, paste.** **Ctrl+C** copies and **Ctrl+X** cuts the
   selection into the client's own buffer, and onto the system clipboard
   through `wl-copy` (Wayland) or `xclip` (X11) when one is on PATH.
-  **Alt+V** pastes that buffer. Text from elsewhere comes in through the
-  terminal's own paste key, as before; **Ctrl+V** still attaches the
-  image or files on the clipboard.
+  **Alt+V** pastes that buffer. **Ctrl+V** reads the system clipboard:
+  text goes in at the cursor, an image or files copied in a file manager
+  are attached, as before. The terminal's own paste key works too.
 - **Formatting.** **Ctrl+B** bold, **Ctrl+I** italic (or **Tab** while
   something is selected), **Alt+U** underline, **Ctrl+S**
   strikethrough, **Alt+C** inline code, **Alt+P** spoiler. They wrap the
@@ -561,6 +561,7 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | **Alt+K** | Delete to the end of the line. |
 | **Shift+movement**, or **Ctrl+Space** then movement | Select; **Esc** drops the selection. |
 | **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selection (also to `wl-copy` or `xclip`) / paste it back. |
+| **Ctrl+V** | Paste text from the system clipboard at the cursor; an image or files on it are attached instead. |
 | **Ctrl+B**, **Ctrl+I** (or **Tab** with a selection), **Alt+U**, **Ctrl+S**, **Alt+C**, **Alt+P** | Bold, italic, underline, strikethrough, code, spoiler around the selection or the word at the cursor; again to remove. |
 | **Ctrl+Z** / **Ctrl+Y** | Undo / redo. |
 | `/debug`, `/debug save`, `/debug frame` | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging"). |

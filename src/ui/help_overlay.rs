@@ -57,12 +57,13 @@ Input
   Alt+K - delete to the end of the line     Ctrl+U - clear input
   Shift+arrows, or Ctrl+Space then arrows - select; Esc drops the selection
   Ctrl+C / Ctrl+X - copy / cut the selection (also to wl-copy or xclip)
-  Alt+V - paste what was cut or copied here
+  Alt+V - paste what was cut or copied here; Ctrl+V - the system clipboard
   Ctrl+B bold  Ctrl+I italic  Alt+U underline  Ctrl+S strike  Alt+C code  Alt+P spoiler
            - around the selection or the word at the cursor; again removes them
   Ctrl+Z / Ctrl+Y - undo / redo (a typed word or a run of Backspaces is one step)
   Ctrl+F or /attach - file picker: any kind of file, with a preview of pictures and videos
-  /attach <path> - attach a file by path; Ctrl+V - the image or the files on the clipboard
+  /attach <path> - attach a file by path; Ctrl+V - paste text from the clipboard, or
+           attach the image or files on it
   Ctrl+O - the last staged picture or video full size; Ctrl+X - drop the last staged file
   Enter sends text and attachments together (the compose box shows what is staged)
   : - custom emoji autocomplete     @ - mention autocomplete (guild/DM)

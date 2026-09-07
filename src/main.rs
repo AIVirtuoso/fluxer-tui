@@ -699,20 +699,7 @@ fn ensure_lazy_guild_subscription(app: &mut App, gateway_cmd_tx: &UnboundedSende
     }
 }
 
-const INPUT_MAX_CHARS: usize = 2000;
-
-fn normalize_pasted_text(s: &str) -> String {
-    s.replace('\r', "")
-}
-
-fn sanitize_pasted_char(ch: char) -> Option<char> {
-    match ch {
-        '\n' => Some('\n'),
-        '\t' => Some(' '),
-        c if c.is_control() => None,
-        c => Some(c),
-    }
-}
+use crate::app::INPUT_MAX_CHARS;
 
 fn delete_word_backward(buf: &mut String) {
     if buf.is_empty() {
@@ -732,41 +719,12 @@ fn delete_word_backward(buf: &mut String) {
     }
 }
 
-fn push_chars_respecting_limit(out: &mut String, text: &str, max: usize) {
-    let room = max.saturating_sub(out.chars().count());
-    if room == 0 {
-        return;
-    }
-    let mut n = 0usize;
-    for ch in text.chars() {
-        if n >= room {
-            break;
-        }
-        if let Some(c) = sanitize_pasted_char(ch) {
-            out.push(c);
-            n += 1;
-        }
-    }
-}
-
-/// Pasted text replaces the selection and lands at the cursor, within
-/// the message length limit.
-fn insert_paste(app: &mut App, text: &str) {
-    app.input_delete_selection();
-    app.input_clear_selection();
-    let room = app.input_room(INPUT_MAX_CHARS);
-    let mut chunk = String::new();
-    push_chars_respecting_limit(&mut chunk, text, room);
-    app.input.push_str(&chunk);
-}
-
 fn handle_paste_event(
     app: &mut App,
     text: &str,
     client: &FluxerHttpClient,
     event_tx: &UnboundedSender<AppEvent>,
 ) {
-    let text = normalize_pasted_text(text);
     if text.is_empty() {
         return;
     }
@@ -796,24 +754,24 @@ fn handle_paste_event(
     app.input_record(crate::compose::InputEditKind::Discrete);
 
     if app.mention_autocomplete.is_some() {
-        insert_paste(app, &text);
+        app.input_paste(text, INPUT_MAX_CHARS);
         app.update_mention_filter();
         return;
     }
 
     if app.emoji_autocomplete.is_some() {
-        insert_paste(app, &text);
+        app.input_paste(text, INPUT_MAX_CHARS);
         app.update_emoji_filter();
         return;
     }
 
     if app.command_autocomplete.is_some() {
-        insert_paste(app, &text);
+        app.input_paste(text, INPUT_MAX_CHARS);
         app.sync_command_autocomplete();
         return;
     }
 
-    insert_paste(app, &text);
+    app.input_paste(text, INPUT_MAX_CHARS);
 
     if app.input.ends_with(':') {
         app.start_emoji_autocomplete();
@@ -2801,10 +2759,13 @@ fn spawn_media_fetch(
 fn spawn_clipboard_attach(event_tx: UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         match crate::media::from_clipboard().await {
-            Ok(attachments) => {
+            Ok(crate::media::ClipboardContent::Files(attachments)) => {
                 for attachment in attachments {
                     let _ = event_tx.send(AppEvent::AttachmentStaged { attachment });
                 }
+            }
+            Ok(crate::media::ClipboardContent::Text(text)) => {
+                let _ = event_tx.send(AppEvent::ClipboardText { text });
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::AttachmentFailed {

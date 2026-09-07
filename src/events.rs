@@ -120,6 +120,10 @@ pub enum AppEvent {
     AttachmentFailed {
         message: String,
     },
+    /// Ctrl+V found text on the clipboard: it goes in at the cursor.
+    ClipboardText {
+        text: String,
+    },
     /// A custom emoji's frames arrived (empty: fetch or decode failed).
     CustomEmojiLoaded {
         id: String,
@@ -208,6 +212,16 @@ pub fn apply_event(
         }
         AppEvent::AttachmentFailed { message } => {
             app.set_status(format!("Attach failed: {message}"));
+        }
+        AppEvent::ClipboardText { text } => {
+            if app.focus == crate::app::Focus::Input && app.active_channel_is_text() {
+                app.input_record(crate::compose::InputEditKind::Discrete);
+                let n = app.input_paste(&text, crate::app::INPUT_MAX_CHARS);
+                app.set_status(format!(
+                    "Pasted {n} character{} from the clipboard.",
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
         }
         AppEvent::ProfileLoaded {
             user_id,

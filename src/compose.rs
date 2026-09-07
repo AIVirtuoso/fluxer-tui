@@ -681,6 +681,32 @@ impl crate::app::App {
         self.input.push_str(text);
     }
 
+    /// Paste text at the cursor, replacing the selection: carriage
+    /// returns go, tabs become spaces, other control characters are
+    /// dropped, and the message length limit is kept. Returns the number
+    /// of characters that went in.
+    pub fn input_paste(&mut self, text: &str, max: usize) -> usize {
+        self.input_delete_selection();
+        self.input_clear_selection();
+        let room = self.input_room(max);
+        let mut n = 0usize;
+        for ch in text.chars() {
+            if n >= room {
+                break;
+            }
+            let ch = match ch {
+                '\r' => continue,
+                '\n' => '\n',
+                '\t' => ' ',
+                c if c.is_control() => continue,
+                c => c,
+            };
+            self.input.push(ch);
+            n += 1;
+        }
+        n
+    }
+
     /// Room left under the message length limit, in chars.
     pub fn input_room(&self, max: usize) -> usize {
         max.saturating_sub(self.input_char_count())
@@ -816,17 +842,23 @@ impl crate::app::App {
     }
 }
 
-/// Hand text to the system clipboard through wl-copy (Wayland) or xclip
-/// (X11), whichever is on PATH; nowhere else, such as on the console, the
-/// cut buffer alone keeps it. Fire and forget: the program's exit status
-/// is not interesting enough to wait for.
+/// Hand text to the system clipboard through wl-copy under Wayland or
+/// xclip under X11 (the same choice as reading it for Ctrl+V), whichever
+/// the session has; nowhere else, such as on the console, the cut buffer
+/// alone keeps it. Fire and forget: the program's exit status is not
+/// interesting enough to wait for.
 pub fn copy_to_system_clipboard(text: &str) {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let candidates: [(&str, &[&str]); 2] = [
-        ("wl-copy", &[]),
-        ("xclip", &["-selection", "clipboard", "-i"]),
-    ];
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = std::env::var_os("DISPLAY").is_some();
+    let mut candidates: Vec<(&str, &[&str])> = Vec::new();
+    if wayland {
+        candidates.push(("wl-copy", &[]));
+    }
+    if x11 {
+        candidates.push(("xclip", &["-selection", "clipboard", "-i"]));
+    }
     for (cmd, args) in candidates {
         let child = Command::new(cmd)
             .args(args)
@@ -938,6 +970,22 @@ mod app_tests {
         a.input_forget_noop_record();
         assert!(a.input_undo());
         assert_eq!(a.input_text(), "");
+    }
+
+    #[test]
+    fn paste_cleans_the_text_and_keeps_the_limit() {
+        let mut a = app();
+        a.set_input("ab");
+        let n = a.input_paste("x\r\ny\tz\u{7}!", 100);
+        assert_eq!(n, 6);
+        assert_eq!(a.input_text(), "abx\ny z!");
+        assert_eq!(a.input_paste("12345", 10), 2);
+        assert_eq!(a.input_text(), "abx\ny z!12");
+        // a selection is replaced
+        a.input_move(super::Move::Left, true);
+        a.input_move(super::Move::Left, true);
+        a.input_paste("Q", 100);
+        assert_eq!(a.input_text(), "abx\ny z!Q");
     }
 
     #[test]
