@@ -711,10 +711,18 @@ impl FluxerHttpClient {
         };
 
         let status = response.status();
+        // which way the request went matters when the server counts by
+        // address: a browser over IPv6 and a client over IPv4 are two
+        // addresses to it
+        let family = match response.remote_addr() {
+            Some(addr) if addr.is_ipv6() => " over IPv6",
+            Some(_) => " over IPv4",
+            None => "",
+        };
         crate::debug::log(
             "http",
             format!(
-                "{method_name} {path} {} in {} ms",
+                "{method_name} {path} {} in {} ms{family}",
                 status.as_u16(),
                 started.elapsed().as_millis()
             ),
