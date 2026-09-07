@@ -249,14 +249,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         blk = blk.title(right_title);
     }
 
-    // the staged files sit above the text
+    // The staged files sit above the text. The strip is drawn as it is,
+    // never through the word wrapper: ratatui's wrapper makes two rows of
+    // a line that is only spaces, and a thumbnail card has such rows under
+    // its picture, which pushed the text below the box.
     let inner_w = area.width.saturating_sub(2).max(1);
-    let mut lines: Vec<Line<'static>> = if can_type {
+    let strip: Vec<Line<'static>> = if can_type {
         attachment_strip(app, inner_w)
     } else {
         Vec::new()
     };
-    let strip_rows = lines.len() as u16;
+    let strip_rows = strip.len() as u16;
+    let mut lines: Vec<Line<'static>> = Vec::new();
     if can_type && !app.input.is_empty() {
         lines.extend(app.input_display(true));
     } else if can_type
@@ -272,10 +276,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     } else {
         lines.push(Line::from(Span::styled(content, style)));
     }
-    let paragraph = Paragraph::new(Text::from(lines))
-        .block(blk)
-        .wrap(ratatui::widgets::Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    let inner = blk.inner(area);
+    frame.render_widget(blk, area);
+    let strip_h = strip_rows.min(inner.height);
+    if strip_h > 0 {
+        let strip_area = Rect::new(inner.x, inner.y, inner.width, strip_h);
+        frame.render_widget(Paragraph::new(Text::from(strip)), strip_area);
+    }
+    let text_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(strip_h),
+        inner.width,
+        inner.height.saturating_sub(strip_h),
+    );
+    let paragraph = Paragraph::new(Text::from(lines)).wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(paragraph, text_area);
 
     if focused && can_type && !app.input.is_empty() {
         let (col, row) = input_word_wrap::eol_cursor_col_row(
@@ -376,6 +391,61 @@ mod tests {
             .count();
         assert_eq!(marked, 1, "{:?}", lines[0]);
         assert!(lines[THUMB_ROWS as usize].to_string().contains("shot.png"));
+    }
+
+    #[test]
+    fn the_text_stays_in_the_box_under_a_thumbnail() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut app = dm_app();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(40, 40, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        app.pending_attachments
+            .push(crate::media::StagedAttachment::new(
+                "shot.png".into(),
+                "image/png".into(),
+                png,
+            ));
+        app.pixel_mode = true;
+        app.cell_px = (11, 25);
+        app.input = "hello there".into();
+        app.focus = Focus::Input;
+        let mut terminal = Terminal::new(TestBackend::new(114, 54)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        };
+        let rows: Vec<String> = (0..buf.area.height).map(row).collect();
+        let bottom = buf.area.height - 1;
+        assert!(
+            rows[bottom as usize].starts_with('└'),
+            "{:?}",
+            rows[bottom as usize]
+        );
+        // the 40x40 picture is two rows tall in 11x25 cells: its marker
+        // rows, two blank rows, the name, then the text, all inside
+        assert!(
+            rows[(bottom - 1) as usize].contains("hello there"),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[(bottom - 2) as usize].contains("shot.png"),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[(bottom - 5) as usize].contains('\u{2800}'),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[(bottom - 6) as usize].contains('\u{2800}'),
+            "{rows:#?}"
+        );
+        assert!(rows[(bottom - 7) as usize].contains("Input"), "{rows:#?}");
     }
 
     #[test]
