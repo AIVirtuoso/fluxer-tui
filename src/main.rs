@@ -222,13 +222,29 @@ async fn main() -> Result<()> {
     let mut next_tick = tokio::time::Instant::now() + Duration::from_millis(100);
     let mut last_tick = Instant::now();
     let mut needs_redraw = true;
+    // when the redraw is for the user's own key, it is never held back
+    let mut urgent_redraw = false;
+    let mut last_draw = Instant::now() - PERF_FRAME_GAP;
 
     loop {
-        if needs_redraw {
+        if needs_redraw
+            && !draw_now(
+                app.ui_settings.performance_mode,
+                urgent_redraw,
+                last_draw.elapsed(),
+            )
+        {
+            // performance mode: a burst of gateway traffic is drawn once,
+            // when the frame gap is over
+            let wait = PERF_FRAME_GAP.saturating_sub(last_draw.elapsed());
+            next_tick = next_tick.min(tokio::time::Instant::now() + wait);
+        } else if needs_redraw {
             if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
                 eprintln!("fluxer-tui: terminal draw failed: {e}");
                 break;
             }
+            last_draw = Instant::now();
+            urgent_redraw = false;
             for (id, url) in app.take_custom_emoji_wants() {
                 spawn_custom_emoji_fetch(authed_client.clone(), event_tx.clone(), id, url);
             }
@@ -274,6 +290,7 @@ async fn main() -> Result<()> {
         tokio::select! {
             maybe_event = reader.next() => {
                 needs_redraw = true;
+                urgent_redraw = true;
                 // A held key queues events faster than frames can be drawn:
                 // handle everything already waiting, then draw once.
                 let mut next = maybe_event;
@@ -368,11 +385,13 @@ async fn main() -> Result<()> {
                         needs_redraw = true;
                     }
                 }
-                if matches!(
-                    app.image_preview,
-                    Some(ImagePreviewState::ReadyAnimatedGif { .. })
-                        | Some(ImagePreviewState::ReadyPixels { .. })
-                ) {
+                if !app.ui_settings.performance_mode
+                    && matches!(
+                        app.image_preview,
+                        Some(ImagePreviewState::ReadyAnimatedGif { .. })
+                            | Some(ImagePreviewState::ReadyPixels { .. })
+                    )
+                {
                     app.advance_image_preview_animation(dt);
                     needs_redraw = true;
                 }
@@ -565,6 +584,16 @@ fn handle_paste_event(
         }
     }
     app.sync_command_autocomplete();
+}
+
+/// In performance mode, frames for anything but the user's own keys are
+/// at least this far apart: a burst of gateway events (presence changes
+/// in a big community, say) is drawn once instead of once per event.
+const PERF_FRAME_GAP: Duration = Duration::from_millis(200);
+
+/// Whether a pending redraw is drawn right now or held for the next tick.
+fn draw_now(performance_mode: bool, urgent: bool, since_last_draw: Duration) -> bool {
+    !performance_mode || urgent || since_last_draw >= PERF_FRAME_GAP
 }
 
 fn resolve_initial_server(
@@ -2357,5 +2386,21 @@ impl Drop for TerminalGuard {
             let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
         }
         let _ = terminal::disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod redraw_tests {
+    use super::*;
+
+    #[test]
+    fn performance_mode_holds_back_only_frames_that_are_not_for_a_key() {
+        // full mode: every redraw is drawn at once
+        assert!(draw_now(false, false, Duration::ZERO));
+        // performance mode: a key is drawn at once, gateway traffic waits
+        // for the frame gap
+        assert!(draw_now(true, true, Duration::ZERO));
+        assert!(!draw_now(true, false, Duration::from_millis(50)));
+        assert!(draw_now(true, false, PERF_FRAME_GAP));
     }
 }

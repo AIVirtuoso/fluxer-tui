@@ -2230,7 +2230,7 @@ impl App {
         animated: bool,
         register: bool,
     ) -> Option<Span<'static>> {
-        if !self.custom_emoji_inline_supported() || id.is_empty() {
+        if !self.pictures_enabled() || id.is_empty() {
             return None;
         }
         match self.custom_emojis.get(id) {
@@ -2418,12 +2418,20 @@ impl App {
 
     /// Previews under messages: wanted, and drawable on this terminal.
     pub fn inline_media_enabled(&self) -> bool {
-        self.ui_settings.inline_media && self.custom_emoji_inline_supported()
+        self.ui_settings.inline_media && self.pictures_enabled()
+    }
+
+    /// Whether any picture is drawn at all: the terminal (or the console
+    /// renderer) can draw them, and performance mode is off. Decoding and
+    /// encoding pictures is the most expensive thing the client does, so
+    /// performance mode does without them entirely.
+    pub fn pictures_enabled(&self) -> bool {
+        !self.ui_settings.performance_mode && self.custom_emoji_inline_supported()
     }
 
     /// Profile pictures beside messages: wanted, and drawable here.
     pub fn avatars_enabled(&self) -> bool {
-        self.ui_settings.avatars && self.custom_emoji_inline_supported()
+        self.ui_settings.avatars && self.pictures_enabled()
     }
 
     /// Claim a marker slot for a block of cells this draw.
@@ -2522,6 +2530,11 @@ impl App {
     /// an animation on screen, down to 50 ms, so animations play at their
     /// own pace instead of being sampled ten times a second.
     pub fn tick_period(&self) -> Duration {
+        if self.ui_settings.performance_mode {
+            // nothing animates: the tick only expires statuses and prunes
+            // typing state
+            return Duration::from_millis(500);
+        }
         let floor = Duration::from_millis(50);
         let mut period = Duration::from_millis(100);
         if let Some(d) = self.animation_delay_seen.get() {
@@ -5205,6 +5218,52 @@ mod file_picker_tests {
             app.local_media_source("file:///tmp/x.png"),
             Some(crate::media::LocalSource::Path(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod performance_mode_tests {
+    use super::*;
+    use crate::api::types::{UserPrivateResponse, WellKnownFluxerResponse};
+    use crate::config::UiSettings;
+
+    fn app(performance_mode: bool) -> App {
+        let mut ui = UiSettings::default();
+        ui.performance_mode = performance_mode;
+        let mut app = App::new(
+            WellKnownFluxerResponse::default(),
+            UserPrivateResponse {
+                id: "me".to_string(),
+                ..UserPrivateResponse::default()
+            },
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            ui,
+        );
+        // the console renderer: pictures are drawable
+        app.pixel_mode = true;
+        app
+    }
+
+    #[test]
+    fn performance_mode_draws_no_pictures_and_ticks_twice_a_second() {
+        let full = app(false);
+        assert!(full.pictures_enabled());
+        assert!(full.inline_media_enabled());
+        assert!(full.avatars_enabled());
+        assert_eq!(full.tick_period(), Duration::from_millis(100));
+
+        let mut lean = app(true);
+        assert!(!lean.pictures_enabled());
+        assert!(!lean.inline_media_enabled());
+        assert!(!lean.avatars_enabled());
+        assert!(lean.custom_emoji_placeholder("123", false).is_none());
+        // and nothing was put on the fetch list
+        assert!(lean.take_custom_emoji_wants().is_empty());
+        assert_eq!(lean.tick_period(), Duration::from_millis(500));
     }
 }
 

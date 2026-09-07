@@ -193,10 +193,10 @@ console, the message pane looks like the web app:
   square with the terminal theme.
 - **Pictures, GIFs and video posters** are shown under the message as
   previews: scaled to fit about a third of the pane, never larger than the
-  original. GIFs from the picker (KLIPY, Tenor) and animated WebP play; in
-  performance mode they stay on their first frame. **Ctrl+O** on a selected
-  message still opens the full-size picture or GIF, videos externally, and
-  plays audio (see "Audio").
+  original. GIFs from the picker (KLIPY, Tenor) and animated WebP play.
+  **Ctrl+O** on a selected message still opens the full-size picture or
+  GIF, videos externally, and plays audio (see "Audio"). Performance mode
+  draws no pictures at all (see "Tips").
 
 Previews are asked from Fluxer's media proxy already scaled to the size
 they are drawn at, so a 4000-pixel photo costs a few kilobytes. Only the
@@ -428,6 +428,13 @@ Plain letters (without **Ctrl**) are inserted into the message, except where aut
 
 - **Capital R** is refresh; **lowercase r** in message select mode is reply.
 - Message **select mode** is only active after **s** in the **Messages** focus.
+- **Performance mode** (**F2** → Performance Mode, or `performance_mode =
+  true` under `[ui]`) is for slow machines. It draws no pictures at all
+  (profile pictures, previews, custom emoji as pictures; **Ctrl+O** still
+  opens one on request), no animations and no typing indicators, ticks
+  twice a second instead of ten times, and draws a burst of gateway
+  traffic (presence changes in a big community, say) once every 200 ms
+  instead of once per event. Your own keys are always drawn at once.
 
 ## Console mode (Linux VT, no terminal emulator)
 
