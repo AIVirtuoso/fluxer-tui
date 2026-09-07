@@ -59,9 +59,26 @@ own section or table row further down.
 - **Cheap scrolling.** The terminal shifts rows itself, only the rows
   that changed are sent, each frame goes out as one synchronized
   update, and a held key scrolls as fast as the terminal keeps up.
+- **Messages drawn with Fluxer's own markup rules:** fenced code with a
+  language, lists, tables, the five callouts, quotes, headings, small
+  print, every inline mark in both spellings, backslash escapes, bare
+  links, masked links that show where they go, timestamps in all nine
+  styles (see "Message formatting"). Upstream's renderer knew a handful
+  of inline marks and drew the rest as typed.
+- **Mentions and replies highlighted** the way the web app does it: an
+  amber bar in the margin (and a tint in the Fluxer theme) on messages
+  that mention you or answer you, and the message a selected reply
+  answers is marked (see "Interface overview").
+- **A performance mode that means it:** no pictures, no animations,
+  slower ticks and one frame per burst of gateway traffic, for slow
+  machines (see "Tips"). Upstream's skipped little.
 - **Fixes:** the newest message is no longer cut off at the bottom of
-  the pane, and a sixel profile picture cut by the pane's edge leaves
-  no stale strip behind.
+  the pane; a sixel profile picture cut by the pane's edge leaves no
+  stale strip behind; a community's notification settings save again
+  (the API's answer to a change could not be read, so every change
+  looked failed, and a saved entry emptied the client at the next
+  start); and a community whose member list times out or is off limits
+  no longer trips the client up, which keeps what arrived and says so.
 
 **Sending**
 
@@ -453,13 +470,13 @@ instead of a display, which is how the console renderer is tested.
 
 ## Known issues & TODOs
 
-- **Markdown** parser is still hand-crafted with duct-tape and incomplete.
-- **Voice** is view-only; no join/transmit/hear.
-- Notification settings dont save, gotta fix but will do later.
-- Themeing/syncing with a "rice" will be something i hope to implement next!
-- reply highlights will be next update or a patch later on in the night (probably at 1am)
-- performance mode doesnt do much for clamshells from the 2000's (so far.)
-- "Failed to load guild members: 504 Gateway Timeout Gateway timeout." I believe this happens in servers with members lists that are disabled, so it is PROBABLY intended.
+- **Voice** is view-only: the client shows who is in a voice channel but
+  cannot join, transmit or hear. Fluxer's voice runs over WebRTC through
+  LiveKit, which would mean a whole WebRTC stack in the client.
+- Some communities answer the member list request with a gateway
+  timeout (504) from the server's own member service. The client keeps
+  the pages that arrived, says in plain words that the list is
+  unavailable, and offers @mentions from the members it has seen.
 - Open a **feature request** issue for anything you want that is not here yet.
 
 ## License
