@@ -95,7 +95,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         command_popup::render(frame, root[1], app);
     }
 
-    if let Some(cursor) = input_bar::render(frame, root[2], app) {
+    let cursor = input_bar::render(frame, root[2], app);
+    if let Some(cursor) = cursor {
         frame.set_cursor_position(cursor);
     }
 
@@ -124,6 +125,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // message pane laid out this frame.
     message_pane::overlay_media(frame, area, app);
 
+    if std::mem::take(&mut app.debug_frame_wanted) {
+        log_frame_map(frame, app, root[2], input_lines, cursor);
+    }
+
     // The terminal backend reconciles this frame against what the terminal
     // shows. A scroll of the pane is only worth doing when nothing is drawn
     // over it.
@@ -149,6 +154,43 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             scroll,
         };
     }
+}
+
+/// The frame as drawn, to the debug log: the layout the compose box got
+/// against what it asked for, the cursor, then the map of every cell
+/// (see `crate::debug::frame_map`).
+fn log_frame_map(
+    frame: &mut Frame,
+    app: &mut App,
+    input_area: ratatui::layout::Rect,
+    input_lines: u16,
+    cursor: Option<(u16, u16)>,
+) {
+    let area = frame.area();
+    let strip_rows = input_bar::attachment_strip_rows(app);
+    crate::debug::log(
+        "frame",
+        format!(
+            "{}x{} cells; compose box rows {}..{} ({} rows, asked for {}: {} of text, {} of staged files); cursor {}; {} pictures placed",
+            area.width,
+            area.height,
+            input_area.y,
+            input_area.bottom(),
+            input_area.height,
+            input_lines.saturating_add(2),
+            input_lines.saturating_sub(strip_rows),
+            strip_rows,
+            cursor.map_or("hidden".to_string(), |(x, y)| format!("({x},{y})")),
+            app.media_slots.borrow().len()
+        ),
+    );
+    for (y, row) in crate::debug::frame_map(frame.buffer_mut())
+        .iter()
+        .enumerate()
+    {
+        crate::debug::log("frame", format!("{y:>3}|{row}|"));
+    }
+    app.set_status("Frame map written to the debug log (see /debug).");
 }
 
 fn sidebar_width(terminal_width: u16) -> u16 {

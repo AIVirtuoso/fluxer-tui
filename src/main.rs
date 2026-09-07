@@ -859,6 +859,11 @@ fn handle_key_event(
                 save_debug_snapshot(app);
                 app.show_debug = false;
             }
+            KeyCode::Char('f') => {
+                // the panel closes first: the map is of what was under it
+                app.show_debug = false;
+                app.debug_frame_wanted = true;
+            }
             _ => {}
         }
         return;
@@ -1483,6 +1488,12 @@ fn handle_key_event(
                         app.dismiss_command_autocomplete();
                         let _ = std::mem::take(&mut app.input);
                         save_debug_snapshot(app);
+                        return;
+                    }
+                    if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugFrame) {
+                        app.dismiss_command_autocomplete();
+                        let _ = std::mem::take(&mut app.input);
+                        app.debug_frame_wanted = true;
                         return;
                     }
                     if let crate::slash_commands::OutgoingSlash::SetNick {

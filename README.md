@@ -406,7 +406,7 @@ the margin, as long as it is loaded.
 | **Alt+A** | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps. |
 | **F1** | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close). |
 | **Ctrl+H** | Same overlay when focus is **not** the message input (in input, **Ctrl+H** / **Ctrl+Backspace** delete the previous word). |
-| **F12** | **Debug panel**: session facts and the last log lines; **s** there writes them to a file (see "Debugging"). |
+| **F12** | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging"). |
 | **R** | **Refresh** active channel messages and guild metadata used for loads (clears local message cache for the channel and resets fetch/backoff state for the current guild). |
 | **Ctrl+C** | Quit. |
 | **Ctrl+L** | Log out (clear intent flag) and quit - token is cleared when the process exits cleanly after this. |
@@ -454,7 +454,7 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | **↑** | Leave **Input** and focus **Messages**. |
 | **Backspace** | Delete character. |
 | **Ctrl+Backspace** / **Ctrl+H** | Delete the previous whitespace-separated word. |
-| `/debug`, `/debug save` | Debug panel; write its facts and log lines to a file (see "Debugging"). |
+| `/debug`, `/debug save`, `/debug frame` | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging"). |
 | **Ctrl+U** | Clear the whole input line. |
 | **Esc** | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Channels**. |
 | **:** (colon) | Start **custom emoji** autocomplete (server emojis + unicode picker). |
@@ -505,6 +505,15 @@ When something goes wrong, the client can say what it saw:
   long the last frame took, and the last few hundred log lines. **s**
   in the panel, or `/debug save`, writes all of that to a file whose
   path shows in the status line; attach it to a bug report.
+- **`/debug frame`**, or **f** in the panel, puts a map of the screen
+  into the log for a layout bug ("the text is not where it should
+  be"): one character per cell, `#` for a border, `P` for a picture,
+  `e` for a custom emoji, `T` for text, blank for nothing, with a line
+  above it saying how many rows the compose box got and how many it
+  asked for, and where the cursor is. The panel closes first, so the
+  map is of what was under it. The map says where text is, not what it
+  says: single blanks between words are filled in, so not even word
+  lengths are in it. `/debug save` afterwards keeps it with the rest.
 - **`--debug`** keeps the whole log from start to exit, panics
   included, in `$XDG_STATE_HOME/fluxer-tui/debug.log` (that is
   `~/.local/state/fluxer-tui/debug.log` as a rule). `--debug-log FILE`

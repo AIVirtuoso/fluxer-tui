@@ -823,6 +823,9 @@ pub struct App {
     /// The debug panel (`/debug`, F12).
     pub show_debug: bool,
     pub debug_scroll: u16,
+    /// A map of the next frame goes to the debug log (`/debug frame`, f
+    /// in the panel).
+    pub debug_frame_wanted: bool,
     /// What was known at start, for the debug panel: version, terminal,
     /// picture protocol, cell size. Nothing personal.
     pub debug_facts: Vec<(String, String)>,
@@ -982,6 +985,7 @@ impl App {
             help_scroll: 0,
             show_debug: false,
             debug_scroll: 0,
+            debug_frame_wanted: false,
             debug_facts: Vec::new(),
             last_frame_ms: 0,
             started_at: Instant::now(),

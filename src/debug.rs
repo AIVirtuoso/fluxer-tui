@@ -144,6 +144,52 @@ pub fn save_snapshot(facts: &[(String, String)]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// A map of a drawn frame, one character per cell, for the log: where the
+/// borders, pictures and text are, not what the text says. `#` is a
+/// box-drawing cell, `P` a picture (media marker) cell, `e` a custom
+/// emoji cell, `T` a text cell and a space a blank cell (the second cell
+/// of a wide character among them). A single blank between two text cells counts as
+/// text, so a row shows where text is and where it ends but not the
+/// lengths of its words.
+pub fn frame_map(buf: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = buf.area;
+    let mut rows = Vec::with_capacity(area.height as usize);
+    for y in area.top()..area.bottom() {
+        let mut row: Vec<char> = Vec::with_capacity(area.width as usize);
+        for x in area.left()..area.right() {
+            let cell = &buf[(x, y)];
+            let symbol = cell.symbol();
+            let class = if symbol == "\u{2800}" {
+                if crate::app::media_marker(cell.style()).is_some() {
+                    'P'
+                } else if crate::app::custom_emoji_marker_slot(cell.style()).is_some() {
+                    'e'
+                } else {
+                    ' '
+                }
+            } else if symbol.chars().all(char::is_whitespace) {
+                ' '
+            } else if symbol
+                .chars()
+                .next()
+                .is_some_and(|c| ('\u{2500}'..='\u{257F}').contains(&c))
+            {
+                '#'
+            } else {
+                'T'
+            };
+            row.push(class);
+        }
+        for i in 1..row.len().saturating_sub(1) {
+            if row[i] == ' ' && row[i - 1] == 'T' && row[i + 1] == 'T' {
+                row[i] = 'T';
+            }
+        }
+        rows.push(row.into_iter().collect());
+    }
+    rows
+}
+
 /// Panics go to the log, with a backtrace, before the previous hook
 /// (which restores the terminal) runs.
 pub fn install_panic_hook() {
@@ -379,5 +425,30 @@ mod tests {
 
     fn recent_line() -> String {
         recent(1).pop().unwrap()
+    }
+
+    #[test]
+    fn a_frame_map_shows_where_things_are_but_not_the_words() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
+        buf.set_string(
+            0,
+            0,
+            "\u{250C}\u{2500}\u{2500}\u{2510}",
+            ratatui::style::Style::default(),
+        );
+        buf.set_string(0, 1, "hi you  \u{4F60}", ratatui::style::Style::default());
+        buf.set_string(
+            0,
+            2,
+            "\u{2800}\u{2800}\u{2800}",
+            crate::app::media_marker_style(3, 1),
+        );
+        buf.set_string(4, 2, "\u{2800}", crate::app::custom_emoji_marker_style(7));
+        let map = frame_map(&buf);
+        assert_eq!(map[0], "####        ");
+        assert_eq!(map[1], "TTTTTT  T   ");
+        assert_eq!(map[2], "PPP e       ");
     }
 }

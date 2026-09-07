@@ -66,7 +66,7 @@ pub static SLASH_COMMANDS: &[SlashCommandDef] = &[
     },
     SlashCommandDef {
         name: "/debug",
-        description: "Debug panel: session facts and the last log lines (/debug save writes them to a file).",
+        description: "Debug panel: session facts and the last log lines (/debug save writes them to a file, /debug frame maps the screen into the log).",
         simple_append: None,
         requires_guild: false,
         requires_channel_perm: None,
@@ -136,6 +136,8 @@ pub enum OutgoingSlash {
     Debug,
     /// Write the debug panel's facts and log lines to a file.
     DebugSave,
+    /// Write a map of the next frame to the debug log.
+    DebugFrame,
     Blocked(String),
     Normal,
 }
@@ -198,6 +200,9 @@ pub fn resolve_outgoing_slash(
     }
     if t == "/debug save" {
         return OutgoingSlash::DebugSave;
+    }
+    if t == "/debug frame" {
+        return OutgoingSlash::DebugFrame;
     }
     if let Some(rest) = t.strip_prefix("/attach ") {
         let path = rest.trim();
