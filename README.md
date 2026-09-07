@@ -574,8 +574,10 @@ When something goes wrong, the client can say what it saw:
 The log respects your privacy: it records what happened, not what was
 said. Gateway events appear as their kind, size and shape (field names
 and types, string lengths, the ids of channels, communities, users and
-messages); HTTP requests as method, path, status and duration, with the
-API's error code when there is one; pictures as host, size and result;
+messages); HTTP requests as method, path, status, duration and whether they went
+over IPv4 or IPv6 (the server counts login attempts per address, and a
+browser and a client on the same machine can take different routes),
+with the API's error code when there is one; pictures as host, size and result;
 plus the client's own status-line messages, errors and frame timings.
 It never contains message text, user or community names, e-mail
 addresses, file names or paths (a status line that mentions one is
