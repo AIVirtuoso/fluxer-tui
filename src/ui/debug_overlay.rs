@@ -65,9 +65,10 @@ pub fn facts(app: &App) -> Vec<(String, String)> {
     out.push(("last frame".into(), format!("{} ms", app.last_frame_ms)));
     out.push((
         "debug log".into(),
-        match crate::debug::path() {
-            Some(p) => crate::debug::scrub_path(&p.display().to_string()),
-            None => "off (start with --debug to keep one)".into(),
+        if crate::debug::enabled() {
+            "kept in a file (the README's \"Debugging\" section says where)".into()
+        } else {
+            "off (start with --debug to keep one)".into()
         },
     ));
     out

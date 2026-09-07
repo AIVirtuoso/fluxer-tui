@@ -2,7 +2,7 @@
 //! lines a bug report can carry. It records the shape of things, never
 //! their content: event kinds, ids, sizes, timings, the client's own
 //! status-line messages and errors. No message text, no names, no
-//! addresses, no file names, and never the token.
+//! addresses, no file names or paths, and never the token.
 //!
 //! The last few hundred lines are always kept in memory for the debug
 //! panel (`/debug`); `--debug` also writes every line to a file.
@@ -158,20 +158,13 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// A path with the home directory as `~`: the user's name has no place in
-/// the log.
-pub fn scrub_path(text: &str) -> String {
-    match dirs::home_dir() {
-        Some(home) => text.replace(&*home.to_string_lossy(), "~"),
-        None => text.to_string(),
-    }
-}
-
-/// Words that name a file (`cat.png`, `~/pics/cat.png`, `/tmp/x.toml`)
-/// become `<file>`: the client's status lines mention files it attached
-/// or could not read, and the name helps nobody but its owner. A word
-/// with a version-like tail (`0.7.5`) or a plain word stays.
-pub fn scrub_file_names(text: &str) -> String {
+/// A status line without what is private in it: a word that is a path
+/// (`~/pics/cat.png`, `/dev/dri/card0`) becomes `<path>`, one that names
+/// a file (`cat.png`) becomes `<file>`, and an address keeps only its
+/// host. The client's status lines mention the files it attached or
+/// could not read, and where they are helps nobody but their owner. A
+/// version-like word (`0.7.5`) or a plain word stays.
+pub fn scrub_private(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while !rest.is_empty() {
@@ -195,13 +188,18 @@ fn scrub_word(word: &str) -> String {
     let core = word.trim_matches(PUNCT);
     let lead = &word[..word.len() - word.trim_start_matches(PUNCT).len()];
     let trail = &word[lead.len() + core.len()..];
-    let looks_like_file = !core.contains("://")
-        && core.rsplit_once('.').is_some_and(|(stem, ext)| {
-            !stem.is_empty()
-                && (1..=5).contains(&ext.len())
-                && ext.bytes().all(|b| b.is_ascii_alphanumeric())
-                && ext.bytes().any(|b| b.is_ascii_alphabetic())
-        });
+    if core.contains("://") {
+        return format!("{lead}{}{trail}", url_host(core));
+    }
+    if core.contains('/') || core.starts_with('~') {
+        return format!("{lead}<path>{trail}");
+    }
+    let looks_like_file = core.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty()
+            && (1..=5).contains(&ext.len())
+            && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+            && ext.bytes().any(|b| b.is_ascii_alphabetic())
+    });
     if looks_like_file {
         format!("{lead}<file>{trail}")
     } else {
@@ -307,31 +305,32 @@ mod tests {
     }
 
     #[test]
-    fn file_names_in_status_lines_are_not_kept() {
+    fn file_names_and_paths_in_status_lines_are_not_kept() {
         assert_eq!(
-            scrub_file_names("Attached cat.png (136 B). Enter sends, Ctrl+X removes."),
+            scrub_private("Attached cat.png (136 B). Enter sends, Ctrl+X removes."),
             "Attached <file> (136 B). Enter sends, Ctrl+X removes."
         );
         assert_eq!(
-            scrub_file_names("Reading ~/pics/holiday 2026.jpeg\u{2026}"),
-            "Reading ~/pics/holiday <file>\u{2026}"
+            scrub_private("Reading ~/pics/holiday 2026.jpeg\u{2026}"),
+            "Reading <path> <file>\u{2026}"
+        );
+        assert_eq!(scrub_private("Removed /tmp/notes.toml."), "Removed <path>.");
+        assert_eq!(
+            scrub_private("Console mode unavailable: /dev/dri/card0: permission denied"),
+            "Console mode unavailable: <path>: permission denied"
         );
         assert_eq!(
-            scrub_file_names("Removed /tmp/notes.toml."),
-            "Removed <file>."
+            scrub_private("fluxer-tui 0.7.5 needs mpv (see https://x.org/a.html)"),
+            "fluxer-tui 0.7.5 needs mpv (see https://x.org)"
         );
         assert_eq!(
-            scrub_file_names("fluxer-tui 0.7.5 needs mpv (see https://x.org/a.html)"),
-            "fluxer-tui 0.7.5 needs mpv (see https://x.org/a.html)"
-        );
-        assert_eq!(
-            scrub_file_names("Failed to load: 504 Gateway Timeout."),
+            scrub_private("Failed to load: 504 Gateway Timeout."),
             "Failed to load: 504 Gateway Timeout."
         );
     }
 
     #[test]
-    fn hosts_and_home_directories_are_all_that_is_kept_of_addresses_and_paths() {
+    fn hosts_are_all_that_is_kept_of_addresses() {
         assert_eq!(
             url_host("https://user:pw@cdn.example.org/a/b.png?x=1"),
             "https://cdn.example.org"
@@ -341,11 +340,6 @@ mod tests {
             "wss://gateway.fluxer.app"
         );
         assert_eq!(url_host("no scheme here"), "no scheme here");
-        if let Some(home) = dirs::home_dir() {
-            let inside = format!("{}/pictures/cat.png", home.display());
-            assert_eq!(scrub_path(&inside), "~/pictures/cat.png");
-        }
-        assert_eq!(scrub_path("/etc/hosts"), "/etc/hosts");
     }
 
     #[test]

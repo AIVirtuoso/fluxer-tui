@@ -101,7 +101,8 @@ own section or table row further down.
 - **A debug panel and a debug log.** `/debug` (or **F12**) shows the
   facts a bug report needs and the last log lines; `--debug` keeps the
   whole log in a file. Both record shapes, ids, sizes, timings and
-  errors, never message text, names or the token (see "Debugging").
+  errors, never message text, names, paths or the token (see
+  "Debugging").
 
 **Console**
 
@@ -521,10 +522,10 @@ messages); HTTP requests as method, path, status and duration, with the
 API's error code when there is one; pictures as host, size and result;
 plus the client's own status-line messages, errors and frame timings.
 It never contains message text, user or community names, e-mail
-addresses, file names, paths under your home directory (which appears
-as `~`), notification text, or the token. Events that come in bursts,
-presence changes for one, are logged once and then every hundredth
-time.
+addresses, file names or paths (a status line that mentions one is
+logged with `<file>` or `<path>` in its place), notification text, or
+the token. Events that come in bursts, presence changes for one, are
+logged once and then every hundredth time.
 
 ## Console mode (Linux VT, no terminal emulator)
 

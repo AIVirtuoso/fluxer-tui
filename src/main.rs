@@ -122,7 +122,11 @@ async fn main() -> Result<()> {
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
-            debug::scrub_path(&config_path.display().to_string())
+            if args.config.is_some() {
+                "given with --config"
+            } else {
+                "at the default place"
+            }
         ),
     );
 
@@ -319,7 +323,11 @@ async fn main() -> Result<()> {
         ("version".into(), env!("CARGO_PKG_VERSION").into()),
         (
             "config".into(),
-            debug::scrub_path(&config_path.display().to_string()),
+            if args.config.is_some() {
+                "given with --config".to_string()
+            } else {
+                "at the default place".to_string()
+            },
         ),
         ("API".into(), debug::url_host(&config.api_base_url)),
         (
@@ -810,14 +818,11 @@ fn resolve_initial_server(
 }
 
 /// The debug panel's facts and log lines to a file, and where it went in
-/// the status line.
+/// the status line, on the screen only: the log keeps no paths.
 fn save_debug_snapshot(app: &mut App) {
     let facts = ui::debug_overlay::facts(app);
     match debug::save_snapshot(&facts) {
-        Ok(path) => app.set_status(format!(
-            "Debug snapshot written to {}",
-            debug::scrub_path(&path.display().to_string())
-        )),
+        Ok(path) => app.set_status(format!("Debug snapshot written to {}", path.display())),
         Err(err) => app.set_status(format!("Could not write the debug snapshot: {err}")),
     }
 }
