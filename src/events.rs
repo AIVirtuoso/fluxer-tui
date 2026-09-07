@@ -31,7 +31,10 @@ pub enum AppEvent {
     },
     GuildMembersFailed {
         guild_id: String,
-        message: String,
+        /// The pages that did arrive before the failure.
+        partial: Vec<crate::api::types::GuildMemberResponse>,
+        failure: crate::api::client::MembersFailure,
+        detail: String,
     },
     MessagesLoaded {
         channel_id: String,
@@ -509,13 +512,32 @@ pub fn apply_event(
         }
         AppEvent::GuildMembersLoaded { guild_id, members } => {
             app.set_guild_members(&guild_id, members);
+            app.loading_members.remove(&guild_id);
+            app.api_backoff_clear(&format!("members:{guild_id}"));
             app.refresh_mention_autocomplete_after_members_load(&guild_id);
             app.guild_members_synced.insert(guild_id);
         }
-        AppEvent::GuildMembersFailed { guild_id, message } => {
+        AppEvent::GuildMembersFailed {
+            guild_id,
+            partial,
+            failure,
+            detail,
+        } => {
             app.loading_members.remove(&guild_id);
-            app.api_backoff_after_failure(format!("members:{guild_id}"));
-            app.set_status(message);
+            let got_some = !partial.is_empty();
+            for member in partial {
+                app.merge_guild_member(&guild_id, member);
+            }
+            if got_some {
+                app.refresh_mention_autocomplete_after_members_load(&guild_id);
+            }
+            if failure == crate::api::client::MembersFailure::Forbidden {
+                app.guild_members_forbidden.insert(guild_id.clone());
+            } else {
+                app.api_backoff_after_failure(format!("members:{guild_id}"));
+            }
+            let status = app.members_failure_status(&guild_id, failure, got_some, &detail);
+            app.set_status(status);
         }
         AppEvent::MessagesLoaded {
             channel_id,
