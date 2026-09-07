@@ -5165,6 +5165,52 @@ mod file_picker_tests {
 }
 
 #[cfg(test)]
+mod performance_mode_tests {
+    use super::*;
+    use crate::api::types::{UserPrivateResponse, WellKnownFluxerResponse};
+    use crate::config::UiSettings;
+
+    fn app(performance_mode: bool) -> App {
+        let mut ui = UiSettings::default();
+        ui.performance_mode = performance_mode;
+        let mut app = App::new(
+            WellKnownFluxerResponse::default(),
+            UserPrivateResponse {
+                id: "me".to_string(),
+                ..UserPrivateResponse::default()
+            },
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            ui,
+        );
+        // the console renderer: pictures are drawable
+        app.pixel_mode = true;
+        app
+    }
+
+    #[test]
+    fn performance_mode_draws_no_pictures_and_ticks_twice_a_second() {
+        let full = app(false);
+        assert!(full.pictures_enabled());
+        assert!(full.inline_media_enabled());
+        assert!(full.avatars_enabled());
+        assert_eq!(full.tick_period(), Duration::from_millis(100));
+
+        let mut lean = app(true);
+        assert!(!lean.pictures_enabled());
+        assert!(!lean.inline_media_enabled());
+        assert!(!lean.avatars_enabled());
+        assert!(lean.custom_emoji_placeholder("123", false).is_none());
+        // and nothing was put on the fetch list
+        assert!(lean.take_custom_emoji_wants().is_empty());
+        assert_eq!(lean.tick_period(), Duration::from_millis(500));
+    }
+}
+
+#[cfg(test)]
 mod notification_tests {
     use super::*;
 
@@ -5296,51 +5342,5 @@ mod notification_tests {
         let n = app.notification_for(&msg("art", "ann", &long)).unwrap();
         assert_eq!(n.body.chars().count(), 301);
         assert!(n.body.ends_with('\u{2026}'));
-    }
-}
-
-#[cfg(test)]
-mod performance_mode_tests {
-    use super::*;
-    use crate::api::types::{UserPrivateResponse, WellKnownFluxerResponse};
-    use crate::config::UiSettings;
-
-    fn app(performance_mode: bool) -> App {
-        let mut ui = UiSettings::default();
-        ui.performance_mode = performance_mode;
-        let mut app = App::new(
-            WellKnownFluxerResponse::default(),
-            UserPrivateResponse {
-                id: "me".to_string(),
-                ..UserPrivateResponse::default()
-            },
-            None,
-            Vec::new(),
-            Vec::new(),
-            ServerSelection::DirectMessages,
-            None,
-            ui,
-        );
-        // the console renderer: pictures are drawable
-        app.pixel_mode = true;
-        app
-    }
-
-    #[test]
-    fn performance_mode_draws_no_pictures_and_ticks_twice_a_second() {
-        let full = app(false);
-        assert!(full.pictures_enabled());
-        assert!(full.inline_media_enabled());
-        assert!(full.avatars_enabled());
-        assert_eq!(full.tick_period(), Duration::from_millis(100));
-
-        let mut lean = app(true);
-        assert!(!lean.pictures_enabled());
-        assert!(!lean.inline_media_enabled());
-        assert!(!lean.avatars_enabled());
-        assert!(lean.custom_emoji_placeholder("123", false).is_none());
-        // and nothing was put on the fetch list
-        assert!(lean.take_custom_emoji_wants().is_empty());
-        assert_eq!(lean.tick_period(), Duration::from_millis(500));
     }
 }
