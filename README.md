@@ -103,6 +103,11 @@ own section or table row further down.
   whole log in a file. Both record shapes, ids, sizes, timings and
   errors, never message text, names, paths or the token (see
   "Debugging").
+- **A map of the screen for layout bugs.** `/debug frame` (or **f** in
+  the panel) puts the frame into the log as one character per cell:
+  border, picture, emoji, text or nothing, with the rows the compose
+  box got against the rows it asked for. Where the text is, not what
+  it says.
 
 **Console**
 
