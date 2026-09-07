@@ -180,9 +180,20 @@ does the same.
 
 If you have no valid saved token then you can easily login via the browser. The TUI will automatically:
 
-1. Print an **8-character login code** (also copied to the clipboard when possible).
+1. Print a **login code** (twelve characters in two groups, also copied to the clipboard when possible).
 2. Opens your browser to complete login (or you can open the printed URL manually).
 3. Polls until the browser flow finishes, then saves the token and starts the UI.
+
+**"browser login is blocked from this IP address for now."** The
+server counts failed handoff attempts per IP address and refuses every
+handoff request for 15 minutes after the fifth failure, answering
+`INVALID_HANDOFF_CODE` even for a code it has just issued. Failures
+come from a code typed wrongly on the login page, a code from a
+fluxer-tui that had already exited, or an older fluxer-tui (upstream
+0.7.5) polling without the poll secret. fluxer-tui stops as soon as it
+sees this instead of waiting five minutes for nothing. Wait 15 minutes
+without trying again, since every wrong attempt starts the 15 minutes
+over, then run it once more and enter the code exactly as shown.
 
 You can pass a token once without storing it in config:
 
