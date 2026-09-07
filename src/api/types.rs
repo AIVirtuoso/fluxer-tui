@@ -581,47 +581,176 @@ pub struct ReadStateResponse {
     pub mention_count: u64,
 }
 
+/// A number, or a number spelled as a string; anything else is `None`.
+fn lenient_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+// The fields below are read the forgiving way. The API answers a settings
+// update with `channel_overrides: null` when there are none, and the
+// gateway spells some of the same fields differently (a list of overrides
+// carrying `channel_id`, numbers as strings, `null` for unset). serde
+// rejects the whole payload over one such field: the update looked like
+// it had failed even though the server had saved it, and a READY with a
+// saved entry in it left the client empty at the next start.
+
+fn deserialize_lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(match &value {
+        Value::Bool(b) => *b,
+        Value::String(s) => matches!(s.trim(), "true" | "1"),
+        other => lenient_i64(other).is_some_and(|n| n != 0),
+    })
+}
+
+fn deserialize_lenient_i32<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(lenient_i64(&value).map(|n| n as i32).unwrap_or(0))
+}
+
+/// `null` means "not set", which is "follow the community's default".
+fn deserialize_notification_level<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(lenient_i64(&value)
+        .map(|n| n as i32)
+        .unwrap_or(MESSAGE_NOTIFICATIONS_INHERIT))
+}
+
+fn deserialize_lenient_u64_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(lenient_i64(&value).and_then(|n| u64::try_from(n).ok()))
+}
+
+fn deserialize_lenient_string_opt<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<String>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(match value {
+        Value::String(s) => Some(s),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    })
+}
+
+/// A value that is `None` when it is missing, `null`, or not what was
+/// expected.
+fn deserialize_lenient_opt<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(d)?;
+    Ok(serde_json::from_value::<T>(value).ok())
+}
+
+/// A list whose entries that do not parse are dropped instead of failing
+/// the whole payload.
+fn deserialize_lenient_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(d)?;
+    Ok(match value {
+        Value::Array(items) => items
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<T>(v).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// An ISO 8601 string, or a Unix time in milliseconds, or nothing.
+fn deserialize_end_time<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(match &value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        Value::Number(_) => lenient_i64(&value)
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        _ => None,
+    })
+}
+
+/// Channel overrides: a map keyed by channel id (the API), a list of
+/// objects each carrying its `channel_id` (the gateway), or `null`.
+fn deserialize_channel_overrides<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<HashMap<String, UserGuildChannelOverride>, D::Error> {
+    let value = Value::deserialize(d)?;
+    let mut out = HashMap::new();
+    match value {
+        Value::Object(map) => {
+            for (id, entry) in map {
+                if let Ok(o) = serde_json::from_value::<UserGuildChannelOverride>(entry) {
+                    out.insert(id, o);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for entry in items {
+                let id = match entry.get("channel_id") {
+                    Some(Value::String(s)) => Some(s.clone()),
+                    Some(Value::Number(n)) => Some(n.to_string()),
+                    _ => None,
+                };
+                if let Some(id) = id
+                    && let Ok(o) = serde_json::from_value::<UserGuildChannelOverride>(entry)
+                {
+                    out.insert(id, o);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserGuildMuteConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_end_time")]
     pub end_time: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_u64_opt")]
     pub selected_time_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserGuildChannelOverride {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub collapsed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_notification_level")]
     pub message_notifications: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub muted: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_opt")]
     pub mute_config: Option<UserGuildMuteConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserGuildSettingsResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_string_opt")]
     pub guild_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_notification_level")]
     pub message_notifications: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub muted: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_opt")]
     pub mute_config: Option<UserGuildMuteConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub mobile_push: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub suppress_everyone: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub suppress_roles: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub hide_muted_channels: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_channel_overrides")]
     pub channel_overrides: HashMap<String, UserGuildChannelOverride>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_i32")]
     pub version: i32,
 }
 
@@ -768,9 +897,14 @@ pub struct ReadyEvent {
     pub users: Vec<UserPartialResponse>,
     #[serde(default)]
     pub user_settings: Option<UserSettingsResponse>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_vec")]
     pub user_guild_settings: Vec<UserGuildSettingsResponse>,
-    #[serde(default, alias = "read_state", rename = "read_states")]
+    #[serde(
+        default,
+        alias = "read_state",
+        rename = "read_states",
+        deserialize_with = "deserialize_lenient_vec"
+    )]
     pub read_state: Vec<ReadStateResponse>,
 }
 
@@ -1145,6 +1279,122 @@ mod tests {
                 .as_ref()
                 .and_then(|m| m.url.as_deref())
                 .is_some_and(|u| u.ends_with(".webm"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod user_guild_settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_api_answer_to_an_update_parses_with_no_overrides() {
+        // What PATCH /users/@me/guilds/{id}/settings answers for a
+        // community without per-channel overrides.
+        let settings: UserGuildSettingsResponse = serde_json::from_value(json!({
+            "guild_id": "1471251973335237061",
+            "message_notifications": 1,
+            "muted": false,
+            "mute_config": null,
+            "mobile_push": true,
+            "suppress_everyone": false,
+            "suppress_roles": true,
+            "hide_muted_channels": false,
+            "channel_overrides": null,
+            "unread_badges": null,
+            "version": 2
+        }))
+        .expect("the update answer should parse");
+        assert_eq!(settings.guild_id.as_deref(), Some("1471251973335237061"));
+        assert_eq!(
+            settings.message_notifications,
+            MESSAGE_NOTIFICATIONS_ONLY_MENTIONS
+        );
+        assert!(settings.suppress_roles);
+        assert!(settings.channel_overrides.is_empty());
+        assert_eq!(settings.version, 2);
+    }
+
+    #[test]
+    fn the_gateway_spelling_parses_too() {
+        let settings: UserGuildSettingsResponse = serde_json::from_value(json!({
+            "guild_id": 1471251973335237061u64,
+            "message_notifications": null,
+            "muted": true,
+            "mute_config": {"end_time": 1_800_000_000_000u64, "selected_time_window": "900000"},
+            "mobile_push": null,
+            "channel_overrides": [
+                {"channel_id": "7", "muted": true, "message_notifications": 2, "collapsed": false},
+                {"muted": true}
+            ],
+            "version": "3"
+        }))
+        .expect("the gateway spelling should parse");
+        assert_eq!(settings.guild_id.as_deref(), Some("1471251973335237061"));
+        assert_eq!(
+            settings.message_notifications,
+            MESSAGE_NOTIFICATIONS_INHERIT
+        );
+        assert!(settings.muted);
+        let mute = settings.mute_config.expect("mute config");
+        assert_eq!(mute.selected_time_window, Some(900_000));
+        assert!(mute.end_time.is_some_and(|t| t.starts_with("2027-01-15T")));
+        assert!(!settings.mobile_push);
+        assert_eq!(settings.channel_overrides.len(), 1);
+        let over = &settings.channel_overrides["7"];
+        assert!(over.muted);
+        assert_eq!(
+            over.message_notifications,
+            MESSAGE_NOTIFICATIONS_NO_MESSAGES
+        );
+        assert_eq!(settings.version, 3);
+    }
+
+    #[test]
+    fn a_ready_payload_survives_a_settings_entry_it_cannot_read() {
+        let ready: ReadyEvent = serde_json::from_value(json!({
+            "session_id": "s",
+            "user": {"id": "me"},
+            "user_guild_settings": [
+                "not even an object",
+                {"guild_id": "2", "muted": true, "channel_overrides": null}
+            ],
+            "read_states": [{"id": "9", "mention_count": "nope"}, {"id": "10", "mention_count": 2}]
+        }))
+        .expect("READY should parse");
+        // the first entry is not a settings object at all; it is dropped
+        assert_eq!(ready.user_guild_settings.len(), 1);
+        assert_eq!(ready.user_guild_settings[0].guild_id.as_deref(), Some("2"));
+        assert_eq!(ready.read_state.len(), 1);
+        assert_eq!(ready.read_state[0].mention_count, 2);
+    }
+
+    #[test]
+    fn the_patch_sends_only_what_changed_and_null_to_clear_a_mute() {
+        let clear = UserGuildSettingsPatch {
+            muted: Some(false),
+            mute_config: Some(None),
+            ..UserGuildSettingsPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&clear).unwrap(),
+            json!({"muted": false, "mute_config": null})
+        );
+        let timed = UserGuildSettingsPatch {
+            muted: Some(true),
+            mute_config: Some(Some(UserGuildMuteConfig {
+                end_time: Some("2026-09-07T12:00:00.000Z".into()),
+                selected_time_window: Some(900_000),
+            })),
+            ..UserGuildSettingsPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&timed).unwrap(),
+            json!({
+                "muted": true,
+                "mute_config": {"end_time": "2026-09-07T12:00:00.000Z", "selected_time_window": 900000}
+            })
         );
     }
 }
