@@ -2,6 +2,90 @@
 
 TUI for [Fluxer](https://fluxer.app), built with Ratatui.
 
+## What this fork adds
+
+This is a fork of [dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui).
+It keeps upstream's config file, keys and slash commands and adds the
+following on top of upstream's master (April 2026). Each item has its
+own section or table row further down.
+
+**Login and packaging**
+
+- **Browser login works again.** The handoff poll sends the
+  `poll_secret` that the Fluxer API introduced in September 2026;
+  without it the poll stays "pending" forever and trips the per-IP
+  lockout within seconds.
+- **A Nix flake** with the package, a dev shell and a `dev` app that
+  tries a branch without recompiling every dependency; `cargo install
+  --git` names the package (see "Install with cargo" and "Trying a
+  branch without a full rebuild").
+
+**Look**
+
+- **The terminal's own colours by default.** The client uses the
+  terminal's foreground, background and 16 ANSI colours, so it follows
+  the terminal's theme, light or dark. `[ui] theme = "fluxer"`, or the
+  Colours row in the settings overlay (**F2**), keeps upstream's fixed
+  dark look.
+- **Profile pictures beside messages, and pictures, GIFs and video
+  posters under them**, like the web app, on sixel, kitty and iTerm2
+  terminals and on the console. Previews are scaled by the media proxy
+  before download and cached in memory and on disk within a budget; a
+  picture cut by the pane's edge shows the part that is on screen (see
+  "Pictures in chat"). Upstream shows a picture only on **Ctrl+O**.
+- **Emoji shortcodes the Fluxer way.** About 900 of Fluxer's emoji
+  names (`:slight_smile:`, `:thumbsup:`, ...) are unknown to the
+  `emojis` crate and used to stay as raw text; they now render, complete
+  in place while typing, and go out as the emoji. The `:` popup lists
+  an exact name first, then prefixes, then substrings.
+- **Custom community emoji as pictures.** `<:name:id>` in messages,
+  reactions, the compose box and the `:` popup draws the actual emoji
+  in terminals with graphics; animated ones play, every instance in
+  step. Terminals without graphics keep the `:name:` text.
+- **GIFs from the picker (KLIPY, Tenor) play in the terminal.** Upstream
+  handed the provider's web page to an external player, so nothing
+  played. Animated WebP is decoded as well as GIF, and the auth token
+  is sent to the API host only, never to third-party media hosts.
+
+**Reading**
+
+- **The view stays still while you read history.** New messages and
+  loaded history no longer push what you are reading up the pane; **G**
+  jumps to the newest message.
+- **Profile view.** **p** on a selected message shows its author's
+  profile: badges, pronouns, bio, when they joined Fluxer and the
+  community, roles, connections, mutual communities and friends. **p**
+  again shows the profile picture full size.
+- **Cheap scrolling.** The terminal shifts rows itself, only the rows
+  that changed are sent, each frame goes out as one synchronized
+  update, and a held key scrolls as fast as the terminal keeps up.
+- **Fixes:** the newest message is no longer cut off at the bottom of
+  the pane, and a sixel profile picture cut by the pane's edge leaves
+  no stale strip behind.
+
+**Sending**
+
+- **Attach any kind of file.** A file picker (**Ctrl+F** or `/attach`),
+  `/attach <path>`, and **Ctrl+V** for the image or the files on the
+  clipboard; up to ten per message, with previews of staged pictures
+  and videos (see "Attaching files"). Upstream sends text only.
+
+**Sound and notifications**
+
+- **Audio attachments play** with **Ctrl+O** through an external player
+  (mpv, ffplay, pw-play, paplay, aplay, or one you name), the same way
+  in a terminal emulator and on the console (see "Audio").
+- **Notifications** for mentions and direct messages through libnotify's
+  `notify-send`, or GNU `mail` for the console when you opt in (see
+  "Notifications").
+
+**Console**
+
+- **Console mode.** On a Linux virtual console (`TERM=linux`) the whole
+  UI is drawn through DRM/KMS with real fonts, colour emoji, custom and
+  animated emoji, pictures and GIFs; no terminal emulator is needed
+  (see "Console mode").
+
 ## Requirements
 
 - Rust toolchain
