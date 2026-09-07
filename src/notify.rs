@@ -2,6 +2,9 @@
 //! that delivers them: `notify-send` (libnotify) on a desktop, or GNU
 //! `mail` on the console, where "You have new mail" is the notification.
 //! The client only decides what to say; `[ui] notifications` says which.
+//! A sound goes with them, through the same kind of player that plays
+//! audio attachments (a program reading the sound from stdin), so it is
+//! heard in a terminal emulator and on the console alike.
 
 use crate::config::NotifyMode;
 use std::process::{Command, Stdio};
@@ -150,6 +153,112 @@ pub fn send(
     });
 }
 
+/// The built-in notification sound: a short two-note chime as a WAV
+/// file, made here so that no sound file has to be shipped or found.
+/// 22.05 kHz, 16-bit, mono, about a quarter of a second.
+pub fn chime_wav() -> Vec<u8> {
+    const RATE: u32 = 22_050;
+    const NOTE: usize = 2_800; // samples per note, ~127 ms
+    let notes: [(f32, f32); 2] = [(880.0, 0.35), (1318.5, 0.3)];
+    let mut samples: Vec<i16> = Vec::with_capacity(NOTE * notes.len());
+    for (hz, gain) in notes {
+        for i in 0..NOTE {
+            let t = i as f32 / RATE as f32;
+            // a soft attack, an exponential decay and a short release,
+            // so it rings rather than clicks
+            let attack = (i as f32 / 200.0).min(1.0);
+            let release = ((NOTE - i) as f32 / 200.0).min(1.0);
+            let decay = (-t * 14.0).exp();
+            let v = (t * hz * std::f32::consts::TAU).sin() * gain * attack * release * decay;
+            samples.push((v * i16::MAX as f32) as i16);
+        }
+    }
+    let data_len = (samples.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // bytes per second
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        wav.extend_from_slice(&s.to_le_bytes());
+    }
+    wav
+}
+
+/// The bytes of the notification sound: the configured file, or the
+/// built-in chime when none is named.
+pub fn sound_bytes(file: &str) -> std::io::Result<Vec<u8>> {
+    let file = file.trim();
+    if file.is_empty() {
+        return Ok(chime_wav());
+    }
+    let path = if let Some(rest) = file.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|| std::path::PathBuf::from(file))
+    } else {
+        std::path::PathBuf::from(file)
+    };
+    std::fs::read(&path)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+}
+
+/// Play `bytes` through `argv`, a player reading its stdin, in the
+/// background; the status line gets a word only when the program cannot
+/// be started. The player is left to finish on its own.
+pub fn play_sound(
+    argv: Vec<String>,
+    bytes: Vec<u8>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<crate::events::AppEvent>,
+) {
+    tokio::task::spawn_blocking(move || {
+        let Some((program, args)) = argv.split_first() else {
+            return;
+        };
+        let mut child = match Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = event_tx.send(crate::events::AppEvent::SetStatus(format!(
+                    "Notification sound: cannot run {program}: {err}"
+                )));
+                return;
+            }
+        };
+        if let Some(mut pipe) = child.stdin.take() {
+            use std::io::Write;
+            // the player may stop reading early; that is its business
+            let _ = pipe.write_all(&bytes);
+        }
+        let status = child.wait();
+        crate::debug::log(
+            "notify",
+            format!(
+                "sound: {program} {}",
+                match status {
+                    Ok(s) if s.success() => "ran".to_string(),
+                    Ok(s) => format!("failed: {s}"),
+                    Err(e) => format!("could not be waited for: {e}"),
+                }
+            ),
+        );
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +372,58 @@ mod tests {
                     s.starts_with("Notifications: cannot run ") && s.contains("libnotify"),
                     "{s}"
                 )
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_chime_is_a_well_formed_short_wav() {
+        let wav = chime_wav();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        let riff = u32::from_le_bytes(wav[4..8].try_into().unwrap()) as usize;
+        assert_eq!(riff + 8, wav.len());
+        let data = u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize;
+        assert_eq!(data + 44, wav.len());
+        let rate = u32::from_le_bytes(wav[24..28].try_into().unwrap());
+        let seconds = data as f32 / 2.0 / rate as f32;
+        assert!((0.2..0.5).contains(&seconds), "{seconds}s");
+        // it starts and ends in silence: no click
+        assert_eq!(&wav[44..46], &[0, 0]);
+        let last = i16::from_le_bytes(wav[wav.len() - 2..].try_into().unwrap());
+        assert!(last.abs() < 200, "{last}");
+        assert_eq!(sound_bytes("  ").unwrap(), wav);
+        assert!(sound_bytes("/no/such/sound.wav").is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_sound_goes_to_the_player_on_stdin_and_a_missing_player_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, log) = stand_in(dir.path(), "player");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        play_sound(
+            vec![script.display().to_string(), "-q".into()],
+            b"RIFFsound".to_vec(),
+            tx.clone(),
+        );
+        let got = wait_for(&log).await;
+        assert_eq!(got, "-q\nRIFFsound");
+        assert!(rx.try_recv().is_err(), "no complaint when the program ran");
+        play_sound(
+            vec![dir.path().join("no-such-player").display().to_string()],
+            Vec::new(),
+            tx,
+        );
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a status")
+            .expect("a status");
+        match status {
+            crate::events::AppEvent::SetStatus(s) => {
+                assert!(s.starts_with("Notification sound: cannot run "), "{s}")
             }
             other => panic!("{other:?}"),
         }
