@@ -27,11 +27,12 @@ pub fn facts(app: &App) -> Vec<(String, String)> {
     out.push((
         "loaded".into(),
         format!(
-            "{} communities, {} channels, {} messages, {} custom emoji",
+            "{} communities, {} channels, {} messages, {} custom emoji, {} stickers",
             app.guilds.len(),
             app.guild_channels.values().map(Vec::len).sum::<usize>() + app.private_channels.len(),
             app.messages.values().map(|m| m.len()).sum::<usize>(),
-            app.custom_emojis.len()
+            app.custom_emojis.len(),
+            app.guild_stickers.values().map(Vec::len).sum::<usize>()
         ),
     ));
     if let Some(gid) = app.active_guild_id() {

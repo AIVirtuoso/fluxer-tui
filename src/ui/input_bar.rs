@@ -7,23 +7,53 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-/// Rows the staged files take above the text: their names, under their
-/// thumbnails when any is a picture or a video the terminal can draw.
-pub fn attachment_strip_rows(app: &App) -> u16 {
-    if app.pending_attachments.is_empty() {
-        return 0;
-    }
-    let thumbs = app
-        .pending_attachments
-        .iter()
-        .any(|a| app.staged_thumbnail_slot(a).is_some());
-    if thumbs { THUMB_ROWS + 1 } else { 1 }
+/// One card of the strip: a staged file or a staged sticker.
+struct Card {
+    label: String,
+    slot: Option<crate::app::MediaSlot>,
+    /// Drawn in the card's middle row when there is no thumbnail.
+    mark: &'static str,
 }
 
-/// The strip: one card per staged file, side by side, `width` cells wide.
-/// A card is its thumbnail's marker cells (the media overlay draws the
-/// picture there) over its name and size; files without a picture get
-/// a paper clip. Cards that do not fit are counted at the end.
+/// The cards of the strip: the staged files first, then the staged
+/// stickers.
+fn strip_cards(app: &App) -> Vec<Card> {
+    let mut cards: Vec<Card> = Vec::new();
+    for a in &app.pending_attachments {
+        cards.push(Card {
+            label: format!("{} {}", a.filename, a.size_label()),
+            slot: app.staged_thumbnail_slot(a),
+            mark: "\u{1F4CE}",
+        });
+    }
+    for sticker in &app.pending_stickers {
+        cards.push(Card {
+            label: format!("{} sticker", sticker.name),
+            slot: app.staged_sticker_slot(sticker),
+            mark: "\u{1F5BC}",
+        });
+    }
+    cards
+}
+
+/// Rows the staged files and stickers take above the text: their names,
+/// under their thumbnails when any of them can be drawn.
+pub fn attachment_strip_rows(app: &App) -> u16 {
+    let cards = strip_cards(app);
+    if cards.is_empty() {
+        return 0;
+    }
+    if cards.iter().any(|c| c.slot.is_some()) {
+        THUMB_ROWS + 1
+    } else {
+        1
+    }
+}
+
+/// The strip: one card per staged file or sticker, side by side, `width`
+/// cells wide. A card is its thumbnail's marker cells (the media overlay
+/// draws the picture there) over its name; a file with no picture gets a
+/// paper clip. Cards that do not fit are counted at the end.
 fn attachment_strip(app: &App, width: u16) -> Vec<Line<'static>> {
     let rows = attachment_strip_rows(app) as usize;
     if rows == 0 {
@@ -35,19 +65,19 @@ fn attachment_strip(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new(); rows];
     let mut x = 0usize;
     let mut shown = 0usize;
-    for a in &app.pending_attachments {
-        let slot = app.staged_thumbnail_slot(a);
-        let (cols, prows) = slot
+    let cards = strip_cards(app);
+    for card in &cards {
+        let (cols, prows) = card
+            .slot
             .as_ref()
             .map(|s| (s.cols as usize, s.rows as usize))
             .unwrap_or((0, 0));
-        let label = format!("{} {}", a.filename, a.size_label());
-        let card_w = cols.max(label.width().min(20)).max(6);
+        let card_w = cols.max(card.label.width().min(20)).max(6);
         if x + card_w > width as usize {
             break;
         }
         let gap = if shown > 0 { 2 } else { 0 };
-        let k = slot.map(|s| app.register_media_slot(s));
+        let k = card.slot.clone().map(|s| app.register_media_slot(s));
         for (r, line) in lines.iter_mut().enumerate().take(thumb_rows) {
             line.push(Span::raw(" ".repeat(gap)));
             match k {
@@ -59,16 +89,16 @@ fn attachment_strip(app: &App, width: u16) -> Vec<Line<'static>> {
                     line.push(Span::raw(" ".repeat(card_w - cols)));
                 }
                 None if r == thumb_rows / 2 => {
-                    let mark = "\u{1F4CE}";
-                    let pad = card_w.saturating_sub(2) / 2;
+                    let mark_w = card.mark.width();
+                    let pad = card_w.saturating_sub(mark_w) / 2;
                     line.push(Span::raw(" ".repeat(pad)));
-                    line.push(Span::styled(mark, muted));
-                    line.push(Span::raw(" ".repeat(card_w.saturating_sub(pad + 2))));
+                    line.push(Span::styled(card.mark, muted));
+                    line.push(Span::raw(" ".repeat(card_w.saturating_sub(pad + mark_w))));
                 }
                 _ => line.push(Span::raw(" ".repeat(card_w))),
             }
         }
-        let name = fit(&label, card_w);
+        let name = fit(&card.label, card_w);
         let pad = card_w.saturating_sub(name.width());
         let name_line = &mut lines[rows - 1];
         name_line.push(Span::raw(" ".repeat(gap)));
@@ -77,7 +107,7 @@ fn attachment_strip(app: &App, width: u16) -> Vec<Line<'static>> {
         x += gap + card_w;
         shown += 1;
     }
-    let left = app.pending_attachments.len().saturating_sub(shown);
+    let left = cards.len().saturating_sub(shown);
     if left > 0 {
         lines[rows - 1].push(Span::styled(format!("  +{left} more"), muted));
     }
@@ -175,7 +205,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     } else {
         "Input (disabled)"
     };
-    let title: String = if app.pending_attachments.is_empty() {
+    let title: String = if app.pending_attachments.is_empty() && app.pending_stickers.is_empty() {
         title.to_string()
     } else {
         format!("{title} · {}", app.attachment_summary())
@@ -404,6 +434,38 @@ mod tests {
             .count();
         assert_eq!(marked, 1, "{:?}", lines[0]);
         assert!(lines[THUMB_ROWS as usize].to_string().contains("shot.png"));
+    }
+
+    #[test]
+    fn a_staged_sticker_gets_a_card_of_its_own() {
+        let mut app = dm_app();
+        app.pending_stickers.push(crate::app::StagedSticker {
+            id: "77".into(),
+            name: "shipit".into(),
+            animated: false,
+        });
+        // its name alone where pictures cannot be drawn
+        assert_eq!(attachment_strip_rows(&app), 1);
+        let lines = attachment_strip(&app, 60);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].to_string().contains("shipit sticker"));
+
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        assert_eq!(attachment_strip_rows(&app), THUMB_ROWS + 1);
+        let lines = attachment_strip(&app, 60);
+        let slots = app.media_slots.borrow();
+        assert_eq!(slots.len(), 1);
+        assert!(
+            slots[0].url.contains("/stickers/77.webp?size="),
+            "{}",
+            slots[0].url
+        );
+        assert!(
+            lines[THUMB_ROWS as usize]
+                .to_string()
+                .contains("shipit sticker")
+        );
     }
 
     fn draw(app: &mut App, w: u16, h: u16) -> Vec<String> {

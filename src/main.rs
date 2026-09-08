@@ -1250,7 +1250,8 @@ fn handle_input_focus_key(
             let has_ref = app.reply_to.is_some();
             let allow_send = !app.input_text().trim().is_empty()
                 || (is_forward && has_ref)
-                || !app.pending_attachments.is_empty();
+                || !app.pending_attachments.is_empty()
+                || !app.pending_stickers.is_empty();
             if app.active_channel_is_text() && app.can_send_in_active_channel() && allow_send {
                 let channel_id = match app.active_channel_id() {
                     Some(channel_id) => channel_id,
@@ -1286,6 +1287,13 @@ fn handle_input_focus_key(
                     app.dismiss_command_autocomplete();
                     let _ = app.take_input();
                     app.open_file_picker();
+                    return;
+                }
+                if let crate::slash_commands::OutgoingSlash::StickerPick(query) = &resolved {
+                    let query = query.clone();
+                    app.dismiss_command_autocomplete();
+                    let _ = app.take_input();
+                    open_stickers(app, &query);
                     return;
                 }
                 if matches!(resolved, crate::slash_commands::OutgoingSlash::Debug) {
@@ -1340,6 +1348,7 @@ fn handle_input_focus_key(
                 let _ = app.take_input();
                 let reply = app.reply_to.take();
                 let attachments = std::mem::take(&mut app.pending_attachments);
+                let stickers = std::mem::take(&mut app.pending_stickers);
                 app.message_scroll_from_bottom = 0;
                 if !attachments.is_empty() {
                     app.set_status(format!(
@@ -1352,11 +1361,14 @@ fn handle_input_focus_key(
                     client.clone(),
                     event_tx.clone(),
                     channel_id,
-                    content_to_send,
-                    reply,
-                    is_forward,
-                    tts,
-                    attachments,
+                    Outgoing {
+                        content: content_to_send,
+                        reply,
+                        is_forward,
+                        tts,
+                        attachments,
+                        stickers,
+                    },
                 );
             }
         }
@@ -1398,13 +1410,18 @@ fn handle_input_focus_key(
                 spawn_clipboard_attach(event_tx.clone());
             }
         }
-        // Ctrl+X: drop the most recently staged attachment.
+        // Ctrl+X: drop the last staged sticker, or the last staged file
+        // when no sticker is staged.
         KeyCode::Char('x') | KeyCode::Char('X')
             if key.modifiers.contains(KeyModifiers::CONTROL) =>
         {
-            match app.pending_attachments.pop() {
-                Some(a) => app.set_status(format!("Removed {}.", a.filename)),
-                None => app.set_status("No attachment staged."),
+            if let Some(sticker) = app.pending_stickers.pop() {
+                app.set_status(format!("Removed the {} sticker.", sticker.name));
+            } else {
+                match app.pending_attachments.pop() {
+                    Some(a) => app.set_status(format!("Removed {}.", a.filename)),
+                    None => app.set_status("Nothing staged."),
+                }
             }
         }
         KeyCode::Char(ch)
@@ -1633,6 +1650,44 @@ fn handle_key_event(
             KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
             KeyCode::PageUp => app.profile_scroll(-12),
             KeyCode::PageDown => app.profile_scroll(12),
+            _ => {}
+        }
+        return;
+    }
+
+    if app.sticker_picker.is_some() {
+        match key.code {
+            KeyCode::Esc => app.dismiss_sticker_picker(),
+            KeyCode::Up => app.sticker_picker_move(-1),
+            KeyCode::Down => app.sticker_picker_move(1),
+            KeyCode::PageUp => app.sticker_picker_move(-10),
+            KeyCode::PageDown => app.sticker_picker_move(10),
+            KeyCode::Home => app.sticker_picker_move(i32::MIN / 2),
+            KeyCode::End => app.sticker_picker_move(i32::MAX / 2),
+            KeyCode::Enter => {
+                if let Some(status) = app.sticker_picker_confirm() {
+                    app.set_status(status);
+                    if app.active_channel_is_text() && app.can_send_in_active_channel() {
+                        app.focus = Focus::Input;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = app.sticker_picker.as_mut() {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        p.query.clear();
+                    } else {
+                        p.query.pop();
+                    }
+                    app.filter_sticker_picker();
+                }
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(p) = app.sticker_picker.as_mut() {
+                    p.query.push(ch);
+                    app.filter_sticker_picker();
+                }
+            }
             _ => {}
         }
         return;
@@ -1891,6 +1946,14 @@ fn handle_key_event(
     }
 
     if key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+        && !block_ctrl_nav
+    {
+        open_stickers(app, "");
+        return;
+    }
+
+    if key.modifiers.contains(KeyModifiers::ALT)
         && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
         && !block_ctrl_nav
     {
@@ -2145,6 +2208,17 @@ fn schedule_needed_fetches(
         {
             spawn_guild_emojis_load(client.clone(), event_tx.clone(), guild_id.clone());
         }
+        // READY carries the stickers of every community, so this fetch is
+        // only for what it did not bring: a community that arrived without
+        // them, or a session with no gateway at all. Waiting for the READY
+        // keeps a request from racing it at every start.
+        if !app.guild_stickers.contains_key(&guild_id)
+            && app.gateway_ready_seen
+            && app.api_backoff_can_try(&format!("stickers:{guild_id}"))
+            && app.loading_stickers.insert(guild_id.clone())
+        {
+            spawn_guild_stickers_load(client.clone(), event_tx.clone(), guild_id.clone());
+        }
         if !app.guild_roles.contains_key(&guild_id)
             && !app.guild_roles_forbidden.contains(&guild_id)
             && app.api_backoff_can_try(&format!("roles:{guild_id}"))
@@ -2285,6 +2359,47 @@ fn spawn_guild_emojis_load(
                 let _ = event_tx.send(AppEvent::GuildEmojisFailed {
                     guild_id,
                     message: format!("Failed to load emojis: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Open the sticker picker and, when there is nothing to show, say why.
+fn open_stickers(app: &mut App, query: &str) {
+    app.open_sticker_picker(query);
+    let empty = app
+        .sticker_picker
+        .as_ref()
+        .is_some_and(|p| p.entries.is_empty());
+    if empty {
+        let loading = app
+            .guild_id_for_active_channel()
+            .or_else(|| app.active_guild_id())
+            .is_some_and(|g| app.loading_stickers.contains(&g));
+        app.dismiss_sticker_picker();
+        app.set_status(if loading {
+            "Loading this community's stickers, try again in a moment.".to_string()
+        } else {
+            "No stickers here: this community has none.".to_string()
+        });
+    }
+}
+
+fn spawn_guild_stickers_load(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    guild_id: String,
+) {
+    tokio::spawn(async move {
+        match client.guild_stickers(&guild_id).await {
+            Ok(stickers) => {
+                let _ = event_tx.send(AppEvent::GuildStickersLoaded { guild_id, stickers });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::GuildStickersFailed {
+                    guild_id,
+                    message: format!("Failed to load stickers: {err}"),
                 });
             }
         }
@@ -2655,16 +2770,30 @@ fn spawn_delete_message(
     });
 }
 
-fn spawn_send_message(
-    client: FluxerHttpClient,
-    event_tx: UnboundedSender<AppEvent>,
-    channel_id: String,
+/// Everything the compose box put on one outgoing message.
+struct Outgoing {
     content: String,
     reply: Option<crate::app::ReplyState>,
     is_forward: bool,
     tts: bool,
     attachments: Vec<StagedAttachment>,
+    stickers: Vec<crate::app::StagedSticker>,
+}
+
+fn spawn_send_message(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    message: Outgoing,
 ) {
+    let Outgoing {
+        content,
+        reply,
+        is_forward,
+        tts,
+        attachments,
+        stickers,
+    } = message;
     tokio::spawn(async move {
         let uploaded = if attachments.is_empty() {
             None
@@ -2678,6 +2807,7 @@ fn spawn_send_message(
                     let _ = event_tx.send(AppEvent::SendRestore {
                         content,
                         attachments,
+                        stickers,
                     });
                     return;
                 }
@@ -2707,6 +2837,11 @@ fn spawn_send_message(
             tts: if tts { Some(true) } else { None },
             message_reference,
             attachments: uploaded,
+            sticker_ids: if stickers.is_empty() {
+                None
+            } else {
+                Some(stickers.iter().map(|s| s.id.clone()).collect())
+            },
         };
 
         match client.send_message(&channel_id, &request).await {
@@ -2718,6 +2853,12 @@ fn spawn_send_message(
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::ApiError(format!("Failed to send message: {err}")));
+                // the stickers were only staged here: give them back
+                let _ = event_tx.send(AppEvent::SendRestore {
+                    content: String::new(),
+                    attachments: Vec::new(),
+                    stickers,
+                });
             }
         }
     });

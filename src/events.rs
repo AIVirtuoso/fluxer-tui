@@ -56,6 +56,14 @@ pub enum AppEvent {
         guild_id: String,
         message: String,
     },
+    GuildStickersLoaded {
+        guild_id: String,
+        stickers: Vec<crate::api::types::GuildStickerResponse>,
+    },
+    GuildStickersFailed {
+        guild_id: String,
+        message: String,
+    },
     GuildRolesLoaded {
         guild_id: String,
         roles: Vec<crate::api::types::GuildRoleResponse>,
@@ -141,6 +149,7 @@ pub enum AppEvent {
     SendRestore {
         content: String,
         attachments: Vec<crate::media::StagedAttachment>,
+        stickers: Vec<crate::app::StagedSticker>,
     },
     /// The pings overlay's list, from the mentions endpoint.
     MentionsLoaded {
@@ -256,6 +265,7 @@ pub fn apply_event(
         AppEvent::SendRestore {
             content,
             attachments,
+            stickers,
         } => {
             if !content.is_empty() {
                 if app.input_text().trim().is_empty() {
@@ -268,11 +278,15 @@ pub fn apply_event(
             app.pending_attachments.extend(attachments);
             app.pending_attachments
                 .truncate(crate::app::MAX_ATTACHMENTS_PER_MESSAGE);
+            app.pending_stickers.extend(stickers);
+            app.pending_stickers
+                .truncate(crate::app::MAX_STICKERS_PER_MESSAGE);
         }
         AppEvent::GatewayStatus(status) => {
             app.gateway_status = status;
             if status != GatewayStatus::Connected {
                 app.gateway_lazy_guild_id = None;
+                app.gateway_ready_seen = false;
                 app.clear_all_typing();
             }
         }
@@ -303,6 +317,11 @@ pub fn apply_event(
                         if !guild.roles.is_empty() {
                             app.merge_guild_roles_from_gateway(&guild_id, guild.roles);
                         }
+                        // The gateway sends the whole collection with
+                        // every guild, so the picker has the stickers
+                        // without an HTTP call, and a guild with none is
+                        // answered too.
+                        app.set_guild_stickers(&guild_id, guild.stickers);
 
                         for voice_state in guild.voice_states {
                             app.update_voice_state(voice_state);
@@ -313,10 +332,12 @@ pub fn apply_event(
                         app.set_read_states(ready.read_state);
                     }
                     app.gateway_lazy_guild_id = None;
+                    app.gateway_ready_seen = true;
                 }
             }
             "RESUMED" => {
                 app.gateway_lazy_guild_id = None;
+                app.gateway_ready_seen = true;
             }
             "USER_UPDATE" => {
                 if let Some(user) = read::<UserPrivateResponse>(&kind, payload) {
@@ -355,6 +376,7 @@ pub fn apply_event(
                     if !event.roles.is_empty() {
                         app.merge_guild_roles_from_gateway(&guild_id, event.roles);
                     }
+                    app.set_guild_stickers(&guild_id, event.stickers);
                     for voice_state in event.voice_states {
                         app.update_voice_state(voice_state);
                     }
@@ -511,6 +533,16 @@ pub fn apply_event(
                     app.set_guild_emojis(&update.guild_id, update.emojis);
                 }
             }
+            "GUILD_STICKERS_UPDATE" => {
+                #[derive(serde::Deserialize)]
+                struct StickerUpdate {
+                    guild_id: String,
+                    stickers: Vec<crate::api::types::GuildStickerResponse>,
+                }
+                if let Some(update) = read::<StickerUpdate>(&kind, payload) {
+                    app.set_guild_stickers(&update.guild_id, update.stickers);
+                }
+            }
             "GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
                 #[derive(serde::Deserialize)]
                 struct GuildRolePayload {
@@ -602,6 +634,14 @@ pub fn apply_event(
         AppEvent::GuildEmojisFailed { guild_id, message } => {
             app.loading_emojis.remove(&guild_id);
             app.api_backoff_after_failure(format!("emojis:{guild_id}"));
+            app.set_status(message);
+        }
+        AppEvent::GuildStickersLoaded { guild_id, stickers } => {
+            app.set_guild_stickers(&guild_id, stickers);
+        }
+        AppEvent::GuildStickersFailed { guild_id, message } => {
+            app.loading_stickers.remove(&guild_id);
+            app.api_backoff_after_failure(format!("stickers:{guild_id}"));
             app.set_status(message);
         }
         AppEvent::GuildRolesLoaded { guild_id, roles } => {
@@ -697,6 +737,7 @@ pub fn apply_event(
                 mentions: vec![],
                 mention_roles: vec![],
                 attachments: vec![],
+                stickers: vec![],
                 channel_type: None,
                 embeds: vec![],
                 reactions: vec![],

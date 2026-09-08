@@ -275,6 +275,20 @@ impl FluxerHttpClient {
         .await
     }
 
+    pub async fn guild_stickers(
+        &self,
+        guild_id: &str,
+    ) -> Result<Vec<crate::api::types::GuildStickerResponse>> {
+        self.send_json::<(), (), Vec<crate::api::types::GuildStickerResponse>>(
+            Method::GET,
+            &format!("/guilds/{guild_id}/stickers"),
+            None::<&()>,
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
     pub async fn guild_roles(
         &self,
         guild_id: &str,
