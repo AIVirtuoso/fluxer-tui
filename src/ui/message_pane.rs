@@ -1869,7 +1869,7 @@ fn render_link(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-fn format_timestamp(raw: &str, clock_12h: bool) -> String {
+pub fn format_timestamp(raw: &str, clock_12h: bool) -> String {
     use chrono::{DateTime, Local, Utc};
 
     if let Ok(dt) = raw.parse::<DateTime<Utc>>() {

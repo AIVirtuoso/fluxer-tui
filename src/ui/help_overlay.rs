@@ -19,6 +19,7 @@ Focus & navigation
   i - jump to input (text channel with send permission)
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
+  p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -37,7 +38,7 @@ Messages
   Scroll up near the top - older messages load automatically
   s - select last message (selection mode)
   r - reply to selected message
-  p - profile of the selected message's author (p again: picture full size; Esc closes)
+  u - profile of the selected message's author (p there: picture full size; Esc closes)
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
   e - react: opens emoji picker on selected message (Enter to send reaction, Esc cancels)
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)

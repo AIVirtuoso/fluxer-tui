@@ -582,6 +582,67 @@ impl FluxerHttpClient {
         Ok(())
     }
 
+    /// The messages that mentioned the user, newest first, as the web
+    /// client's inbox lists them: by name, by role and with @everyone,
+    /// in communities and direct messages alike, up to `limit` (100).
+    pub async fn recent_mentions(&self, limit: u32) -> Result<Vec<MessageResponse>> {
+        #[derive(Serialize)]
+        struct Query {
+            limit: u32,
+        }
+        self.send_json::<Query, (), Vec<MessageResponse>>(
+            Method::GET,
+            "/users/@me/mentions",
+            Some(&Query { limit }),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Take one message off the user's mention list.
+    pub async fn dismiss_mention(&self, message_id: &str) -> Result<()> {
+        let resp = self
+            .inner
+            .request(
+                Method::DELETE,
+                self.url(&format!("/users/@me/mentions/{message_id}")),
+            )
+            .header("X-Fluxer-Platform", "desktop")
+            .header("Authorization", self.token.as_deref().unwrap_or(""))
+            .send()
+            .await
+            .context("failed to dismiss mention")?;
+        if !resp.status().is_success() && resp.status() != StatusCode::NO_CONTENT {
+            bail!("dismiss mention failed: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// Take several messages off the user's mention list at once (the
+    /// server takes up to 100 per call).
+    pub async fn dismiss_mentions(&self, message_ids: &[String]) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            message_ids: &'a [String],
+        }
+        for chunk in message_ids.chunks(100) {
+            let resp = self
+                .inner
+                .request(Method::POST, self.url("/users/@me/mentions/read"))
+                .header("X-Fluxer-Platform", "desktop")
+                .header("Authorization", self.token.as_deref().unwrap_or(""))
+                .json(&Body { message_ids: chunk })
+                .send()
+                .await
+                .context("failed to dismiss mentions")?;
+            if !resp.status().is_success() && resp.status() != StatusCode::NO_CONTENT {
+                bail!("dismiss mentions failed: {}", resp.status());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn add_reaction(
         &self,
         channel_id: &str,
