@@ -2,12 +2,18 @@
 
 TUI for [Fluxer](https://fluxer.app), built with Ratatui.
 
-## What this fork adds
+## What this client does differently
 
-This is a fork of [dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui).
-It keeps upstream's config file, keys and slash commands and adds the
-following on top of upstream's master (April 2026). Each item has its
-own section or table row further down.
+fluxer-tui began as a fork of
+[dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui) and is
+developed on its own now; that client is called "upstream" below. This one
+keeps its config file, keys and slash commands and differs as follows, set
+against upstream's master of April 2026. Each item has its own section or
+table row further down.
+
+Bugs and feature requests belong in [this client's own issue
+tracker](https://github.com/AIVirtuoso/fluxer-tui/issues); upstream cannot
+act on them.
 
 **Login and packaging**
 
@@ -109,7 +115,7 @@ own section or table row further down.
   the selection or the word at the cursor, and undo/redo with
   **Ctrl+Z**/**Ctrl+Y**; the box scrolls to keep the cursor in view.
   Upstream only appends and deletes at the end (see "Editing the
-  message you are writing"). Keyboard only: this fork has no mouse
+  message you are writing"). Keyboard only: this client has no mouse
   support and will not get any.
 - **Attach any kind of file.** A file picker (**Ctrl+F** or `/attach`),
   `/attach <path>`, and **Ctrl+V** for the image or the files on the
@@ -163,7 +169,7 @@ cargo run --release
 
 ## Install with cargo
 
-The fork installs straight from git, like upstream. Name the package: the
+The client installs straight from git. Name the package: the
 repository also holds `scripts/gen-emoji-aliases`, a small tool that
 generates the emoji alias table, and cargo asks which one to install
 otherwise.
@@ -743,7 +749,7 @@ instead of a display, which is how the console renderer is tested.
 
 ## License
 
-Copyright (C) 2026 polonius-dev and the fluxer-tui fork contributors.
+Copyright (C) 2026 polonius-dev and the fluxer-tui contributors.
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -755,18 +761,20 @@ Public License in `LICENSE` for details.
 
 ### Why there are two license files
 
-The fork builds on [dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui),
+This client started from [dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui),
 which is MIT-licensed, and the MIT license permits redistribution under
-stricter terms as long as its notice is kept.
+stricter terms as long as its notice is kept. Developing separately
+changes nothing about that: the obligation follows the code, not the
+relationship between the repositories.
 
-- Everything that was already in the upstream repository when the fork
+- Everything that was already in the upstream repository when this one
   branched off (upstream commit `dc78802`, 2026-04-13) stays under the
   MIT license. Its notice is in `LICENSE-MIT` and must travel with every
   copy of this program, source or binary.
-- Everything added in the fork since then, the commits that
+- Everything added since then, the commits that
   `git log dc78802..master` lists, is licensed GPL-3.0-or-later. One
-  outside contribution made while the fork was still labelled MIT keeps
-  the terms it was offered under.
+  outside contribution made while this repository was still labelled MIT
+  keeps the terms it was offered under.
 
 The combined work is therefore distributed under the GPL: use it, modify
 it and redistribute it under those terms, keeping both notices.

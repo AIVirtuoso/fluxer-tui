@@ -36,7 +36,7 @@
 
         meta = {
           description = "TUI chat client for the Fluxer messaging platform";
-          homepage = "https://github.com/dogbonewish/fluxer-tui";
+          homepage = "https://github.com/AIVirtuoso/fluxer-tui";
           license = pkgs.lib.licenses.gpl3Plus;
           mainProgram = "fluxer-tui";
         };
