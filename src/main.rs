@@ -1435,6 +1435,19 @@ fn handle_input_focus_key(
     }
 }
 
+/// The selected message to the clipboard and the cut buffer, with a
+/// status line saying which of the two took it: on the console, where
+/// no clipboard program answers, Alt+V in the input is the way back to
+/// the text.
+fn copy_selected_message(app: &mut App) {
+    match app.copy_selected_message() {
+        Some(true) => app.set_status("Copied the message (Alt+V pastes it in the input)."),
+        Some(false) => app
+            .set_status("Copied the message: no clipboard program, Alt+V pastes it in the input."),
+        None => app.set_status("Nothing to copy: the message has no text."),
+    }
+}
+
 fn handle_key_event(
     app: &mut App,
     key: KeyEvent,
@@ -1925,6 +1938,17 @@ fn handle_key_event(
     }
 
     match key.code {
+        // Ctrl+C with a message selected copies it instead of quitting:
+        // that is the key the compose box uses for its own selection,
+        // and the one a terminal user reaches for. Esc drops the
+        // selection, and q quits from anywhere outside the input.
+        KeyCode::Char('c')
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.focus == Focus::Messages
+                && app.selected_message_index.is_some() =>
+        {
+            copy_selected_message(app);
+        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
@@ -2036,6 +2060,16 @@ fn handle_key_event(
                 app.selected_message_index = Some(count.saturating_sub(1));
                 app.clamp_scroll_to_selected_message();
             }
+        }
+        // y = copy the selected message (Ctrl+C does the same)
+        KeyCode::Char('y')
+            if app.focus == Focus::Messages
+                && app.selected_message_index.is_some()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            copy_selected_message(app);
         }
         // r = reply mode
         KeyCode::Char('r')

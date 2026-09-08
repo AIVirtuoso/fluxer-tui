@@ -9,7 +9,8 @@ const HELP: &str = r#"Global (almost any screen)
   F1 - keybindings (this overlay)
   F2 - settings (UI preferences; saved to config)
   Ctrl+H - keybindings when focus is not the message input
-  Ctrl+C - quit          Ctrl+L - log out and quit
+  Ctrl+C - quit (it copies instead when a message or input text is selected)
+  Ctrl+L - log out and quit
   q - quit (when not typing in input)
 
 Focus & navigation
@@ -37,6 +38,9 @@ Messages
   G - jump to the newest message; while scrolled up, the view stays put as messages arrive
   Scroll up near the top - older messages load automatically
   s - select last message (selection mode)
+  y or Ctrl+C - copy the selected message: its text and the links of its files, to
+           the system clipboard where wl-copy or xclip is there, and always to the
+           cut buffer, so Alt+V pastes it in the input (that is the way on the console)
   r - reply to selected message
   u - profile of the selected message's author (p there: picture full size; Esc closes)
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
@@ -57,7 +61,7 @@ Input
   Ctrl+Backspace, Ctrl+H, Ctrl+W / Alt+D - delete word before / after the cursor
   Alt+K - delete to the end of the line     Ctrl+U - clear input
   Shift+arrows, or Ctrl+Space then arrows - select; Esc drops the selection
-  Ctrl+C / Ctrl+X - copy / cut the selection (also to wl-copy or xclip)
+  Ctrl+C / Ctrl+X - copy / cut the selected text here (also to wl-copy or xclip)
   Alt+V - paste what was cut or copied here; Ctrl+V - the system clipboard
   Ctrl+B bold  Ctrl+I italic  Alt+U underline  Ctrl+S strike  Alt+C code  Alt+P spoiler
            - around the selection or the word at the cursor; again removes them
