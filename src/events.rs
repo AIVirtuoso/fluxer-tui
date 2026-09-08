@@ -142,6 +142,13 @@ pub enum AppEvent {
         content: String,
         attachments: Vec<crate::media::StagedAttachment>,
     },
+    /// The pings overlay's list, from the mentions endpoint.
+    MentionsLoaded {
+        messages: Vec<MessageResponse>,
+    },
+    MentionsFailed {
+        message: String,
+    },
     ProfileLoaded {
         user_id: String,
         guild_id: Option<String>,
@@ -222,6 +229,12 @@ pub fn apply_event(
                     if n == 1 { "" } else { "s" }
                 ));
             }
+        }
+        AppEvent::MentionsLoaded { messages } => {
+            app.set_pings_loaded(messages);
+        }
+        AppEvent::MentionsFailed { message } => {
+            app.set_pings_failed(message);
         }
         AppEvent::ProfileLoaded {
             user_id,
@@ -572,6 +585,7 @@ pub fn apply_event(
             messages,
         } => {
             app.set_channel_messages(&channel_id, messages);
+            app.apply_pending_jump(&channel_id);
         }
         AppEvent::MessagesFailed {
             channel_id,
@@ -615,6 +629,7 @@ pub fn apply_event(
             if n < 50 {
                 app.messages_older_exhausted.insert(channel_id.clone());
             }
+            app.older_page_for_jump(&channel_id, true);
             if n == 0 {
                 app.set_transient_status(
                     "Reached the beginning of message history.",
@@ -626,6 +641,7 @@ pub fn apply_event(
             channel_id,
             message,
         } => {
+            app.older_page_for_jump(&channel_id, false);
             app.loading_older_messages.remove(&channel_id);
             app.set_status(message);
         }

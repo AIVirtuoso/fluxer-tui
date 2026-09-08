@@ -74,6 +74,9 @@ own section or table row further down.
   while you write. Upstream put the line inside the box, only while it
   was empty, and the whole screen shifted by a row every time someone
   started or stopped (see "Interface overview").
+- **A pings list:** **p** opens the messages that mentioned you, newest
+  first, across every community and direct message, the way the web
+  client's inbox does; **Enter** jumps to one (see "Interface overview").
 - **Others see you typing:** the client tells the channel while you
   write, with the web client's timing, and a switch (**F2** or
   `send_typing = false`) keeps it to itself. Upstream never sent it.
@@ -519,6 +522,17 @@ left margin, and a tinted background in the Fluxer theme. When the
 selected message is a reply, the message it answers is marked with ↩ in
 the margin, as long as it is loaded.
 
+**p** (from the Servers, Channels or Messages focus) opens the **pings**
+list: the messages that mentioned you, newest first, from every
+community and direct message, as the web client's inbox shows them. Each
+entry names the community and channel, the time, the author and the
+start of the message. **↑** / **↓** move, **Enter** goes to the message:
+the channel opens and the message is selected once its history is
+loaded; when it is older than the loaded history, older pages are
+fetched until it turns up. **x** takes an entry off the list and **X** all of them, on the
+server too, so the web client agrees; **R** reloads; **Esc** or **q**
+close. The profile of a selected message's author is on **u** now.
+
 
 ## Keyboard shortcuts
 
@@ -531,6 +545,7 @@ the margin, as long as it is loaded.
 | **Left** / **h** | Previous focus. |
 | **Right** / **l** | Next focus. |
 | **i** | Jump to **Input** (text channel, if you can send). |
+| **p** | **Pings**: the messages that mentioned you, newest first, from every community and direct message (see "Interface overview"). **↑** / **↓** move, **Enter** jumps to one, **x** dismisses it, **X** dismisses all, **R** reloads, **Esc** / **q** close. |
 | **Enter** | On a **link** channel: open URL in browser. On a **text** channel: jump to **Input**. |
 | **Esc** | Clear message selection; focus **Channels**. |
 | **↑** / **k** | Move selection / scroll (depends on focus; see below). |
@@ -573,7 +588,7 @@ Changing channels marks read state for the new channel when applicable.
 | **s** | **Select** mode: select the latest message (start of thread for reply / react / forward). |
 | **G** | Jump to the **newest** message (also from the Servers and Channels focus). While you are scrolled up, the view stays on the message you are reading as new messages arrive or older ones load. |
 | **r** | **Reply** to the selected message (only in select mode). Moves focus to **Input** with reply state set. |
-| **p** | **Profile** of the selected message's author: name, badges, pronouns, bio, when they joined Fluxer and the community, roles, connections, mutual communities and friends. **↑** / **↓** scroll; **p** again shows the profile picture full size; **Esc** / **q** close. |
+| **u** | **Profile** of the selected message's author: name, badges, pronouns, bio, when they joined Fluxer and the community, roles, connections, mutual communities and friends. **↑** / **↓** scroll; **p** shows the profile picture full size; **Esc** / **q** close. |
 | **e** | **React**: pick an emoji (**Enter** sends the reaction via API; **Esc** cancels). |
 | **f** | **Forward**: optional note, switch target channel (**Ctrl+K** or list), **Enter** to send (reference type forward). |
 | **Ctrl+E** | **Edit** the selected message (your messages only; **Enter** in input to save, **Esc** to cancel). |

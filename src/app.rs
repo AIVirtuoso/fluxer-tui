@@ -715,6 +715,21 @@ impl std::fmt::Debug for ImagePreviewState {
 }
 
 /// The profile popup: whose profile, and what the API answered.
+/// The pings overlay: the messages that mentioned the user, newest
+/// first, as the web client's inbox lists them.
+#[derive(Debug, Clone)]
+pub struct PingsView {
+    pub state: PingsState,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum PingsState {
+    Loading,
+    Ready(Vec<MessageResponse>),
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -818,6 +833,13 @@ pub struct App {
     pub typing_users: HashMap<Snowflake, HashMap<Snowflake, Instant>>,
     /// The user's own typing, told to the channel; see [`OwnTyping`].
     pub own_typing: OwnTyping,
+    /// The pings overlay while it is open.
+    pub pings: Option<PingsView>,
+    /// A message to select once its channel's history is loaded:
+    /// (channel, message), set by a jump from the pings overlay.
+    pub pending_jump: Option<(String, String)>,
+    /// Older pages fetched for the jump so far.
+    pub pending_jump_pages: u32,
     pub gateway_status: GatewayStatus,
     pub gateway_lazy_guild_id: Option<String>,
     pub status_message: String,
@@ -999,6 +1021,9 @@ impl App {
             read_states: HashMap::new(),
             typing_users: HashMap::new(),
             own_typing: OwnTyping::default(),
+            pings: None,
+            pending_jump: None,
+            pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
             gateway_lazy_guild_id: None,
             status_message: String::new(),
@@ -2765,6 +2790,220 @@ impl App {
             scroll: 0,
         });
         Some((msg.author.id.clone(), guild_id))
+    }
+
+    /// How many pings are asked for; the server allows up to 100.
+    pub const PINGS_LIMIT: u32 = 50;
+
+    /// Open the pings overlay, empty until the list arrives.
+    pub fn open_pings(&mut self) {
+        self.show_settings = false;
+        self.show_server_notifications = false;
+        self.show_help = false;
+        self.dismiss_image_preview();
+        self.profile = None;
+        self.channel_picker = None;
+        self.pings = Some(PingsView {
+            state: PingsState::Loading,
+            selected: 0,
+        });
+    }
+
+    pub fn dismiss_pings(&mut self) {
+        self.pings = None;
+    }
+
+    pub fn set_pings_loaded(&mut self, messages: Vec<MessageResponse>) {
+        for message in &messages {
+            self.merge_message_embedded_members(message);
+            merge_user_cache(&mut self.user_cache, [message.author.clone()]);
+        }
+        if let Some(view) = &mut self.pings {
+            view.state = PingsState::Ready(messages);
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_pings_failed(&mut self, message: String) {
+        if let Some(view) = &mut self.pings {
+            view.state = PingsState::Failed(message);
+        }
+    }
+
+    pub fn pings_messages(&self) -> &[MessageResponse] {
+        match &self.pings {
+            Some(PingsView {
+                state: PingsState::Ready(messages),
+                ..
+            }) => messages,
+            _ => &[],
+        }
+    }
+
+    pub fn pings_selected(&self) -> Option<&MessageResponse> {
+        let view = self.pings.as_ref()?;
+        self.pings_messages().get(view.selected)
+    }
+
+    pub fn pings_move(&mut self, delta: isize) {
+        let count = self.pings_messages().len();
+        if let Some(view) = &mut self.pings {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
+    /// Where a ping came from: the community, if any, and the channel.
+    pub fn ping_location(&self, message: &MessageResponse) -> (Option<String>, String) {
+        let channel = self.channel_by_id(&message.channel_id);
+        let guild = channel
+            .and_then(|c| c.guild_id.clone())
+            .or_else(|| self.guild_id_for_channel(&message.channel_id))
+            .and_then(|gid| self.guilds.iter().find(|g| g.id == gid))
+            .map(|g| g.name.clone());
+        let name = match channel {
+            Some(c) => crate::ui::sidebar::channel_name(self, c),
+            None => format!(
+                "unknown-{}",
+                &message.channel_id[message.channel_id.len().saturating_sub(4)..]
+            ),
+        };
+        (guild, name)
+    }
+
+    fn server_for_channel(&self, channel_id: &str) -> Option<ServerSelection> {
+        if self.private_channels.iter().any(|c| c.id == channel_id) {
+            return Some(ServerSelection::DirectMessages);
+        }
+        self.guild_id_for_channel(channel_id)
+            .map(ServerSelection::Guild)
+    }
+
+    /// Go to the selected ping: its community and channel now, the
+    /// message itself once the channel's history is there.
+    pub fn pings_jump(&mut self) -> bool {
+        let Some(message) = self.pings_selected().cloned() else {
+            return false;
+        };
+        let Some(server) = self.server_for_channel(&message.channel_id) else {
+            self.set_status("That channel is not on your list any more.");
+            return false;
+        };
+        self.pings = None;
+        self.selected_server = server;
+        self.selected_channel_id = Some(message.channel_id.clone());
+        self.message_scroll_from_bottom = 0;
+        self.selected_message_index = None;
+        self.normalize_selection();
+        self.focus = Focus::Messages;
+        self.pending_jump = Some((message.channel_id.clone(), message.id.clone()));
+        self.pending_jump_pages = 0;
+        self.apply_pending_jump(&message.channel_id);
+        true
+    }
+
+    /// Older pages a jump fetches before giving up (50 messages each).
+    pub const JUMP_MAX_PAGES: u32 = 40;
+
+    /// Whether a jump is waiting for older messages of the active
+    /// channel; a jump whose channel the user has left is dropped.
+    pub fn jump_wants_older(&mut self) -> bool {
+        let Some((channel, _)) = self.pending_jump.clone() else {
+            return false;
+        };
+        if self.active_channel_id().as_deref() != Some(channel.as_str()) {
+            self.pending_jump = None;
+            return false;
+        }
+        self.messages_loaded.contains(&channel) && !self.messages_older_exhausted.contains(&channel)
+    }
+
+    /// An older page arrived, or failed to, for a channel.
+    pub fn older_page_for_jump(&mut self, channel_id: &str, ok: bool) {
+        if self
+            .pending_jump
+            .as_ref()
+            .is_none_or(|(c, _)| c != channel_id)
+        {
+            return;
+        }
+        if !ok {
+            self.pending_jump = None;
+            return;
+        }
+        self.pending_jump_pages += 1;
+        self.apply_pending_jump(channel_id);
+    }
+
+    /// Select the message a jump was for, if its channel's history is
+    /// loaded (called again when it arrives).
+    pub fn apply_pending_jump(&mut self, channel_id: &str) {
+        let Some((channel, message_id)) = self.pending_jump.clone() else {
+            return;
+        };
+        if channel != channel_id || !self.messages_loaded.contains(channel_id) {
+            return;
+        }
+        let index = self
+            .messages
+            .get(channel_id)
+            .and_then(|messages| messages.iter().position(|m| m.id == message_id));
+        if let Some(index) = index {
+            self.pending_jump = None;
+            self.selected_message_index = Some(index);
+            self.clamp_scroll_to_selected_message();
+            // the pane would otherwise put the view back where it was,
+            // since the history just grew under it
+            self.pane_anchor = None;
+            if self
+                .status_message
+                .starts_with("Loading older messages to reach")
+            {
+                self.set_transient_status("Here is the ping.", Self::TRANSIENT_STATUS_DURATION);
+            }
+            return;
+        }
+        // not in the loaded history: older pages are fetched (see
+        // `jump_wants_older`) until it turns up or the channel's beginning does
+        if self.messages_older_exhausted.contains(channel_id)
+            || self.pending_jump_pages >= Self::JUMP_MAX_PAGES
+        {
+            self.pending_jump = None;
+            self.set_status("That message is not in the channel's history any more.");
+        } else {
+            self.set_status("Loading older messages to reach the ping…");
+        }
+    }
+
+    /// Take the selected ping off the list; its id, for the server.
+    pub fn pings_dismiss_selected(&mut self) -> Option<String> {
+        let view = self.pings.as_mut()?;
+        let PingsState::Ready(messages) = &mut view.state else {
+            return None;
+        };
+        if view.selected >= messages.len() {
+            return None;
+        }
+        let removed = messages.remove(view.selected);
+        if view.selected >= messages.len() {
+            view.selected = messages.len().saturating_sub(1);
+        }
+        Some(removed.id)
+    }
+
+    /// Empty the list; the ids, for the server.
+    pub fn pings_take_all(&mut self) -> Vec<String> {
+        let Some(view) = self.pings.as_mut() else {
+            return Vec::new();
+        };
+        let PingsState::Ready(messages) = &mut view.state else {
+            return Vec::new();
+        };
+        view.selected = 0;
+        std::mem::take(messages).into_iter().map(|m| m.id).collect()
     }
 
     pub fn dismiss_profile(&mut self) {
@@ -5861,5 +6100,190 @@ mod own_typing_tests {
         assert_eq!(own.due(secs(t0, 5.0)), None);
         own.note("hi", Some("c2"), true, secs(t0, 6.0));
         assert_eq!(own.due(secs(t0, 7.5)).as_deref(), Some("c2"));
+    }
+}
+
+#[cfg(test)]
+mod pings_tests {
+    use super::*;
+    use crate::api::types::{CHANNEL_DM, CHANNEL_GUILD_TEXT, ChannelResponse, GuildResponse};
+
+    fn ping(id: &str, channel_id: &str, content: &str) -> MessageResponse {
+        MessageResponse {
+            id: id.to_string(),
+            channel_id: channel_id.to_string(),
+            author: UserPartialResponse {
+                id: "u2".to_string(),
+                username: "ada".to_string(),
+                ..Default::default()
+            },
+            content: content.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn app_with_places() -> App {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        app.guilds.push(GuildResponse {
+            id: "g1".to_string(),
+            name: "Lab".to_string(),
+            ..Default::default()
+        });
+        app.guild_channels.insert(
+            "g1".to_string(),
+            vec![ChannelResponse {
+                id: "c1".to_string(),
+                guild_id: Some("g1".to_string()),
+                name: "general".to_string(),
+                kind: CHANNEL_GUILD_TEXT,
+                ..Default::default()
+            }],
+        );
+        app.private_channels.push(ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            recipients: vec![UserPartialResponse {
+                id: "u2".to_string(),
+                username: "ada".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        app
+    }
+
+    #[test]
+    fn a_ping_knows_its_community_and_channel() {
+        let app = app_with_places();
+        assert_eq!(
+            app.ping_location(&ping("1", "c1", "hi")),
+            (Some("Lab".to_string()), "general".to_string())
+        );
+        let (guild, name) = app.ping_location(&ping("2", "dm1", "hi"));
+        assert_eq!(guild, None);
+        assert!(name.contains("ada"), "{name}");
+        let (_, gone) = app.ping_location(&ping("3", "zz9999", "hi"));
+        assert_eq!(gone, "unknown-9999");
+    }
+
+    #[test]
+    fn enter_goes_to_the_channel_and_selects_the_message_once_loaded() {
+        let mut app = app_with_places();
+        app.open_pings();
+        assert!(matches!(
+            app.pings.as_ref().map(|v| &v.state),
+            Some(PingsState::Loading)
+        ));
+        app.set_pings_loaded(vec![ping("20", "c1", "second"), ping("10", "c1", "first")]);
+        app.pings_move(1);
+        assert_eq!(app.pings_selected().map(|m| m.id.as_str()), Some("10"));
+        app.pings_move(5);
+        assert_eq!(app.pings_selected().map(|m| m.id.as_str()), Some("10"));
+        assert!(app.pings_jump());
+        assert!(app.pings.is_none());
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g1".to_string())
+        );
+        assert_eq!(app.selected_channel_id.as_deref(), Some("c1"));
+        assert_eq!(app.focus, Focus::Messages);
+        // the history is not there yet: the jump waits
+        assert_eq!(app.pending_jump, Some(("c1".to_string(), "10".to_string())));
+        assert_eq!(app.selected_message_index, None);
+        app.set_channel_messages(
+            "c1",
+            vec![ping("10", "c1", "first"), ping("20", "c1", "second")],
+        );
+        app.apply_pending_jump("c1");
+        assert_eq!(app.pending_jump, None);
+        assert_eq!(app.selected_message_index, Some(0));
+    }
+
+    #[test]
+    fn a_jump_past_the_loaded_history_fetches_older_pages_until_it_finds_the_message() {
+        let mut app = app_with_places();
+        app.open_pings();
+        app.set_pings_loaded(vec![ping("5", "dm1", "old")]);
+        app.set_channel_messages("dm1", vec![ping("10", "dm1", "newer")]);
+        app.messages_older_exhausted.remove("dm1");
+        assert!(app.pings_jump());
+        assert_eq!(app.selected_server, ServerSelection::DirectMessages);
+        // not there yet: the jump waits for older pages of this channel
+        assert!(app.pending_jump.is_some());
+        assert!(app.jump_wants_older());
+        assert!(
+            app.status_message.contains("older messages"),
+            "{}",
+            app.status_message
+        );
+        // a page without it keeps waiting
+        app.prepend_channel_messages("dm1", vec![ping("7", "dm1", "between")]);
+        app.older_page_for_jump("dm1", true);
+        assert!(app.pending_jump.is_some());
+        assert_eq!(app.pending_jump_pages, 1);
+        // the page with it selects it
+        app.prepend_channel_messages("dm1", vec![ping("5", "dm1", "old")]);
+        app.older_page_for_jump("dm1", true);
+        assert_eq!(app.pending_jump, None);
+        assert_eq!(app.selected_message_index, Some(0));
+    }
+
+    #[test]
+    fn a_jump_gives_up_at_the_channel_beginning_or_when_the_user_leaves() {
+        let mut app = app_with_places();
+        app.open_pings();
+        app.set_pings_loaded(vec![ping("5", "dm1", "old"), ping("6", "c1", "x")]);
+        // fewer than a page: the history is complete, the message is gone
+        app.set_channel_messages("dm1", vec![ping("10", "dm1", "newer")]);
+        assert!(app.pings_jump());
+        assert_eq!(app.pending_jump, None);
+        assert!(
+            app.status_message.contains("not in the channel's history"),
+            "{}",
+            app.status_message
+        );
+        // a jump still waiting is dropped once the user goes elsewhere
+        app.open_pings();
+        app.set_pings_loaded(vec![ping("5", "dm1", "old")]);
+        app.messages_older_exhausted.remove("dm1");
+        assert!(app.pings_jump());
+        assert!(app.pending_jump.is_some());
+        app.selected_channel_id = Some("c1".to_string());
+        assert!(!app.jump_wants_older());
+        assert_eq!(app.pending_jump, None);
+        // and a failed page ends it too
+        app.selected_channel_id = Some("dm1".to_string());
+        app.open_pings();
+        app.set_pings_loaded(vec![ping("5", "dm1", "old")]);
+        assert!(app.pings_jump());
+        app.older_page_for_jump("dm1", false);
+        assert_eq!(app.pending_jump, None);
+    }
+
+    #[test]
+    fn dismissing_takes_pings_off_the_list_and_hands_back_their_ids() {
+        let mut app = app_with_places();
+        app.open_pings();
+        app.set_pings_loaded(vec![
+            ping("3", "c1", "c"),
+            ping("2", "c1", "b"),
+            ping("1", "c1", "a"),
+        ]);
+        app.pings_move(2);
+        assert_eq!(app.pings_dismiss_selected().as_deref(), Some("1"));
+        assert_eq!(app.pings_selected().map(|m| m.id.as_str()), Some("2"));
+        assert_eq!(app.pings_take_all(), vec!["3".to_string(), "2".to_string()]);
+        assert!(app.pings_messages().is_empty());
+        assert_eq!(app.pings_dismiss_selected(), None);
+        assert!(!app.pings_jump());
     }
 }

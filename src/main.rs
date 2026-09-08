@@ -1558,6 +1558,38 @@ fn handle_key_event(
         return;
     }
 
+    if app.pings.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.dismiss_pings(),
+            KeyCode::Up | KeyCode::Char('k') => app.pings_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.pings_move(1),
+            KeyCode::PageUp => app.pings_move(-8),
+            KeyCode::PageDown => app.pings_move(8),
+            KeyCode::Home => app.pings_move(isize::MIN / 2),
+            KeyCode::End => app.pings_move(isize::MAX / 2),
+            KeyCode::Enter => {
+                app.pings_jump();
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if let Some(id) = app.pings_dismiss_selected() {
+                    spawn_mentions_dismiss(client.clone(), event_tx.clone(), vec![id]);
+                }
+            }
+            KeyCode::Char('X') => {
+                let ids = app.pings_take_all();
+                if !ids.is_empty() {
+                    spawn_mentions_dismiss(client.clone(), event_tx.clone(), ids);
+                }
+            }
+            KeyCode::Char('R') => {
+                app.open_pings();
+                spawn_mentions_load(client.clone(), event_tx.clone());
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.image_preview.is_some() {
         let chafa_scroll = matches!(
             app.image_preview,
@@ -1999,8 +2031,20 @@ fn handle_key_event(
         {
             app.start_reply();
         }
-        // p = the selected message's author's profile
+        // p = pings: the messages that mentioned me
         KeyCode::Char('p')
+            if matches!(
+                app.focus,
+                Focus::Servers | Focus::Channels | Focus::Messages
+            ) && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.open_pings();
+            spawn_mentions_load(client.clone(), event_tx.clone());
+        }
+        // u = the selected message's author's profile
+        KeyCode::Char('u')
             if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
         {
             if let Some((user_id, guild_id)) = app.open_profile_of_selected() {
@@ -2114,6 +2158,7 @@ fn schedule_needed_fetches(
     {
         spawn_message_load(client.clone(), event_tx.clone(), channel_id.clone());
     }
+    continue_jump_if_needed(app, &client, &event_tx);
 }
 
 fn schedule_guild_members_fetch_for_mentions(
@@ -2256,6 +2301,55 @@ fn spawn_guild_roles_load(
     });
 }
 
+fn spawn_mentions_load(client: FluxerHttpClient, event_tx: UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        match client.recent_mentions(App::PINGS_LIMIT).await {
+            Ok(messages) => {
+                debug::log(
+                    "pings",
+                    format!(
+                        "{} mentions in {} ms",
+                        messages.len(),
+                        started.elapsed().as_millis()
+                    ),
+                );
+                let _ = event_tx.send(AppEvent::MentionsLoaded { messages });
+            }
+            Err(err) => {
+                debug::log("pings", format!("mentions failed: {err:#}"));
+                let _ = event_tx.send(AppEvent::MentionsFailed {
+                    message: format!("Failed to load pings: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Take pings off the server's list; one goes by its own call, several
+/// together.
+fn spawn_mentions_dismiss(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    ids: Vec<String>,
+) {
+    tokio::spawn(async move {
+        let result = match ids.as_slice() {
+            [id] => client.dismiss_mention(id).await,
+            _ => client.dismiss_mentions(&ids).await,
+        };
+        match result {
+            Ok(()) => debug::log("pings", format!("{} dismissed", ids.len())),
+            Err(err) => {
+                debug::log("pings", format!("dismiss failed: {err:#}"));
+                let _ = event_tx.send(AppEvent::SetStatus(format!(
+                    "Failed to dismiss ping: {err}"
+                )));
+            }
+        }
+    });
+}
+
 fn spawn_profile_load(
     client: FluxerHttpClient,
     event_tx: UnboundedSender<AppEvent>,
@@ -2306,6 +2400,18 @@ fn try_load_older_messages(
     };
     if app.loading_older_messages.insert(channel_id.clone()) {
         spawn_message_load_older(client.clone(), event_tx.clone(), channel_id, oldest_id);
+    }
+}
+
+/// A jump from the pings list whose message is older than the loaded
+/// history pulls in older pages, one at a time, until it is found.
+fn continue_jump_if_needed(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+) {
+    if app.jump_wants_older() {
+        try_load_older_messages(app, client, event_tx);
     }
 }
 

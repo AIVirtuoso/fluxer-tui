@@ -226,7 +226,7 @@ fn channel_label(
     Line::from(spans)
 }
 
-fn channel_name(_app: &App, channel: &ChannelResponse) -> String {
+pub fn channel_name(_app: &App, channel: &ChannelResponse) -> String {
     match channel.channel_type() {
         CHANNEL_DM_PERSONAL_NOTES => "Personal Notes".to_string(),
         CHANNEL_DM => channel
