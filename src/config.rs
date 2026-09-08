@@ -81,6 +81,10 @@ pub struct UiSettings {
     legacy_image_display: Option<String>,
     #[serde(default = "default_true")]
     pub show_typing_indicators: bool,
+    /// Tell the channel that you are typing, so others see "… is typing"
+    /// the way they do for the web client.
+    #[serde(default = "default_true")]
+    pub send_typing: bool,
     pub performance_mode: bool,
     /// Pictures and GIFs shown under messages (Ctrl+O still opens them full size).
     #[serde(default = "default_true")]
@@ -121,6 +125,7 @@ impl Default for UiSettings {
             theme: Theme::Terminal,
             legacy_image_display: None,
             show_typing_indicators: true,
+            send_typing: true,
             performance_mode: false,
             inline_media: true,
             avatars: true,

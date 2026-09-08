@@ -67,6 +67,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         ("On", "Who is typing, in the compose box's bottom edge")
     };
+    let send_typing_on = app.ui_settings.send_typing;
+    let send_typing_primary = if send_typing_on {
+        ("On", "Others see when you are typing")
+    } else {
+        ("Off", "Nobody is told that you are typing")
+    };
+    let send_typing_alt = if send_typing_on {
+        ("Off", "Nobody is told that you are typing")
+    } else {
+        ("On", "Others see when you are typing")
+    };
     let perf_on = app.ui_settings.performance_mode;
     let perf_primary = if perf_on {
         ("On", "No pictures or animations, fewer redraws")
@@ -181,7 +192,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
-        "  Performance Mode (Low Spec)",
+        "  Show others that you are typing",
         dim,
     )]));
     lines.push(Line::from(""));
@@ -194,6 +205,38 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 "  "
             },
             if app.settings_cursor == 2 {
+                accent
+            } else {
+                muted
+            },
+        ),
+        Span::styled(
+            format!("{}  ·  {}", send_typing_primary.0, send_typing_primary.1),
+            panel.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    ", text),
+        Span::styled(
+            format!("{}  ·  {}", send_typing_alt.0, send_typing_alt.1),
+            muted,
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "  Performance Mode (Low Spec)",
+        dim,
+    )]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  ", text),
+        Span::styled(
+            if app.settings_cursor == 3 {
+                "▸ "
+            } else {
+                "  "
+            },
+            if app.settings_cursor == 3 {
                 accent
             } else {
                 muted
@@ -214,12 +257,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  ", text),
         Span::styled(
-            if app.settings_cursor == 3 {
+            if app.settings_cursor == 4 {
                 "▸ "
             } else {
                 "  "
             },
-            if app.settings_cursor == 3 {
+            if app.settings_cursor == 4 {
                 accent
             } else {
                 muted
@@ -240,12 +283,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  ", text),
         Span::styled(
-            if app.settings_cursor == 4 {
+            if app.settings_cursor == 5 {
                 "▸ "
             } else {
                 "  "
             },
-            if app.settings_cursor == 4 {
+            if app.settings_cursor == 5 {
                 accent
             } else {
                 muted
@@ -266,12 +309,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  ", text),
         Span::styled(
-            if app.settings_cursor == 5 {
+            if app.settings_cursor == 6 {
                 "▸ "
             } else {
                 "  "
             },
-            if app.settings_cursor == 5 {
+            if app.settings_cursor == 6 {
                 accent
             } else {
                 muted
@@ -310,12 +353,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  ", text),
         Span::styled(
-            if app.settings_cursor == 6 {
+            if app.settings_cursor == 7 {
                 "▸ "
             } else {
                 "  "
             },
-            if app.settings_cursor == 6 {
+            if app.settings_cursor == 7 {
                 accent
             } else {
                 muted
@@ -349,12 +392,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  ", text),
         Span::styled(
-            if app.settings_cursor == 7 {
+            if app.settings_cursor == 8 {
                 "▸ "
             } else {
                 "  "
             },
-            if app.settings_cursor == 7 {
+            if app.settings_cursor == 8 {
                 accent
             } else {
                 muted
@@ -431,7 +474,7 @@ mod tests {
             None,
             Default::default(),
         );
-        app.settings_cursor = 6;
+        app.settings_cursor = 7;
         assert_eq!(app.ui_settings.notifications, NotifyMode::Auto);
         let s = drawn(&app);
         assert!(
