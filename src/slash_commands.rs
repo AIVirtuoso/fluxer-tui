@@ -65,6 +65,13 @@ pub static SLASH_COMMANDS: &[SlashCommandDef] = &[
         requires_channel_perm: None,
     },
     SlashCommandDef {
+        name: "/sticker",
+        description: "Send a sticker: /sticker alone to browse, /sticker <name> to filter.",
+        simple_append: None,
+        requires_guild: false,
+        requires_channel_perm: None,
+    },
+    SlashCommandDef {
         name: "/debug",
         description: "Debug panel: session facts and the last log lines (/debug save writes them to a file, /debug frame maps the screen into the log).",
         simple_append: None,
@@ -132,6 +139,8 @@ pub enum OutgoingSlash {
     Attach(String),
     /// Open the file picker.
     AttachPick,
+    /// Open the sticker picker, filtered by what came after the command.
+    StickerPick(String),
     /// Open the debug panel.
     Debug,
     /// Write the debug panel's facts and log lines to a file.
@@ -194,6 +203,12 @@ pub fn resolve_outgoing_slash(
     }
     if t == "/attach" {
         return OutgoingSlash::AttachPick;
+    }
+    if t == "/sticker" {
+        return OutgoingSlash::StickerPick(String::new());
+    }
+    if let Some(rest) = t.strip_prefix("/sticker ") {
+        return OutgoingSlash::StickerPick(rest.trim().to_string());
     }
     if t == "/debug" {
         return OutgoingSlash::Debug;
@@ -269,5 +284,25 @@ pub fn fluxerbot_author() -> UserPartialResponse {
         bot: true,
         system: true,
         flags: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sticker_opens_the_picker_with_what_follows_as_the_filter() {
+        let pick = |t: &str| resolve_outgoing_slash(t, None, "me", "me", u64::MAX);
+        assert!(matches!(
+            pick("/sticker"),
+            OutgoingSlash::StickerPick(q) if q.is_empty()
+        ));
+        assert!(matches!(
+            pick("/sticker  ship it "),
+            OutgoingSlash::StickerPick(q) if q == "ship it"
+        ));
+        // an unknown command is text like any other
+        assert!(matches!(pick("/stickers"), OutgoingSlash::Normal));
     }
 }

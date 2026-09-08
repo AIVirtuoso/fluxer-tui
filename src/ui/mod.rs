@@ -18,6 +18,7 @@ pub mod settings_overlay;
 pub mod sidebar;
 pub(crate) mod span_wrap;
 pub mod status_bar;
+pub mod sticker_picker;
 pub mod theme;
 
 use crate::app::App;
@@ -117,6 +118,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         profile_overlay::render(frame, area, app);
     } else if app.file_picker.is_some() {
         file_picker::render(frame, area, app);
+    } else if app.sticker_picker.is_some() {
+        sticker_picker::render(frame, area, app);
     } else if app.channel_picker.is_some() {
         channel_picker::render(frame, area, app);
     }
@@ -144,6 +147,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             || app.profile.is_some()
             || app.image_preview.is_some()
             || app.file_picker.is_some()
+            || app.sticker_picker.is_some()
             || app.channel_picker.is_some()
             || app.emoji_autocomplete.is_some()
             || app.mention_autocomplete.is_some()

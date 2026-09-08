@@ -138,6 +138,51 @@ pub struct CommandAutocomplete {
 }
 
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+/// What the API accepts on one message.
+pub const MAX_STICKERS_PER_MESSAGE: usize = 3;
+/// The media proxy clamps a sticker request into this size class.
+pub const STICKER_MIN_PX: u32 = 128;
+pub const STICKER_MAX_PX: u32 = 512;
+
+/// A sticker staged in the compose box, sent with the next message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedSticker {
+    pub id: String,
+    pub name: String,
+    pub animated: bool,
+}
+
+/// One row of the sticker picker: a sticker and the guild that owns it.
+#[derive(Debug, Clone)]
+pub struct StickerEntry {
+    pub guild_id: String,
+    pub guild_name: String,
+    pub sticker: crate::api::types::GuildStickerResponse,
+}
+
+/// The sticker picker (Alt+S, `/sticker`): every sticker the client knows
+/// of, the active community's first. The cursor moves with the vim keys,
+/// and `/` opens the search that filters the list.
+#[derive(Debug, Clone)]
+pub struct StickerPicker {
+    pub entries: Vec<StickerEntry>,
+    pub filtered: Vec<usize>,
+    pub selected: usize,
+    pub query: String,
+    /// The search is open: keys go to the filter, not to the cursor.
+    pub searching: bool,
+    /// The filter to put back when the search is cancelled.
+    query_before_search: String,
+}
+
+impl StickerPicker {
+    /// The sticker under the cursor.
+    pub fn current(&self) -> Option<&StickerEntry> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.entries.get(i))
+    }
+}
 
 /// Width in cells of an inline custom emoji (one row tall).
 pub const CUSTOM_EMOJI_CELLS: u16 = 2;
@@ -800,6 +845,7 @@ pub struct App {
     pub user_cache: HashMap<Snowflake, UserPartialResponse>,
     pub voice_states: HashMap<Snowflake, HashMap<Snowflake, VoiceStateResponse>>,
     pub guild_emojis: HashMap<Snowflake, Vec<crate::api::types::GuildEmojiResponse>>,
+    pub guild_stickers: HashMap<Snowflake, Vec<crate::api::types::GuildStickerResponse>>,
     pub guild_roles: HashMap<Snowflake, Vec<crate::api::types::GuildRoleResponse>>,
     pub emoji_autocomplete: Option<EmojiAutocomplete>,
     pub mention_autocomplete: Option<MentionAutocomplete>,
@@ -824,6 +870,8 @@ pub struct App {
     pub cut_buffer: String,
     /// Files staged with Ctrl+V or /attach, uploaded with the next message.
     pub pending_attachments: Vec<crate::media::StagedAttachment>,
+    /// Stickers staged with the picker, sent with the next message.
+    pub pending_stickers: Vec<StagedSticker>,
     pub message_scroll_from_bottom: u16,
     pub message_scroll_max: u16,
     pub selected_message_index: Option<usize>,
@@ -841,6 +889,9 @@ pub struct App {
     /// Older pages fetched for the jump so far.
     pub pending_jump_pages: u32,
     pub gateway_status: GatewayStatus,
+    /// A READY (or a RESUMED) has been seen on the current connection, so
+    /// what the gateway sends with a community has arrived.
+    pub gateway_ready_seen: bool,
     pub gateway_lazy_guild_id: Option<String>,
     pub status_message: String,
     status_message_until: Option<Instant>,
@@ -857,6 +908,7 @@ pub struct App {
     /// fetch when the channel is.
     pub messages_loaded: HashSet<String>,
     pub loading_emojis: HashSet<String>,
+    pub loading_stickers: HashSet<String>,
     pub loading_roles: HashSet<String>,
     pub guild_roles_forbidden: HashSet<String>,
     /// Communities that answered the member list request with 403: asking
@@ -944,6 +996,8 @@ pub struct App {
     pub profile: Option<ProfileView>,
     /// The file picker, while open.
     pub file_picker: Option<FilePicker>,
+    /// The sticker picker, while open.
+    pub sticker_picker: Option<StickerPicker>,
     /// Where the file picker last was, for the next time.
     pub attach_dir: Option<std::path::PathBuf>,
     /// The external player an audio attachment is playing through.
@@ -997,6 +1051,7 @@ impl App {
             user_cache,
             voice_states: HashMap::new(),
             guild_emojis: HashMap::new(),
+            guild_stickers: HashMap::new(),
             guild_roles: HashMap::new(),
             emoji_autocomplete: None,
             mention_autocomplete: None,
@@ -1013,6 +1068,7 @@ impl App {
             input_last_edit: None,
             cut_buffer: String::new(),
             pending_attachments: Vec::new(),
+            pending_stickers: Vec::new(),
             message_scroll_from_bottom: 0,
             message_scroll_max: 0,
             selected_message_index: None,
@@ -1025,6 +1081,7 @@ impl App {
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
+            gateway_ready_seen: false,
             gateway_lazy_guild_id: None,
             status_message: String::new(),
             status_message_until: None,
@@ -1037,6 +1094,7 @@ impl App {
             loading_messages: HashSet::new(),
             messages_loaded: HashSet::new(),
             loading_emojis: HashSet::new(),
+            loading_stickers: HashSet::new(),
             loading_roles: HashSet::new(),
             guild_roles_forbidden: HashSet::new(),
             guild_members_forbidden: HashSet::new(),
@@ -1088,6 +1146,7 @@ impl App {
             ui_settings,
             profile: None,
             file_picker: None,
+            sticker_picker: None,
             attach_dir: None,
             audio: None,
             window_focused: true,
@@ -1473,6 +1532,19 @@ impl App {
                 body = format!("{body} [{files}]");
             }
         }
+        if !message.stickers.is_empty() {
+            let n = message.stickers.len();
+            let stickers = if n == 1 {
+                format!("sticker: {}", message.stickers[0].name)
+            } else {
+                format!("{n} stickers")
+            };
+            if body.is_empty() {
+                body = format!("[{stickers}]");
+            } else {
+                body = format!("{body} [{stickers}]");
+            }
+        }
         if body.is_empty() {
             body = "(no text)".to_string();
         }
@@ -1666,6 +1738,30 @@ impl App {
         self.guild_emojis.insert(guild_id.to_string(), emojis);
         self.loading_emojis.remove(guild_id);
         self.api_backoff_clear(&format!("emojis:{guild_id}"));
+    }
+
+    pub fn set_guild_stickers(
+        &mut self,
+        guild_id: &str,
+        stickers: Vec<crate::api::types::GuildStickerResponse>,
+    ) {
+        self.guild_stickers.insert(guild_id.to_string(), stickers);
+        self.loading_stickers.remove(guild_id);
+        self.api_backoff_clear(&format!("stickers:{guild_id}"));
+        // the picker holds a copy of the rows: refresh it while it is
+        // open, keeping the cursor and any search where they were
+        if let Some(picker) = &self.sticker_picker {
+            let query = picker.query.clone();
+            let at = picker.selected;
+            let searching = picker.searching;
+            let before = picker.query_before_search.clone();
+            self.open_sticker_picker(&query);
+            if let Some(picker) = self.sticker_picker.as_mut() {
+                picker.selected = at.min(picker.filtered.len().saturating_sub(1));
+                picker.searching = searching;
+                picker.query_before_search = before;
+            }
+        }
     }
 
     pub fn set_guild_roles(
@@ -2697,19 +2793,38 @@ impl App {
         period
     }
 
-    /// Short label for the input title: "2 files: a.png, b.jpg".
+    /// Short label for the input title: what the compose box is carrying,
+    /// the staged files first, then the staged stickers, as in
+    /// "2 files: a.png, b.jpg \u{00B7} 1 sticker: catspin".
     pub fn attachment_summary(&self) -> String {
-        let n = self.pending_attachments.len();
-        let names: Vec<String> = self
-            .pending_attachments
-            .iter()
-            .map(|a| format!("{} {}", a.filename, a.size_label()))
-            .collect();
-        format!(
-            "{n} {}: {}",
-            if n == 1 { "file" } else { "files" },
-            names.join(", ")
-        )
+        let mut parts: Vec<String> = Vec::new();
+        let files = self.pending_attachments.len();
+        if files > 0 {
+            let names: Vec<String> = self
+                .pending_attachments
+                .iter()
+                .map(|a| format!("{} {}", a.filename, a.size_label()))
+                .collect();
+            parts.push(format!(
+                "{files} {}: {}",
+                if files == 1 { "file" } else { "files" },
+                names.join(", ")
+            ));
+        }
+        let stickers = self.pending_stickers.len();
+        if stickers > 0 {
+            let names: Vec<String> = self
+                .pending_stickers
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            parts.push(format!(
+                "{stickers} {}: {}",
+                if stickers == 1 { "sticker" } else { "stickers" },
+                names.join(", ")
+            ));
+        }
+        parts.join(" \u{00B7} ")
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
@@ -3137,6 +3252,202 @@ impl App {
             self.file_picker = None;
             Some(entry.path)
         }
+    }
+
+    /// Open the sticker picker, filtered by `query`: every sticker the
+    /// client knows of, the active community's first.
+    pub fn open_sticker_picker(&mut self, query: &str) {
+        let active = self
+            .guild_id_for_active_channel()
+            .or_else(|| self.active_guild_id());
+        let mut guilds: Vec<&crate::api::types::GuildResponse> = self.guilds.iter().collect();
+        guilds.sort_by_key(|g| {
+            (
+                active.as_deref() != Some(g.id.as_str()),
+                g.name.to_lowercase(),
+            )
+        });
+        let mut entries: Vec<StickerEntry> = Vec::new();
+        for guild in guilds {
+            let Some(stickers) = self.guild_stickers.get(&guild.id) else {
+                continue;
+            };
+            let mut owned: Vec<&crate::api::types::GuildStickerResponse> =
+                stickers.iter().collect();
+            owned.sort_by_key(|s| s.name.to_lowercase());
+            for sticker in owned {
+                entries.push(StickerEntry {
+                    guild_id: guild.id.clone(),
+                    guild_name: guild.name.clone(),
+                    sticker: sticker.clone(),
+                });
+            }
+        }
+        self.dismiss_channel_picker();
+        self.dismiss_image_preview();
+        self.file_picker = None;
+        self.sticker_picker = Some(StickerPicker {
+            entries,
+            filtered: Vec::new(),
+            selected: 0,
+            query: query.to_string(),
+            searching: false,
+            query_before_search: String::new(),
+        });
+        self.filter_sticker_picker();
+    }
+
+    pub fn dismiss_sticker_picker(&mut self) {
+        self.sticker_picker = None;
+    }
+
+    /// The rows the query keeps: a sticker matches on its name and on any
+    /// of its tags.
+    pub fn filter_sticker_picker(&mut self) {
+        let Some(picker) = self.sticker_picker.as_mut() else {
+            return;
+        };
+        let q = picker.query.trim().to_lowercase();
+        picker.filtered = picker
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                q.is_empty()
+                    || e.sticker.name.to_lowercase().contains(&q)
+                    || e.sticker.tags.iter().any(|t| t.to_lowercase().contains(&q))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        picker.selected = picker.selected.min(picker.filtered.len().saturating_sub(1));
+    }
+
+    pub fn sticker_picker_move(&mut self, delta: i32) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            let n = picker.filtered.len();
+            if n == 0 {
+                picker.selected = 0;
+                return;
+            }
+            let at = picker.selected as i64 + delta as i64;
+            picker.selected = at.clamp(0, n as i64 - 1) as usize;
+        }
+    }
+
+    /// `/`: start a search. The filter empties, so the whole list is
+    /// there to search, and Esc puts back what it was.
+    pub fn sticker_picker_start_search(&mut self) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            picker.query_before_search = std::mem::take(&mut picker.query);
+            picker.searching = true;
+            picker.selected = 0;
+        }
+        self.filter_sticker_picker();
+    }
+
+    /// Leave the search: `keep` for Enter, which keeps the filter and the
+    /// sticker under the cursor, false for Esc, which puts the filter the
+    /// search started from back.
+    pub fn sticker_picker_end_search(&mut self, keep: bool) {
+        let Some(picker) = self.sticker_picker.as_mut() else {
+            return;
+        };
+        picker.searching = false;
+        if keep {
+            picker.query_before_search.clear();
+            return;
+        }
+        picker.query = std::mem::take(&mut picker.query_before_search);
+        self.filter_sticker_picker();
+    }
+
+    /// A character typed into the search: the list narrows and the cursor
+    /// goes to the first sticker that matches.
+    pub fn sticker_picker_search_type(&mut self, ch: char) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            picker.query.push(ch);
+            picker.selected = 0;
+        }
+        self.filter_sticker_picker();
+    }
+
+    /// Backspace in the search, or Ctrl+Backspace and Ctrl+U for all of it.
+    pub fn sticker_picker_search_erase(&mut self, all: bool) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            if all {
+                picker.query.clear();
+            } else {
+                picker.query.pop();
+            }
+            picker.selected = 0;
+        }
+        self.filter_sticker_picker();
+    }
+
+    /// Enter in the picker: stage the sticker under the cursor and close.
+    /// The string is what to tell the user.
+    pub fn sticker_picker_confirm(&mut self) -> Option<String> {
+        let entry = self.sticker_picker.as_ref()?.current()?.clone();
+        self.sticker_picker = None;
+        Some(self.stage_sticker(StagedSticker {
+            id: entry.sticker.id.clone(),
+            name: entry.sticker.name.clone(),
+            animated: entry.sticker.animated,
+        }))
+    }
+
+    /// Put a sticker on the next message; a message carries at most three.
+    pub fn stage_sticker(&mut self, sticker: StagedSticker) -> String {
+        if self.pending_stickers.iter().any(|s| s.id == sticker.id) {
+            return format!("{} is already on this message.", sticker.name);
+        }
+        if self.pending_stickers.len() >= MAX_STICKERS_PER_MESSAGE {
+            return format!(
+                "A message carries at most {MAX_STICKERS_PER_MESSAGE} stickers (Ctrl+X drops the last one)."
+            );
+        }
+        let name = sticker.name.clone();
+        self.pending_stickers.push(sticker);
+        format!("Staged {name}: Enter sends it.")
+    }
+
+    /// The media-proxy URL of a sticker. `edge_px` is snapped up to a rung
+    /// of the proxy's ladder and clamped to the sticker class; animated
+    /// ones are asked for with their animation.
+    pub fn sticker_url(&self, id: &str, animated: bool, edge_px: u32) -> String {
+        let base = self.media_base_url();
+        let size = edge_px.clamp(STICKER_MIN_PX, STICKER_MAX_PX);
+        if animated {
+            format!("{base}/stickers/{id}.webp?size={size}&animated=true")
+        } else {
+            format!("{base}/stickers/{id}.webp?size={size}")
+        }
+    }
+
+    /// The block a sticker takes within `max` cells, asked for at the size
+    /// that block holds. None when pictures are not drawn here.
+    pub fn sticker_slot(&self, id: &str, animated: bool, max: (u16, u16)) -> Option<MediaSlot> {
+        if !self.pictures_enabled() || id.is_empty() || max.0 == 0 || max.1 == 0 {
+            return None;
+        }
+        // A sticker is delivered square, so the block is a square in cells.
+        let (cols, rows) = crate::media::picture_cells(
+            (STICKER_MAX_PX, STICKER_MAX_PX),
+            self.cell_px,
+            (max.0, max.1),
+        );
+        let px = crate::media::block_px(cols, rows, self.cell_px);
+        Some(MediaSlot::new(
+            self.sticker_url(id, animated, px.0.max(px.1)),
+            cols,
+            rows,
+            MediaKind::Picture,
+        ))
+    }
+
+    /// The thumbnail of a staged sticker in the compose box.
+    pub fn staged_sticker_slot(&self, sticker: &StagedSticker) -> Option<MediaSlot> {
+        self.sticker_slot(&sticker.id, sticker.animated, (THUMB_COLS, THUMB_ROWS))
     }
 
     /// The block a staged picture's thumbnail takes in the compose box,
@@ -3580,6 +3891,8 @@ impl App {
         self.guild_members_synced.remove(guild_id);
         self.api_backoff_clear_guild(guild_id);
         self.guild_emojis.remove(guild_id);
+        self.guild_stickers.remove(guild_id);
+        self.loading_stickers.remove(guild_id);
         self.guild_roles.remove(guild_id);
         self.guild_roles_forbidden.remove(guild_id);
         self.voice_states.remove(guild_id);
@@ -5342,7 +5655,9 @@ pub fn custom_emoji_marker_slot(style: Style) -> Option<usize> {
 }
 
 /// Media block cells carry their row within the block in the red channel
-/// (0xD0 + row, so 16 rows at most) and the slot in green and blue.
+/// (0xD0 + row) and the slot in green and blue. Four bits hold the row, so
+/// a block is at most [`crate::media::BLOCK_MAX_ROWS`] rows tall; beyond
+/// that every row would say 15 and the overlay would draw nothing.
 pub fn media_marker_style(slot: usize, row: u16) -> Style {
     let k = slot.min(u16::MAX as usize) as u16;
     Style::default().underline_color(Color::Rgb(
@@ -6427,5 +6742,212 @@ mod copy_message_tests {
         );
         assert!(app.copy_selected_message().is_none());
         assert_eq!(app.cut_buffer, "first");
+    }
+}
+
+#[cfg(test)]
+mod sticker_tests {
+    use super::*;
+    use crate::api::types::{ChannelResponse, GuildResponse};
+
+    fn guild_app() -> App {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::Guild("guild-1".to_string()),
+            None,
+            Default::default(),
+        );
+        app.guilds.push(GuildResponse {
+            id: "guild-1".to_string(),
+            name: "Lab".to_string(),
+            ..Default::default()
+        });
+        app.guild_channels
+            .insert("guild-1".to_string(), Vec::<ChannelResponse>::new());
+        app
+    }
+
+    fn guild_sticker(
+        id: &str,
+        name: &str,
+        tags: &[&str],
+    ) -> crate::api::types::GuildStickerResponse {
+        crate::api::types::GuildStickerResponse {
+            id: id.to_string(),
+            name: name.to_string(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_sticker_picker_lists_the_active_community_first_and_filters_on_tags() {
+        let mut app = guild_app();
+        app.guilds.push(GuildResponse {
+            id: "guild-2".to_string(),
+            name: "Other".to_string(),
+            ..GuildResponse::default()
+        });
+        app.set_guild_stickers("guild-2", vec![guild_sticker("20", "wave", &["hello"])]);
+        app.set_guild_stickers(
+            "guild-1",
+            vec![
+                guild_sticker("11", "shipit", &["deploy"]),
+                guild_sticker("10", "party", &[]),
+            ],
+        );
+
+        app.open_sticker_picker("");
+        let picker = app.sticker_picker.as_ref().unwrap();
+        let listed: Vec<&str> = picker
+            .entries
+            .iter()
+            .map(|e| e.sticker.name.as_str())
+            .collect();
+        assert_eq!(listed, ["party", "shipit", "wave"]);
+        assert_eq!(picker.filtered.len(), 3);
+
+        // the filter reads names and tags alike
+        app.sticker_picker.as_mut().unwrap().query = "deploy".to_string();
+        app.filter_sticker_picker();
+        let picker = app.sticker_picker.as_ref().unwrap();
+        let matched: Vec<&str> = picker
+            .filtered
+            .iter()
+            .map(|&i| picker.entries[i].sticker.name.as_str())
+            .collect();
+        assert_eq!(matched, ["shipit"]);
+        assert_eq!(
+            picker.current().map(|e| e.guild_id.as_str()),
+            Some("guild-1")
+        );
+    }
+
+    /// The names the filter keeps, in the order the picker lists them.
+    fn matched(app: &App) -> Vec<String> {
+        let picker = app.sticker_picker.as_ref().expect("the picker is open");
+        picker
+            .filtered
+            .iter()
+            .map(|&i| picker.entries[i].sticker.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_search_narrows_the_list_and_esc_puts_the_old_filter_back() {
+        let mut app = guild_app();
+        app.set_guild_stickers(
+            "guild-1",
+            vec![
+                guild_sticker("1", "shipit", &["deploy"]),
+                guild_sticker("2", "party", &[]),
+                guild_sticker("3", "partycat", &["cat"]),
+            ],
+        );
+        app.open_sticker_picker("party");
+        assert_eq!(matched(&app), ["party", "partycat"]);
+        assert!(
+            !app.sticker_picker.as_ref().unwrap().searching,
+            "the picker opens on the list, not in the search"
+        );
+
+        // `/` searches the whole list again
+        app.sticker_picker_start_search();
+        let picker = app.sticker_picker.as_ref().unwrap();
+        assert!(picker.searching && picker.query.is_empty());
+        assert_eq!(picker.filtered.len(), 3);
+
+        // typing narrows it, and the cursor sits on the first match
+        app.sticker_picker_move(2);
+        for ch in "cat".chars() {
+            app.sticker_picker_search_type(ch);
+        }
+        assert_eq!(matched(&app), ["partycat"]);
+        assert_eq!(app.sticker_picker.as_ref().unwrap().selected, 0);
+
+        // Backspace edits what was typed
+        app.sticker_picker_search_erase(false);
+        assert_eq!(app.sticker_picker.as_ref().unwrap().query, "ca");
+
+        // Esc gives back the filter the search started from
+        app.sticker_picker_end_search(false);
+        let picker = app.sticker_picker.as_ref().unwrap();
+        assert!(!picker.searching);
+        assert_eq!(picker.query, "party");
+        assert_eq!(matched(&app), ["party", "partycat"]);
+
+        // Enter keeps what was typed instead
+        app.sticker_picker_start_search();
+        app.sticker_picker_search_type('s');
+        app.sticker_picker_end_search(true);
+        let picker = app.sticker_picker.as_ref().unwrap();
+        assert!(!picker.searching);
+        assert_eq!(picker.query, "s");
+        assert_eq!(matched(&app), ["shipit"]);
+        // and a later Esc closes the picker rather than restoring anything
+        app.dismiss_sticker_picker();
+        assert!(app.sticker_picker.is_none());
+    }
+
+    #[test]
+    fn a_message_carries_three_stickers_and_never_the_same_one_twice() {
+        let mut app = guild_app();
+        app.set_guild_stickers(
+            "guild-1",
+            vec![
+                guild_sticker("1", "one", &[]),
+                guild_sticker("2", "two", &[]),
+                guild_sticker("3", "three", &[]),
+                guild_sticker("4", "four", &[]),
+            ],
+        );
+        for name in ["one", "two", "three"] {
+            app.open_sticker_picker(name);
+            assert!(app.sticker_picker_confirm().is_some());
+            assert!(app.sticker_picker.is_none(), "Enter closes the picker");
+        }
+        assert_eq!(app.pending_stickers.len(), 3);
+
+        app.open_sticker_picker("one");
+        let said = app.sticker_picker_confirm().unwrap();
+        assert!(said.contains("already"), "{said}");
+        assert_eq!(app.pending_stickers.len(), 3);
+
+        app.open_sticker_picker("four");
+        let said = app.sticker_picker_confirm().unwrap();
+        assert!(said.contains("at most"), "{said}");
+        assert_eq!(app.pending_stickers.len(), MAX_STICKERS_PER_MESSAGE);
+        let ids: Vec<&str> = app.pending_stickers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn a_sticker_url_asks_for_a_size_of_the_sticker_class() {
+        let app = guild_app();
+        // the proxy clamps to 128..=512; ask inside that range
+        assert!(
+            app.sticker_url("42", false, 10)
+                .ends_with("/stickers/42.webp?size=128"),
+            "{}",
+            app.sticker_url("42", false, 10)
+        );
+        assert!(
+            app.sticker_url("42", true, 4096)
+                .ends_with("/stickers/42.webp?size=512&animated=true"),
+            "{}",
+            app.sticker_url("42", true, 4096)
+        );
+    }
+
+    #[test]
+    fn a_guild_that_goes_away_takes_its_stickers_with_it() {
+        let mut app = guild_app();
+        app.set_guild_stickers("guild-1", vec![guild_sticker("1", "one", &[])]);
+        app.remove_guild("guild-1");
+        assert!(!app.guild_stickers.contains_key("guild-1"));
     }
 }

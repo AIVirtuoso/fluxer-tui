@@ -123,6 +123,13 @@ act on them.
   Upstream only appends and deletes at the end (see "Editing the
   message you are writing"). Keyboard only: this client has no mouse
   support and will not get any.
+- **Stickers, sent and shown.** **Alt+S** (or `/sticker`) opens a picker
+  of every community sticker the client knows, filtered by name or tag,
+  with the sticker under the cursor drawn beside the list; **Enter**
+  puts it on the message and **Enter** in the input sends it, up to
+  three per message and together with text and files. A sticker on a
+  message someone else sent is drawn in the chat like any other picture
+  (see "Stickers"). Upstream neither sends nor shows them.
 - **Attach any kind of file.** A file picker (**Ctrl+F** or `/attach`),
   `/attach <path>`, and **Ctrl+V** for the image or the files on the
   clipboard (text on it is pasted into the message instead); up to ten per message, with previews of staged pictures
@@ -357,9 +364,43 @@ Any kind of file can go with a message, up to ten at a time:
 Staged files show above the text you type, pictures and videos as
 thumbnails where the terminal draws pictures, everything else by name and
 size. **Ctrl+O** shows the last staged picture or video full size,
-**Ctrl+X** drops it (when nothing is selected in the text), **Enter** sends text and files together. A video's
+**Ctrl+X** drops it (when nothing is selected in the text, and when no
+sticker is staged), **Enter** sends text and files together. A video's
 preview is its first frame, which `ffmpeg` on PATH provides; without it
 videos are listed by name.
+
+## Stickers
+
+A sticker is a picture a community stores for its members to send. The
+client reads them from the gateway as the communities arrive, so the
+picker is ready without asking the API for anything.
+
+- **Alt+S**, or `/sticker` on its own, opens the picker: the active
+  community's stickers first, then the ones of every other community the
+  client knows, each under its name. **j**/**k** (or **↑**/**↓**) move,
+  **g**/**G** jump to the first and the last, **Ctrl+D**/**Ctrl+U** by
+  ten; **Enter** (or **l**) puts the sticker on the message; **q**,
+  **h** or **Esc** closes. The sticker under the cursor is drawn on the
+  right where the terminal draws pictures.
+- **/** searches by name or tag: the list narrows as you type, **Enter**
+  keeps the search and goes back to moving with the vim keys, **Esc**
+  leaves the search and puts the list back as it was, **Backspace**
+  edits it (**Ctrl+U** clears it).
+- `/sticker <name>` opens the picker with the search already filled in.
+- A message carries **at most three** stickers, along with text and
+  files. **Enter** in the input sends everything together; **Ctrl+X**
+  drops the last staged sticker (and, when none is staged, the last
+  staged file).
+- Stickers on messages are drawn in the chat under their name, at the
+  size a picture preview gets, animated ones playing. Where the
+  terminal draws no pictures, or with `inline_media = false`, the name
+  is shown alone. A sticker the server classifies as explicit says so
+  beside its name.
+
+Sending a sticker of another community, or any custom sticker in a direct
+message, is a Fluxer Premium feature: the server refuses it and the
+client shows what it said. Communities you are in can always use their
+own.
 
 ## Message formatting
 
@@ -625,6 +666,8 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | **Shift+movement**, or **Ctrl+Space** then movement | Select; **Esc** drops the selection. |
 | **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selected text here (also to `wl-copy` or `xclip`) / paste back what was cut or copied, a message copied with **y** included. |
 | **Ctrl+V** | Paste text from the system clipboard at the cursor; an image or files on it are attached instead. |
+| **Alt+S** | Open the sticker picker (also `/sticker`, `/sticker <name>`). |
+| **Ctrl+X** (nothing selected) | Drop the last staged sticker, or the last staged file when no sticker is staged. |
 | **Ctrl+B**, **Ctrl+I** (or **Tab** with a selection), **Alt+U**, **Ctrl+S**, **Alt+C**, **Alt+P** | Bold, italic, underline, strikethrough, code, spoiler around the selection or the word at the cursor; again to remove. |
 | **Ctrl+Z** / **Ctrl+Y** | Undo / redo. |
 | `/debug`, `/debug save`, `/debug frame` | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging"). |
@@ -644,6 +687,20 @@ Plain letters (without **Ctrl**) are inserted into the message, except where aut
 | **Esc** | Close autocomplete. |
 | **Backspace** | Edit text; filter updates. |
 | **Any character** | Type to filter (unless **Ctrl**). |
+
+### Sticker picker (while open)
+
+| Key | Action |
+|-----|--------|
+| **j** / **k**, **↑** / **↓** | Move through the stickers. |
+| **g** / **G**, **Home** / **End** | First / last sticker. |
+| **Ctrl+D** / **Ctrl+U**, **Ctrl+F** / **Ctrl+B**, **PgDn** / **PgUp** | Move by ten. |
+| **Enter**, **l** / **→** | Put the sticker on the message (at most three) and close. |
+| **q**, **h** / **←**, **Esc** | Close the picker. |
+| **/** | Search by name or tag; the list narrows as you type. |
+| **Enter** (searching) | Keep the search and go back to moving. |
+| **Esc** (searching) | Leave the search; the list goes back as it was. |
+| **Backspace** (**Ctrl+U**) | While searching: edit (clear) what is typed. |
 
 ### Emoji autocomplete (while open)
 

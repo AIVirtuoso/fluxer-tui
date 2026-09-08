@@ -516,6 +516,36 @@ pub struct GuildEmojiResponse {
     pub animated: bool,
 }
 
+/// A sticker as its guild stores it: what the picker lists.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GuildStickerResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// Empty rather than null on the wire, but read forgivingly.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Words the sticker is also found by; the picker searches them.
+    #[serde(default, deserialize_with = "deserialize_lenient_vec")]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub animated: bool,
+}
+
+/// A sticker as a message carries it: the stored record trimmed down.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash)]
+pub struct MessageStickerResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub animated: bool,
+    #[serde(default)]
+    pub nsfw: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GuildRoleResponse {
     #[serde(default, deserialize_with = "deserialize_snowflake_string")]
@@ -801,6 +831,8 @@ pub struct MessageResponse {
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentResponse>,
     #[serde(default)]
+    pub stickers: Vec<MessageStickerResponse>,
+    #[serde(default)]
     pub channel_type: Option<i32>,
     #[serde(default)]
     pub embeds: Vec<MessageEmbedResponse>,
@@ -921,6 +953,8 @@ pub struct GuildCreateEvent {
     #[serde(default)]
     pub roles: Vec<GuildRoleResponse>,
     #[serde(default)]
+    pub stickers: Vec<GuildStickerResponse>,
+    #[serde(default)]
     pub voice_states: Vec<VoiceStateResponse>,
 }
 
@@ -1037,6 +1071,9 @@ pub struct CreateMessageRequest {
     /// Uploads already PUT to their presigned URLs, referenced by upload key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<CreateMessageAttachment>>,
+    /// The stickers sent with the message, at most three.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sticker_ids: Option<Vec<String>>,
 }
 
 /// One finished upload to reference from `CreateMessageRequest.attachments`.

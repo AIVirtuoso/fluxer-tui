@@ -250,6 +250,13 @@ fn referenced_body_preview(ref_msg: &crate::api::types::MessageResponse) -> Stri
         } else {
             format!("[{n} attachments]")
         }
+    } else if !ref_msg.stickers.is_empty() {
+        let n = ref_msg.stickers.len();
+        if n == 1 {
+            format!("[sticker: {}]", ref_msg.stickers[0].name)
+        } else {
+            format!("[{n} stickers]")
+        }
     } else if !ref_msg.embeds.is_empty() {
         "[embed]".to_string()
     } else {
@@ -503,8 +510,34 @@ fn markdown_rows(rows: &mut Vec<BlockRow>, text: &str, app: &App, lead: Option<S
     }
 }
 
-/// The marker rows of one preview; the block is registered for this draw
-/// and fetched when it comes on screen.
+/// The marker rows of one block of cells; the block is registered for this
+/// draw and fetched when it comes on screen.
+fn push_slot_rows(
+    app: &App,
+    rows: &mut Vec<BlockRow>,
+    slot: crate::app::MediaSlot,
+    left: &mut usize,
+) {
+    if *left == 0 {
+        return;
+    }
+    let (cols, prows) = (slot.cols, slot.rows);
+    let k = app.register_media_slot(slot);
+    for r in 0..prows {
+        rows.push(BlockRow {
+            spans: vec![Span::styled(
+                "\u{2800}".repeat(cols as usize),
+                crate::app::media_marker_style(k, r),
+            )],
+            style: Style::default(),
+            kind: RowKind::Picture,
+        });
+    }
+    *left -= 1;
+}
+
+/// The marker rows of one preview, at the size the picture's shape takes
+/// within `max`.
 fn push_picture_rows(
     app: &App,
     rows: &mut Vec<BlockRow>,
@@ -512,28 +545,14 @@ fn push_picture_rows(
     max: (u16, u16),
     left: &mut usize,
 ) {
-    if *left == 0 {
-        return;
-    }
     let (cols, prows) = crate::media::picture_cells((pic.width, pic.height), app.cell_px, max);
     let url = crate::media::proxied_url(pic, crate::media::block_px(cols, prows, app.cell_px));
-    let slot = app.register_media_slot(crate::app::MediaSlot::new(
-        url,
-        cols,
-        prows,
-        crate::app::MediaKind::Picture,
-    ));
-    for r in 0..prows {
-        rows.push(BlockRow {
-            spans: vec![Span::styled(
-                "\u{2800}".repeat(cols as usize),
-                crate::app::media_marker_style(slot, r),
-            )],
-            style: Style::default(),
-            kind: RowKind::Picture,
-        });
-    }
-    *left -= 1;
+    push_slot_rows(
+        app,
+        rows,
+        crate::app::MediaSlot::new(url, cols, prows, crate::app::MediaKind::Picture),
+        left,
+    );
 }
 
 fn build_message_lines(
@@ -730,6 +749,32 @@ fn build_message_lines(
             ]));
             if inline && let Some(pic) = crate::media::attachment_picture(attachment) {
                 push_picture_rows(app, &mut rows, &pic, picture_max, &mut pictures_left);
+            }
+        }
+
+        for sticker in &message.stickers {
+            rows.push(body_row(vec![
+                Span::styled(
+                    "\u{1F5BC} ",
+                    Style::default().fg(crate::ui::theme::accent_dim()),
+                ),
+                Span::styled(
+                    sticker.name.clone(),
+                    Style::default().fg(crate::ui::theme::accent()),
+                ),
+                Span::styled(
+                    if sticker.nsfw {
+                        " [sticker \u{00B7} explicit]"
+                    } else {
+                        " [sticker]"
+                    },
+                    crate::ui::theme::dim_style(),
+                ),
+            ]));
+            if inline
+                && let Some(slot) = app.sticker_slot(&sticker.id, sticker.animated, picture_max)
+            {
+                push_slot_rows(app, &mut rows, slot, &mut pictures_left);
             }
         }
 
@@ -2029,6 +2074,54 @@ mod bottom_tests {
                 assert_newest_at_bottom(&mut app, w, h, n);
             }
         }
+    }
+
+    /// A sticker on a message is named in the pane, and takes a block of
+    /// cells for its picture where the terminal draws pictures.
+    #[test]
+    fn a_sticker_is_named_and_takes_a_picture_block() {
+        let mut app = app_with(&["c1"]);
+        let mut m = msg(1, "c1");
+        m.content = String::new();
+        m.stickers.push(crate::api::types::MessageStickerResponse {
+            id: "77".into(),
+            name: "shipit".into(),
+            animated: false,
+            nsfw: false,
+        });
+        app.upsert_message(m);
+        let rows = draw(&mut app, 80, 20);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("shipit") && r.contains("[sticker]")),
+            "the sticker is not named:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            app.media_slots.borrow().is_empty(),
+            "no picture without a terminal that draws one"
+        );
+
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        let rows = draw(&mut app, 80, 20);
+        // one block for the sticker, beside the author's avatar
+        let slots = app.media_slots.borrow().clone();
+        let sticker_slots: Vec<&crate::app::MediaSlot> = slots
+            .iter()
+            .filter(|s| s.url.contains("/stickers/77.webp?size="))
+            .collect();
+        assert_eq!(sticker_slots.len(), 1, "{slots:?}");
+        assert_eq!(
+            sticker_slots[0].cols,
+            sticker_slots[0].rows * 2,
+            "a square block of cells"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains('\u{2800}')),
+            "the block's marker cells are not on the pane:\n{}",
+            rows.join("\n")
+        );
     }
 
     /// A message with the trimmings: a picture attachment, a reaction, a
