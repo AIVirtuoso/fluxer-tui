@@ -59,7 +59,7 @@ fn err_is_http_status(err: &AnyhowError, want: StatusCode) -> bool {
     version = env!("CARGO_PKG_VERSION"),
     long_version = concat!(
         env!("CARGO_PKG_VERSION"),
-        "\nCopyright (C) 2026 polonius-dev and the fluxer-tui fork contributors",
+        "\nCopyright (C) 2026 polonius-dev and the fluxer-tui contributors",
         "\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>",
         "\nParts of this program stay under the MIT license of the upstream project",
         "\ndogbonewish/fluxer-tui; see LICENSE-MIT.",

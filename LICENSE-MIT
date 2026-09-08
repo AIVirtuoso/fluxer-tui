@@ -1,8 +1,8 @@
-This fork builds on dogbonewish/fluxer-tui, which its authors released
-under the MIT license below. Everything that was in the upstream
-repository at the point the fork branched off (upstream commit dc78802,
+This client started from dogbonewish/fluxer-tui, which its authors
+released under the MIT license below. Everything that was in that
+repository at the point this one branched off (upstream commit dc78802,
 2026-04-13) stays under that license, and this notice must be kept with
-every copy. The fork's own changes are licensed under the GNU General
+every copy. Every change made since is licensed under the GNU General
 Public License, version 3 or later; see LICENSE and the License section
 of README.md.
 
