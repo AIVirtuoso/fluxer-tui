@@ -1655,40 +1655,49 @@ fn handle_key_event(
         return;
     }
 
+    // The sticker picker moves with the vim keys, and `/` opens the
+    // search: while it is open the keys type the filter instead.
     if app.sticker_picker.is_some() {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let searching = app.sticker_picker.as_ref().is_some_and(|p| p.searching);
+        let mut stage = false;
         match key.code {
+            KeyCode::Esc if searching => app.sticker_picker_end_search(false),
             KeyCode::Esc => app.dismiss_sticker_picker(),
+            KeyCode::Enter if searching => app.sticker_picker_end_search(true),
+            KeyCode::Enter => stage = true,
             KeyCode::Up => app.sticker_picker_move(-1),
             KeyCode::Down => app.sticker_picker_move(1),
             KeyCode::PageUp => app.sticker_picker_move(-10),
             KeyCode::PageDown => app.sticker_picker_move(10),
             KeyCode::Home => app.sticker_picker_move(i32::MIN / 2),
             KeyCode::End => app.sticker_picker_move(i32::MAX / 2),
-            KeyCode::Enter => {
-                if let Some(status) = app.sticker_picker_confirm() {
-                    app.set_status(status);
-                    if app.active_channel_is_text() && app.can_send_in_active_channel() {
-                        app.focus = Focus::Input;
-                    }
-                }
+            KeyCode::Backspace if searching => {
+                app.sticker_picker_search_erase(ctrl);
             }
-            KeyCode::Backspace => {
-                if let Some(p) = app.sticker_picker.as_mut() {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        p.query.clear();
-                    } else {
-                        p.query.pop();
-                    }
-                    app.filter_sticker_picker();
-                }
+            KeyCode::Char('u') | KeyCode::Char('U') if searching && ctrl => {
+                app.sticker_picker_search_erase(true);
             }
-            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(p) = app.sticker_picker.as_mut() {
-                    p.query.push(ch);
-                    app.filter_sticker_picker();
-                }
-            }
+            KeyCode::Char(ch) if searching && !ctrl => app.sticker_picker_search_type(ch),
+            KeyCode::Char('/') => app.sticker_picker_start_search(),
+            KeyCode::Char('j') if !ctrl => app.sticker_picker_move(1),
+            KeyCode::Char('k') if !ctrl => app.sticker_picker_move(-1),
+            KeyCode::Char('d') if ctrl => app.sticker_picker_move(10),
+            KeyCode::Char('u') if ctrl => app.sticker_picker_move(-10),
+            KeyCode::Char('f') if ctrl => app.sticker_picker_move(10),
+            KeyCode::Char('b') if ctrl => app.sticker_picker_move(-10),
+            KeyCode::Char('g') => app.sticker_picker_move(i32::MIN / 2),
+            KeyCode::Char('G') => app.sticker_picker_move(i32::MAX / 2),
+            KeyCode::Char('l') | KeyCode::Right => stage = true,
+            KeyCode::Char('h') | KeyCode::Left => app.dismiss_sticker_picker(),
+            KeyCode::Char('q') if !ctrl => app.dismiss_sticker_picker(),
             _ => {}
+        }
+        if stage && let Some(status) = app.sticker_picker_confirm() {
+            app.set_status(status);
+            if app.active_channel_is_text() && app.can_send_in_active_channel() {
+                app.focus = Focus::Input;
+            }
         }
         return;
     }

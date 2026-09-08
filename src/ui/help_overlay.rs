@@ -67,15 +67,20 @@ Input
            attach the image or files on it
   Ctrl+O - the last staged picture or video full size; Ctrl+X - drop the last staged
            sticker, or the last staged file when no sticker is staged
-  Alt+S or /sticker - sticker picker: type to filter by name or tag, Enter puts one on
-           the message (at most 3), /sticker <name> opens it filtered
+  Alt+S or /sticker - sticker picker: j/k move, / searches by name or tag, Enter puts
+           one on the message (at most 3), /sticker <name> opens it filtered
   Enter sends text, attachments and stickers together (the compose box shows what is
            staged)
   : - custom emoji autocomplete     @ - mention autocomplete (guild/DM)
   Long lines wrap; input height grows with wrapped rows
 
 Sticker picker (Alt+S, /sticker)
-  Type to filter   Up/Down - move   Enter - put it on the message   Esc - close
+  j / k (or Up/Down) - move        g / G - first / last
+  Ctrl+D / Ctrl+U, Ctrl+F / Ctrl+B, PgDn / PgUp - by ten
+  Enter or l - put the sticker on the message    q, h or Esc - close
+  / - search by name or tag: type to narrow the list, Enter keeps the search,
+      Esc leaves it and puts the list back as it was, Backspace edits it
+      (Ctrl+Backspace or Ctrl+U clears it)
   Stickers of other communities are listed under their name; sending one needs the
   right to use external stickers.
 

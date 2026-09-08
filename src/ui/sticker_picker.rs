@@ -1,6 +1,7 @@
 //! The sticker picker (Alt+S, `/sticker`): the stickers of every
-//! community the client knows, the active one's first, filtered as the
-//! user types; the sticker under the cursor is shown beside the list.
+//! community the client knows, the active one's first, with the sticker
+//! under the cursor shown beside the list. The cursor moves with the vim
+//! keys and `/` opens the search that filters the list.
 
 use crate::app::App;
 use ratatui::Frame;
@@ -41,15 +42,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
 
     let staged = app.pending_stickers.len();
+    // the search as it stands: what is typed, with a caret while typing
+    let filter = if picker.searching {
+        format!("/{}\u{2588}", picker.query)
+    } else if picker.query.is_empty() {
+        "/ to search".to_string()
+    } else {
+        format!("/{}", picker.query)
+    };
     let title = format!(
-        " Send a sticker \u{2014} {} of {} staged  \u{2315} {} ",
+        " Send a sticker \u{2014} {} of {} staged  \u{2315} {filter} ",
         staged,
         crate::app::MAX_STICKERS_PER_MESSAGE,
-        if picker.query.is_empty() {
-            "type to filter"
-        } else {
-            picker.query.as_str()
-        }
     );
     let block = Block::default()
         .title(Line::from(Span::styled(
@@ -90,7 +94,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let mut items: Vec<ListItem> = Vec::new();
     if total == 0 {
         items.push(ListItem::new(Line::from(Span::styled(
-            "No sticker of that name or tag (Backspace edits the filter)",
+            if picker.searching {
+                "No sticker of that name or tag (Backspace edits the search)"
+            } else {
+                "No sticker of that name or tag (/ searches again)"
+            },
             dim,
         ))));
     }
@@ -204,7 +212,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let hint = Paragraph::new(Line::from(Span::styled(
-        "↑↓ move \u{00B7} Enter stage it \u{00B7} type to filter \u{00B7} Esc close \u{00B7} Enter in the input sends",
+        if picker.searching {
+            "type to filter \u{00B7} Enter keeps it \u{00B7} Esc cancels the search \u{00B7} Backspace edits"
+        } else {
+            "j/k \u{2191}\u{2193} move \u{00B7} g/G top/bottom \u{00B7} / search \u{00B7} Enter stage it \u{00B7} q close"
+        },
         muted,
     )))
     .alignment(Alignment::Center);

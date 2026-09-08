@@ -161,13 +161,18 @@ pub struct StickerEntry {
 }
 
 /// The sticker picker (Alt+S, `/sticker`): every sticker the client knows
-/// of, the active community's first, filtered as the user types.
+/// of, the active community's first. The cursor moves with the vim keys,
+/// and `/` opens the search that filters the list.
 #[derive(Debug, Clone)]
 pub struct StickerPicker {
     pub entries: Vec<StickerEntry>,
     pub filtered: Vec<usize>,
     pub selected: usize,
     pub query: String,
+    /// The search is open: keys go to the filter, not to the cursor.
+    pub searching: bool,
+    /// The filter to put back when the search is cancelled.
+    query_before_search: String,
 }
 
 impl StickerPicker {
@@ -1744,12 +1749,17 @@ impl App {
         self.loading_stickers.remove(guild_id);
         self.api_backoff_clear(&format!("stickers:{guild_id}"));
         // the picker holds a copy of the rows: refresh it while it is
-        // open, keeping the cursor where it was
+        // open, keeping the cursor and any search where they were
         if let Some(picker) = &self.sticker_picker {
-            let (query, at) = (picker.query.clone(), picker.selected);
+            let query = picker.query.clone();
+            let at = picker.selected;
+            let searching = picker.searching;
+            let before = picker.query_before_search.clone();
             self.open_sticker_picker(&query);
             if let Some(picker) = self.sticker_picker.as_mut() {
                 picker.selected = at.min(picker.filtered.len().saturating_sub(1));
+                picker.searching = searching;
+                picker.query_before_search = before;
             }
         }
     }
@@ -3281,6 +3291,8 @@ impl App {
             filtered: Vec::new(),
             selected: 0,
             query: query.to_string(),
+            searching: false,
+            query_before_search: String::new(),
         });
         self.filter_sticker_picker();
     }
@@ -3320,6 +3332,56 @@ impl App {
             let at = picker.selected as i64 + delta as i64;
             picker.selected = at.clamp(0, n as i64 - 1) as usize;
         }
+    }
+
+    /// `/`: start a search. The filter empties, so the whole list is
+    /// there to search, and Esc puts back what it was.
+    pub fn sticker_picker_start_search(&mut self) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            picker.query_before_search = std::mem::take(&mut picker.query);
+            picker.searching = true;
+            picker.selected = 0;
+        }
+        self.filter_sticker_picker();
+    }
+
+    /// Leave the search: `keep` for Enter, which keeps the filter and the
+    /// sticker under the cursor, false for Esc, which puts the filter the
+    /// search started from back.
+    pub fn sticker_picker_end_search(&mut self, keep: bool) {
+        let Some(picker) = self.sticker_picker.as_mut() else {
+            return;
+        };
+        picker.searching = false;
+        if keep {
+            picker.query_before_search.clear();
+            return;
+        }
+        picker.query = std::mem::take(&mut picker.query_before_search);
+        self.filter_sticker_picker();
+    }
+
+    /// A character typed into the search: the list narrows and the cursor
+    /// goes to the first sticker that matches.
+    pub fn sticker_picker_search_type(&mut self, ch: char) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            picker.query.push(ch);
+            picker.selected = 0;
+        }
+        self.filter_sticker_picker();
+    }
+
+    /// Backspace in the search, or Ctrl+Backspace and Ctrl+U for all of it.
+    pub fn sticker_picker_search_erase(&mut self, all: bool) {
+        if let Some(picker) = self.sticker_picker.as_mut() {
+            if all {
+                picker.query.clear();
+            } else {
+                picker.query.pop();
+            }
+            picker.selected = 0;
+        }
+        self.filter_sticker_picker();
     }
 
     /// Enter in the picker: stage the sticker under the cursor and close.
@@ -6621,6 +6683,72 @@ mod sticker_tests {
             picker.current().map(|e| e.guild_id.as_str()),
             Some("guild-1")
         );
+    }
+
+    /// The names the filter keeps, in the order the picker lists them.
+    fn matched(app: &App) -> Vec<String> {
+        let picker = app.sticker_picker.as_ref().expect("the picker is open");
+        picker
+            .filtered
+            .iter()
+            .map(|&i| picker.entries[i].sticker.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_search_narrows_the_list_and_esc_puts_the_old_filter_back() {
+        let mut app = guild_app();
+        app.set_guild_stickers(
+            "guild-1",
+            vec![
+                guild_sticker("1", "shipit", &["deploy"]),
+                guild_sticker("2", "party", &[]),
+                guild_sticker("3", "partycat", &["cat"]),
+            ],
+        );
+        app.open_sticker_picker("party");
+        assert_eq!(matched(&app), ["party", "partycat"]);
+        assert!(
+            !app.sticker_picker.as_ref().unwrap().searching,
+            "the picker opens on the list, not in the search"
+        );
+
+        // `/` searches the whole list again
+        app.sticker_picker_start_search();
+        let picker = app.sticker_picker.as_ref().unwrap();
+        assert!(picker.searching && picker.query.is_empty());
+        assert_eq!(picker.filtered.len(), 3);
+
+        // typing narrows it, and the cursor sits on the first match
+        app.sticker_picker_move(2);
+        for ch in "cat".chars() {
+            app.sticker_picker_search_type(ch);
+        }
+        assert_eq!(matched(&app), ["partycat"]);
+        assert_eq!(app.sticker_picker.as_ref().unwrap().selected, 0);
+
+        // Backspace edits what was typed
+        app.sticker_picker_search_erase(false);
+        assert_eq!(app.sticker_picker.as_ref().unwrap().query, "ca");
+
+        // Esc gives back the filter the search started from
+        app.sticker_picker_end_search(false);
+        let picker = app.sticker_picker.as_ref().unwrap();
+        assert!(!picker.searching);
+        assert_eq!(picker.query, "party");
+        assert_eq!(matched(&app), ["party", "partycat"]);
+
+        // Enter keeps what was typed instead
+        app.sticker_picker_start_search();
+        app.sticker_picker_search_type('s');
+        app.sticker_picker_end_search(true);
+        let picker = app.sticker_picker.as_ref().unwrap();
+        assert!(!picker.searching);
+        assert_eq!(picker.query, "s");
+        assert_eq!(matched(&app), ["shipit"]);
+        // and a later Esc closes the picker rather than restoring anything
+        app.dismiss_sticker_picker();
+        assert!(app.sticker_picker.is_none());
     }
 
     #[test]

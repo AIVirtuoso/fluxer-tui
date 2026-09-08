@@ -365,11 +365,16 @@ picker is ready without asking the API for anything.
 
 - **Alt+S**, or `/sticker` on its own, opens the picker: the active
   community's stickers first, then the ones of every other community the
-  client knows, each under its name. Type to filter by sticker name or
-  by any of its tags; **↑**/**↓** move; **Enter** puts the sticker on
-  the message; **Esc** closes. The sticker under the cursor is drawn on
-  the right where the terminal draws pictures.
-- `/sticker <name>` opens the picker with the filter already typed.
+  client knows, each under its name. **j**/**k** (or **↑**/**↓**) move,
+  **g**/**G** jump to the first and the last, **Ctrl+D**/**Ctrl+U** by
+  ten; **Enter** (or **l**) puts the sticker on the message; **q**,
+  **h** or **Esc** closes. The sticker under the cursor is drawn on the
+  right where the terminal draws pictures.
+- **/** searches by name or tag: the list narrows as you type, **Enter**
+  keeps the search and goes back to moving with the vim keys, **Esc**
+  leaves the search and puts the list back as it was, **Backspace**
+  edits it (**Ctrl+U** clears it).
+- `/sticker <name>` opens the picker with the search already filled in.
 - A message carries **at most three** stickers, along with text and
   files. **Enter** in the input sends everything together; **Ctrl+X**
   drops the last staged sticker (and, when none is staged, the last
@@ -674,11 +679,15 @@ Plain letters (without **Ctrl**) are inserted into the message, except where aut
 
 | Key | Action |
 |-----|--------|
-| **↑** / **↓**, **PgUp** / **PgDn**, **Home** / **End** | Move through the stickers. |
-| **Enter** | Put the sticker on the message (at most three) and close. |
-| **Esc** | Close the picker. |
-| **Backspace** (**Ctrl+Backspace**) | Edit (clear) the filter. |
-| **Any character** | Type to filter by name or tag (unless **Ctrl**). |
+| **j** / **k**, **↑** / **↓** | Move through the stickers. |
+| **g** / **G**, **Home** / **End** | First / last sticker. |
+| **Ctrl+D** / **Ctrl+U**, **Ctrl+F** / **Ctrl+B**, **PgDn** / **PgUp** | Move by ten. |
+| **Enter**, **l** / **→** | Put the sticker on the message (at most three) and close. |
+| **q**, **h** / **←**, **Esc** | Close the picker. |
+| **/** | Search by name or tag; the list narrows as you type. |
+| **Enter** (searching) | Keep the search and go back to moving. |
+| **Esc** (searching) | Leave the search; the list goes back as it was. |
+| **Backspace** (**Ctrl+U**) | While searching: edit (clear) what is typed. |
 
 ### Emoji autocomplete (while open)
 
