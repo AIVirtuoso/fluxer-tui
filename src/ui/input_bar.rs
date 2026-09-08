@@ -126,11 +126,53 @@ pub fn input_display_row_count(app: &App, inner_width: u16) -> u16 {
         )
         .saturating_add(strip);
     }
-    let mut n = 1u16;
-    if app.others_typing_phrase().is_some() {
-        n = n.saturating_add(1);
+    1u16.saturating_add(strip)
+}
+
+/// Rows the typing row above the compose box takes: one whenever typing
+/// indicators are on, whether or not anyone is typing. The row is
+/// reserved so that a peer starting or stopping never moves the rest of
+/// the screen; while it is empty it is only background.
+pub fn typing_row_count(app: &App) -> u16 {
+    if app.ui_settings.show_typing_indicators && !app.ui_settings.performance_mode {
+        1
+    } else {
+        0
     }
-    n.saturating_add(strip)
+}
+
+/// The row between the message pane and the compose box that says who is
+/// typing in the current channel. Unlike the web client's, which sits
+/// under the input, it is drawn whether the input is empty or not, so it
+/// stays visible while a message is being written.
+pub fn render_typing_row(frame: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let bg = Style::default().bg(crate::ui::theme::bg_secondary());
+    let line = match app.others_typing_phrase() {
+        Some(phrase) => {
+            let dots = match app.input_bar_anim_phase % 4 {
+                0 => "",
+                1 => ".",
+                2 => "..",
+                _ => "...",
+            };
+            // One cell in from the edge, level with the text in the box.
+            let text = fit(
+                &typing_line_with_dots(&phrase, dots),
+                area.width.saturating_sub(1) as usize,
+            );
+            Line::from(Span::styled(
+                format!(" {text}"),
+                Style::default()
+                    .fg(crate::ui::theme::typing_others())
+                    .add_modifier(Modifier::ITALIC),
+            ))
+        }
+        None => Line::default(),
+    };
+    frame.render_widget(Paragraph::new(line).style(bg), area);
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
@@ -202,18 +244,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         )
     };
 
-    let others_typing = app.others_typing_phrase();
-    let typing_dots: &'static str = if others_typing.is_some() {
-        match app.input_bar_anim_phase % 4 {
-            0 => "",
-            1 => ".",
-            2 => "..",
-            _ => "...",
-        }
-    } else {
-        ""
-    };
-
     let title_line = Line::from(Span::styled(
         format!(" {title}"),
         Style::default()
@@ -263,16 +293,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if can_type && !app.input_is_empty() {
         lines.extend(app.input_display(true));
-    } else if can_type
-        && app.input_is_empty()
-        && let (Some(phrase), Some(ph)) = (others_typing.as_ref(), placeholder.as_ref())
-    {
-        let typing_style = Style::default()
-            .fg(crate::ui::theme::typing_others())
-            .add_modifier(Modifier::ITALIC);
-        let typing_text = typing_line_with_dots(phrase, typing_dots);
-        lines.push(Line::from(Span::styled(typing_text, typing_style)));
-        lines.push(Line::from(Span::styled(ph.clone(), style)));
     } else {
         lines.push(Line::from(Span::styled(content, style)));
     }
@@ -317,12 +337,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         let y = area.y + 1 + strip_rows + (row - scroll);
         Some((x, y))
     } else if focused && can_type {
-        let extra = if app.input_is_empty() && app.others_typing_phrase().is_some() {
-            1u16
-        } else {
-            0
-        };
-        Some((area.x + 1, area.y + 1 + strip_rows + extra))
+        Some((area.x + 1, area.y + 1 + strip_rows))
     } else {
         None
     }
@@ -344,6 +359,7 @@ mod tests {
             kind: 1,
             recipients: vec![UserPartialResponse {
                 id: "o".into(),
+                username: "o".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -405,6 +421,60 @@ mod tests {
             .count();
         assert_eq!(marked, 1, "{:?}", lines[0]);
         assert!(lines[THUMB_ROWS as usize].to_string().contains("shot.png"));
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_typing_row_keeps_its_place_and_shows_while_composing() {
+        let mut app = dm_app();
+        app.focus = Focus::Input;
+        let (w, h) = (80u16, 24u16);
+        // nobody typing, empty input: the box is three rows at the bottom,
+        // with an empty row reserved above it
+        let quiet = draw(&mut app, w, h);
+        let box_top = h as usize - 3;
+        assert!(quiet[box_top].contains('─'), "{}", quiet.join("\n"));
+        assert_eq!(quiet[box_top - 1].trim(), "", "{}", quiet.join("\n"));
+        assert!(
+            quiet[box_top - 2].contains('─'),
+            "the pane's bottom border sits above the typing row:\n{}",
+            quiet.join("\n")
+        );
+
+        // a peer starts typing while a message is being written: the row
+        // fills in, nothing else moves
+        app.record_typing("c1", "o");
+        app.input = "hello".into();
+        let busy = draw(&mut app, w, h);
+        assert!(busy[box_top].contains('─'), "{}", busy.join("\n"));
+        assert!(
+            busy[box_top - 1].contains("o is typing"),
+            "{}",
+            busy.join("\n")
+        );
+        assert!(busy[box_top + 1].contains("hello"), "{}", busy.join("\n"));
+        assert_eq!(quiet[box_top - 2], busy[box_top - 2]);
+
+        // with indicators off the row is not reserved at all
+        app.ui_settings.show_typing_indicators = false;
+        assert_eq!(typing_row_count(&app), 0);
+        let off = draw(&mut app, w, h);
+        assert!(off[box_top].contains('─'), "{}", off.join("\n"));
+        assert!(off[box_top - 1].contains('─'), "{}", off.join("\n"));
     }
 
     #[test]

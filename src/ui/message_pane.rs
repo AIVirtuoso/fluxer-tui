@@ -1995,9 +1995,9 @@ mod bottom_tests {
     }
 
     /// The pane's last content row: above its bottom border, which sits
-    /// above the three-row input box.
+    /// above the typing row and the three-row input box.
     fn bottom_row(rows: &[String]) -> &str {
-        &rows[rows.len() - 5]
+        &rows[rows.len() - 6]
     }
 
     fn switch_to(app: &mut App, channel: &str) {
