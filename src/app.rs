@@ -5553,7 +5553,9 @@ pub fn custom_emoji_marker_slot(style: Style) -> Option<usize> {
 }
 
 /// Media block cells carry their row within the block in the red channel
-/// (0xD0 + row, so 16 rows at most) and the slot in green and blue.
+/// (0xD0 + row) and the slot in green and blue. Four bits hold the row, so
+/// a block is at most [`crate::media::BLOCK_MAX_ROWS`] rows tall; beyond
+/// that every row would say 15 and the overlay would draw nothing.
 pub fn media_marker_style(slot: usize, row: u16) -> Style {
     let k = slot.min(u16::MAX as usize) as u16;
     Style::default().underline_color(Color::Rgb(

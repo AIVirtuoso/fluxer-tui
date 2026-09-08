@@ -174,9 +174,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 "Enter puts it on the message",
                 muted,
             )));
+            // The picture goes under the four lines of text, and no
+            // taller than a block the media overlay can draw.
             let max = (
                 side_inner.width.saturating_sub(1),
-                side_inner.height.saturating_sub(5),
+                side_inner
+                    .height
+                    .saturating_sub(5)
+                    .min(crate::media::BLOCK_MAX_ROWS),
             );
             if let Some(slot) = app.sticker_slot(&entry.sticker.id, entry.sticker.animated, max) {
                 let rect = Rect::new(side_inner.x, side_inner.y + 5, slot.cols, slot.rows);
@@ -223,4 +228,88 @@ fn fit(s: &str, width: usize) -> String {
     }
     out.push('\u{2026}');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::types::GuildResponse;
+    use crate::app::{App, Picture, PictureFrames, ServerSelection};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// A community with one sticker, on a terminal that draws pictures
+    /// (the console renderer, whose cells are the user's 11x25 px).
+    fn app_with_a_sticker() -> App {
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::Guild("g1".to_string()),
+            None,
+            Default::default(),
+        );
+        app.guilds.push(GuildResponse {
+            id: "g1".to_string(),
+            name: "Lab".to_string(),
+            ..Default::default()
+        });
+        app.set_guild_stickers(
+            "g1",
+            vec![crate::api::types::GuildStickerResponse {
+                id: "77".to_string(),
+                name: "shipit".to_string(),
+                ..Default::default()
+            }],
+        );
+        app.pixel_mode = true;
+        app.cell_px = (11, 25);
+        app
+    }
+
+    /// The picker asks for a block the overlay can draw, and the picture
+    /// lands on it. A block over 16 rows tall marks every further row as
+    /// the 16th, and the overlay then draws nothing at all.
+    #[test]
+    fn the_selected_stickers_picture_is_drawn_beside_the_list() {
+        let mut app = app_with_a_sticker();
+        app.open_sticker_picker("");
+        let mut terminal = Terminal::new(TestBackend::new(114, 54)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let slot = app
+            .media_slots
+            .borrow()
+            .iter()
+            .find(|s| s.url.contains("/stickers/77.webp"))
+            .cloned()
+            .expect("the preview claimed no block");
+        assert!(
+            slot.rows > 1 && slot.rows <= crate::media::BLOCK_MAX_ROWS,
+            "a block of {} rows cannot be drawn",
+            slot.rows
+        );
+
+        // the picture arrives: the next frame puts it on those cells
+        let px = crate::media::block_px(slot.cols, slot.rows, app.cell_px);
+        let image = image::RgbaImage::from_pixel(px.0, px.1, image::Rgba([1, 2, 3, 255]));
+        assert!(app.media.start(&slot.key));
+        app.set_media_frames(
+            slot.key.clone(),
+            Some(PictureFrames::new(
+                vec![Picture::Pixels(Arc::new(image))],
+                vec![Duration::ZERO],
+            )),
+            (px.0 * px.1 * 4) as usize,
+        );
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let placed = app.pixel_placements.borrow();
+        assert_eq!(placed.len(), 1, "the sticker's picture was not drawn");
+        assert_eq!(placed[0].area.width, slot.cols);
+        assert_eq!(placed[0].area.height, slot.rows);
+    }
 }

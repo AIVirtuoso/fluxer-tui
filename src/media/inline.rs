@@ -21,6 +21,12 @@ pub const PREVIEW_MIN_ROWS: u16 = 3;
 pub const PREVIEW_MAX_COLS: u16 = 64;
 /// Pictures shown under one message.
 pub const MAX_PICTURES_PER_MESSAGE: usize = 4;
+
+/// Rows a block of cells may have. The marker cells carry their row within
+/// the block in four bits (`app::media_marker_style`), so a taller block
+/// would repeat row 15 and the overlay, which wants the rows to follow one
+/// another, would draw nothing at all.
+pub const BLOCK_MAX_ROWS: u16 = 16;
 /// Frames kept for an animated preview; longer loops are thinned out.
 pub const INLINE_MAX_FRAMES: usize = 48;
 
@@ -138,9 +144,11 @@ pub fn fitted_px(img: (u32, u32), box_px: (u32, u32)) -> (u32, u32) {
 /// Cells (columns, rows) a picture of `img` pixels takes within `max` cells,
 /// keeping its shape; a small picture stays small. Rounded to the nearest
 /// cell: the picture is then stretched to exactly that many cells, at most
-/// half a cell off its true shape.
+/// half a cell off its true shape. Never taller than [`BLOCK_MAX_ROWS`],
+/// so the block is one the overlay can draw.
 pub fn picture_cells(img: (u32, u32), cell: (u32, u32), max: (u16, u16)) -> (u16, u16) {
     let (cw, ch) = cell_or_default(cell);
+    let max = (max.0, max.1.min(BLOCK_MAX_ROWS));
     let (w, h) = fitted_px(img, block_px(max.0, max.1, cell));
     let cols = ((w as f64 / cw as f64).round() as u32).clamp(1, max.0.max(1) as u32) as u16;
     let rows = ((h as f64 / ch as f64).round() as u32).clamp(1, max.1.max(1) as u32) as u16;
@@ -367,6 +375,23 @@ mod tests {
         // small stays small: 35x25 px -> 4 cols, 1 row (nearest)
         assert_eq!(picture_cells((35, 25), CELL, (40, 10)), (4, 1));
         assert_eq!(picture_cells((0, 0), CELL, (40, 10)), (1, 1));
+    }
+
+    /// A block taller than the marker's four bits could not be drawn at
+    /// all, so no box, however tall, yields one.
+    #[test]
+    fn a_block_is_never_taller_than_the_marker_can_carry() {
+        // a square in a tall box: the rows stop at the cap, the shape holds
+        assert_eq!(
+            picture_cells((512, 512), CELL, (40, 36)),
+            (BLOCK_MAX_ROWS * 2, BLOCK_MAX_ROWS)
+        );
+        assert_eq!(
+            picture_cells((512, 2048), CELL, (40, 200)).1,
+            BLOCK_MAX_ROWS
+        );
+        // a box within the cap is untouched
+        assert_eq!(picture_cells((400, 200), CELL, (40, 10)), (40, 10));
     }
 
     #[test]
