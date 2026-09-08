@@ -83,6 +83,12 @@ act on them.
 - **A pings list:** **p** opens the messages that mentioned you, newest
   first, across every community and direct message, the way the web
   client's inbox does; **Enter** jumps to one (see "Interface overview").
+- **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
+  its text and the link of each file on it on the system clipboard
+  through `wl-copy` or `xclip`, and always in the client's own cut
+  buffer, so **Alt+V** pastes it into the compose box - the way on the
+  Linux console, where there is no clipboard. Upstream has no way to
+  copy a message, and **Ctrl+C** there only quits.
 - **Others see you typing:** the client tells the channel while you
   write, with the web client's timing, and a switch (**F2** or
   `send_typing = false`) keeps it to itself. Upstream never sent it.
@@ -565,7 +571,7 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+H** | Same overlay when focus is **not** the message input (in input, **Ctrl+H** / **Ctrl+Backspace** delete the previous word). |
 | **F12** | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging"). |
 | **R** | **Refresh** active channel messages and guild metadata used for loads (clears local message cache for the channel and resets fetch/backoff state for the current guild). |
-| **Ctrl+C** | Quit. |
+| **Ctrl+C** | Quit - except with a **message selected** (it copies that message) or with **text selected in the input** (it copies the selection). |
 | **Ctrl+L** | Log out (clear intent flag) and quit - token is cleared when the process exits cleanly after this. |
 | **q** | Quit. |
 
@@ -593,6 +599,7 @@ Changing channels marks read state for the new channel when applicable.
 | **↓** / **j** | With **message select mode** on: next message. Otherwise: scroll down a few lines. |
 | **s** | **Select** mode: select the latest message (start of thread for reply / react / forward). |
 | **G** | Jump to the **newest** message (also from the Servers and Channels focus). While you are scrolled up, the view stays on the message you are reading as new messages arrive or older ones load. |
+| **y** / **Ctrl+C** | **Copy** the selected message: its text, and the link of each file on it, one per line. It goes to the system clipboard through `wl-copy` (Wayland) or `xclip` (X11) when one of them is there, and always to the client's own cut buffer, so **Alt+V** in the input pastes it - that is the way on the Linux console, where there is no clipboard. |
 | **r** | **Reply** to the selected message (only in select mode). Moves focus to **Input** with reply state set. |
 | **u** | **Profile** of the selected message's author: name, badges, pronouns, bio, when they joined Fluxer and the community, roles, connections, mutual communities and friends. **↑** / **↓** scroll; **p** shows the profile picture full size; **Esc** / **q** close. |
 | **e** | **React**: pick an emoji (**Enter** sends the reaction via API; **Esc** cancels). |
@@ -616,7 +623,7 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | **Ctrl+Backspace** / **Ctrl+H** / **Ctrl+W**, **Alt+D** | Delete the previous / next whitespace-separated word. |
 | **Alt+K** | Delete to the end of the line. |
 | **Shift+movement**, or **Ctrl+Space** then movement | Select; **Esc** drops the selection. |
-| **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selection (also to `wl-copy` or `xclip`) / paste it back. |
+| **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selected text here (also to `wl-copy` or `xclip`) / paste back what was cut or copied, a message copied with **y** included. |
 | **Ctrl+V** | Paste text from the system clipboard at the cursor; an image or files on it are attached instead. |
 | **Ctrl+B**, **Ctrl+I** (or **Tab** with a selection), **Alt+U**, **Ctrl+S**, **Alt+C**, **Alt+P** | Bold, italic, underline, strikethrough, code, spoiler around the selection or the word at the cursor; again to remove. |
 | **Ctrl+Z** / **Ctrl+Y** | Undo / redo. |

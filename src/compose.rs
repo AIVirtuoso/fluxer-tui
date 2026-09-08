@@ -739,7 +739,7 @@ impl crate::app::App {
         };
         let text = self.input_text();
         self.cut_buffer = text[s..e].to_string();
-        copy_to_system_clipboard(&self.cut_buffer);
+        let _ = copy_to_system_clipboard(&self.cut_buffer);
         self.input_clear_selection();
         true
     }
@@ -749,7 +749,7 @@ impl crate::app::App {
         let Some(gone) = self.input_delete_selection() else {
             return false;
         };
-        copy_to_system_clipboard(&gone);
+        let _ = copy_to_system_clipboard(&gone);
         self.cut_buffer = gone;
         true
     }
@@ -846,8 +846,9 @@ impl crate::app::App {
 /// xclip under X11 (the same choice as reading it for Ctrl+V), whichever
 /// the session has; nowhere else, such as on the console, the cut buffer
 /// alone keeps it. Fire and forget: the program's exit status is not
-/// interesting enough to wait for.
-pub fn copy_to_system_clipboard(text: &str) {
+/// interesting enough to wait for. True when one of them took the text,
+/// so a caller can say whether the clipboard has it.
+pub fn copy_to_system_clipboard(text: &str) -> bool {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
@@ -875,8 +876,9 @@ pub fn copy_to_system_clipboard(text: &str) {
         std::thread::spawn(move || {
             let _ = child.wait();
         });
-        return;
+        return true;
     }
+    false
 }
 
 #[cfg(test)]

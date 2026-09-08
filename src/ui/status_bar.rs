@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Channels => " · j/k channels · n notifications · Enter msg · i input · R refresh",
         Focus::Messages => {
             if app.selected_message_index.is_some() {
-                " · r reply · f forward · e react · Ctrl+E edit · Ctrl+D del · Alt+A"
+                " · r/y reply/copy · f forward · e react · Ctrl+E edit · Ctrl+D del"
             } else {
                 " · s select · Alt+A · i input · Ctrl+H help"
             }

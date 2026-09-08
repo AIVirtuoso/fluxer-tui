@@ -4135,6 +4135,22 @@ impl App {
             .and_then(|i| msgs.get(i).cloned())
     }
 
+    /// y or Ctrl+C on a selected message: its text into the cut buffer,
+    /// where Alt+V picks it up in the compose box, and into the system
+    /// clipboard where a program for one exists. None when the message
+    /// carries no text at all; the bool says whether the clipboard took
+    /// it, which it never does on the console.
+    pub fn copy_selected_message(&mut self) -> Option<bool> {
+        let msg = self.selected_message()?;
+        let text = message_copy_text(&msg);
+        if text.is_empty() {
+            return None;
+        }
+        let to_clipboard = crate::compose::copy_to_system_clipboard(&text);
+        self.cut_buffer = text;
+        Some(to_clipboard)
+    }
+
     // r (as in reply)
 
     pub fn start_reply(&mut self) {
@@ -4741,6 +4757,30 @@ impl App {
     pub fn can_react_in_active_channel(&self) -> bool {
         self.active_channel_permissions() & crate::permissions::ADD_REACTIONS != 0
     }
+}
+
+/// What a copied message hands over: the text as it was written, and
+/// the link of every attachment on its own line under it. Stickers,
+/// reactions and embeds carry no text of their own and are left out, so
+/// a message made of nothing but a sticker copies as nothing.
+pub fn message_copy_text(msg: &MessageResponse) -> String {
+    let mut out = msg.content.trim_end().to_string();
+    for att in &msg.attachments {
+        let Some(url) = att
+            .url
+            .as_deref()
+            .or(att.proxy_url.as_deref())
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(url);
+    }
+    out
 }
 
 fn picker_channel_line(ch: &ChannelResponse) -> String {
@@ -6285,5 +6325,107 @@ mod pings_tests {
         assert!(app.pings_messages().is_empty());
         assert_eq!(app.pings_dismiss_selected(), None);
         assert!(!app.pings_jump());
+    }
+}
+
+#[cfg(test)]
+mod copy_message_tests {
+    use super::*;
+    use crate::api::types::{CHANNEL_DM, ChannelResponse, MessageAttachmentResponse};
+
+    fn attachment(url: &str) -> MessageAttachmentResponse {
+        MessageAttachmentResponse {
+            id: "a1".to_string(),
+            filename: "shot.png".to_string(),
+            url: Some(url.to_string()),
+            ..MessageAttachmentResponse::default()
+        }
+    }
+
+    #[test]
+    fn copy_text_is_the_content_and_the_file_links() {
+        let plain = MessageResponse {
+            content: "hello there  \n".to_string(),
+            ..MessageResponse::default()
+        };
+        assert_eq!(message_copy_text(&plain), "hello there");
+
+        let with_file = MessageResponse {
+            content: "look".to_string(),
+            attachments: vec![attachment("https://cdn.example/shot.png")],
+            ..MessageResponse::default()
+        };
+        assert_eq!(
+            message_copy_text(&with_file),
+            "look\nhttps://cdn.example/shot.png"
+        );
+
+        let file_only = MessageResponse {
+            attachments: vec![attachment("https://cdn.example/shot.png")],
+            ..MessageResponse::default()
+        };
+        assert_eq!(
+            message_copy_text(&file_only),
+            "https://cdn.example/shot.png"
+        );
+
+        assert!(message_copy_text(&MessageResponse::default()).is_empty());
+    }
+
+    #[test]
+    fn copying_a_message_fills_the_cut_buffer() {
+        let channel = ChannelResponse {
+            id: "dm-1".to_string(),
+            kind: CHANNEL_DM,
+            ..ChannelResponse::default()
+        };
+        let mut app = App::new(
+            Default::default(),
+            Default::default(),
+            None,
+            Vec::new(),
+            vec![channel],
+            ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        app.selected_channel_id = Some("dm-1".to_string());
+        app.messages.insert(
+            "dm-1".to_string(),
+            std::rc::Rc::new(vec![
+                MessageResponse {
+                    id: "1".to_string(),
+                    channel_id: "dm-1".to_string(),
+                    content: "first".to_string(),
+                    ..MessageResponse::default()
+                },
+                MessageResponse {
+                    id: "2".to_string(),
+                    channel_id: "dm-1".to_string(),
+                    content: "second".to_string(),
+                    ..MessageResponse::default()
+                },
+            ]),
+        );
+
+        // Nothing selected: nothing to copy.
+        assert!(app.copy_selected_message().is_none());
+        assert!(app.cut_buffer.is_empty());
+
+        app.selected_message_index = Some(0);
+        assert!(app.copy_selected_message().is_some());
+        assert_eq!(app.cut_buffer, "first");
+
+        // A message with neither text nor files leaves the buffer alone.
+        app.messages.insert(
+            "dm-1".to_string(),
+            std::rc::Rc::new(vec![MessageResponse {
+                id: "3".to_string(),
+                channel_id: "dm-1".to_string(),
+                ..MessageResponse::default()
+            }]),
+        );
+        assert!(app.copy_selected_message().is_none());
+        assert_eq!(app.cut_buffer, "first");
     }
 }
