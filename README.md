@@ -84,9 +84,14 @@ own section or table row further down.
   looked failed, and a saved entry emptied the client at the next
   start); and a community whose member list times out or is off limits
   no longer trips the client up, which keeps what arrived and says so;
-  and a channel that received a message over the gateway before it was
+  no longer trips the client up, which keeps what arrived and says so;
+  a channel that received a message over the gateway before it was
   opened now loads its history (the client took the one message for the
-  loaded history and showed nothing else).
+  loaded history and showed nothing else); and a gateway connection that
+  dies without saying so (a sleep, a network change) is noticed within
+  15 s of an unanswered heartbeat and resumed, where before the client
+  sat "Connected" with no messages, typing or presence arriving until
+  the socket itself gave up.
 
 **Sending**
 

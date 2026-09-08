@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::time::{Duration, MissedTickBehavior, interval, sleep};
+use tokio::time::{Duration, Instant, MissedTickBehavior, interval, sleep, sleep_until};
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -21,6 +21,21 @@ const OP_RECONNECT: u8 = 7;
 const OP_INVALID_SESSION: u8 = 9;
 const OP_HELLO: u8 = 10;
 const OP_HEARTBEAT_ACK: u8 = 11;
+
+/// How long a heartbeat may go unanswered before the connection counts
+/// as dead. The server answers at once, and the web client gives it the
+/// same 15 s. Without this a connection that dies without a close frame
+/// (a laptop sleep, a network change, a NAT entry that expired) stays
+/// "Connected" for as long as the kernel keeps the socket: heartbeats go
+/// out into the void, the server drops the session after 45 s, and no
+/// message, typing or presence event arrives any more.
+const HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Whether a heartbeat sent at `sent` is still unanswered at `now` for
+/// longer than the timeout allows.
+fn heartbeat_ack_overdue(sent: Option<Instant>, now: Instant) -> bool {
+    sent.is_some_and(|t| now.saturating_duration_since(t) >= HEARTBEAT_ACK_TIMEOUT)
+}
 const OP_LAZY_REQUEST: u8 = 14;
 
 #[derive(Debug, Clone)]
@@ -215,11 +230,32 @@ async fn run_connection(
     let mut heartbeat = interval(Duration::from_millis(heartbeat_ms));
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     heartbeat.tick().await;
+    // when the last heartbeat went out, until the server acknowledges it
+    let mut heartbeat_sent: Option<Instant> = None;
 
     loop {
+        let ack_deadline = heartbeat_sent.map_or_else(Instant::now, |t| t + HEARTBEAT_ACK_TIMEOUT);
         tokio::select! {
             _ = heartbeat.tick() => {
+                if heartbeat_ack_overdue(heartbeat_sent, Instant::now()) {
+                    crate::debug::log("gateway", "heartbeat not acknowledged, connection is dead");
+                    return Ok(ConnectionOutcome::Reconnect { clear_resume: false });
+                }
                 send_payload(&mut write, OP_HEARTBEAT, &json!(*last_sequence)).await?;
+                heartbeat_sent.get_or_insert_with(Instant::now);
+            }
+            _ = sleep_until(ack_deadline), if heartbeat_sent.is_some() => {
+                crate::debug::log(
+                    "gateway",
+                    format!(
+                        "no heartbeat ack in {} s, connection is dead",
+                        HEARTBEAT_ACK_TIMEOUT.as_secs()
+                    ),
+                );
+                let _ = event_tx.send(AppEvent::ApiError(
+                    "Gateway stopped answering; reconnecting".to_string(),
+                ));
+                return Ok(ConnectionOutcome::Reconnect { clear_resume: false });
             }
             command = command_rx.recv() => {
                 match command {
@@ -317,8 +353,16 @@ async fn run_connection(
                     }
                     OP_HEARTBEAT => {
                         send_payload(&mut write, OP_HEARTBEAT, &json!(*last_sequence)).await?;
+                        heartbeat_sent.get_or_insert_with(Instant::now);
                     }
-                    OP_HEARTBEAT_ACK => {}
+                    OP_HEARTBEAT_ACK => {
+                        if let Some(sent) = heartbeat_sent.take() {
+                            crate::debug::log(
+                                "gateway",
+                                format!("heartbeat acknowledged in {} ms", sent.elapsed().as_millis()),
+                            );
+                        }
+                    }
                     OP_RECONNECT => {
                         crate::debug::log("gateway", "server asks to reconnect");
                         return Ok(ConnectionOutcome::Reconnect { clear_resume: false });
@@ -443,4 +487,24 @@ async fn send_op_json(write: &mut WsWrite, op: u8, d: Value) -> Result<()> {
         .send(Message::Text(payload.into()))
         .await
         .context("failed to send gateway payload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_heartbeat_is_overdue_only_after_the_timeout() {
+        let now = Instant::now();
+        assert!(!heartbeat_ack_overdue(None, now));
+        assert!(!heartbeat_ack_overdue(Some(now), now));
+        assert!(!heartbeat_ack_overdue(
+            Some(now),
+            now + HEARTBEAT_ACK_TIMEOUT - Duration::from_millis(1)
+        ));
+        assert!(heartbeat_ack_overdue(
+            Some(now),
+            now + HEARTBEAT_ACK_TIMEOUT
+        ));
+    }
 }
