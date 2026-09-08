@@ -743,4 +743,30 @@ instead of a display, which is how the console renderer is tested.
 
 ## License
 
-MIT
+Copyright (C) 2026 polonius-dev and the fluxer-tui fork contributors.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY, without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+Public License in `LICENSE` for details.
+
+### Why there are two license files
+
+The fork builds on [dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui),
+which is MIT-licensed, and the MIT license permits redistribution under
+stricter terms as long as its notice is kept.
+
+- Everything that was already in the upstream repository when the fork
+  branched off (upstream commit `dc78802`, 2026-04-13) stays under the
+  MIT license. Its notice is in `LICENSE-MIT` and must travel with every
+  copy of this program, source or binary.
+- Everything added in the fork since then, the commits that
+  `git log dc78802..master` lists, is licensed GPL-3.0-or-later. One
+  outside contribution made while the fork was still labelled MIT keeps
+  the terms it was offered under.
+
+The combined work is therefore distributed under the GPL: use it, modify
+it and redistribute it under those terms, keeping both notices.
