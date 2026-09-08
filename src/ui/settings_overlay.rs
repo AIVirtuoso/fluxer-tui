@@ -58,14 +58,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
     let typing_on = app.ui_settings.show_typing_indicators;
     let typing_primary = if typing_on {
-        ("On", "Show activity in the current channel")
+        ("On", "Who is typing, in the compose box's bottom edge")
     } else {
-        ("Off", "Hide activity in the current channel")
+        ("Off", "Nothing about who is typing")
     };
     let typing_alt = if typing_on {
-        ("Off", "Hide activity in the current channel")
+        ("Off", "Nothing about who is typing")
     } else {
-        ("On", "Show activity in the current channel")
+        ("On", "Who is typing, in the compose box's bottom edge")
     };
     let perf_on = app.ui_settings.performance_mode;
     let perf_primary = if perf_on {
