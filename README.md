@@ -668,9 +668,12 @@ When something goes wrong, the client can say what it saw:
 
 - **`/debug`** (or **F12**) opens the debug panel: version, terminal
   and picture protocol, cell size, gateway state, what is loaded, how
-  long the last frame took, and the last few hundred log lines. **s**
-  in the panel, or `/debug save`, writes all of that to a file whose
-  path shows in the status line; attach it to a bug report.
+  long the last frame took, where the log is, and the last few hundred
+  log lines. The **debug log** row names the file in use, `--debug-log`
+  or not, and when no log is being kept it names the one `--debug`
+  would write. **s** in the panel, or `/debug save`, writes all of that
+  to a file whose path shows in the status line; attach it to a bug
+  report.
 - **`/debug frame`**, or **f** in the panel, puts a map of the screen
   into the log for a layout bug ("the text is not where it should
   be"): one character per cell, `#` for a border, `P` for a picture,
@@ -682,8 +685,9 @@ When something goes wrong, the client can say what it saw:
   lengths are in it. `/debug save` afterwards keeps it with the rest.
 - **`--debug`** keeps the whole log from start to exit, panics
   included, in `$XDG_STATE_HOME/fluxer-tui/debug.log` (that is
-  `~/.local/state/fluxer-tui/debug.log` as a rule). `--debug-log FILE`
-  names the file. `FLUXER_TUI_DEBUG=1` (or a path) does the same from
+  `~/.local/state/fluxer-tui/debug.log` as a rule; `--help` says so too,
+  and the debug panel shows the path in use). `--debug-log FILE` names
+  the file. `FLUXER_TUI_DEBUG=1` (or a path) does the same from
   the environment, which is handy with `nix run`. The folder is made
   on every start, so it is there to look in; the file only appears
   when a log is kept, and `/debug save` snapshots land beside it.
@@ -703,7 +707,10 @@ plus the client's own status-line messages, errors and frame timings.
 It never contains message text, user or community names, e-mail
 addresses, file names or paths (a status line that mentions one is
 logged with `<file>` or `<path>` in its place), notification text, or
-the token. Events that come in bursts, presence changes for one, are
+the token. The log's own path is the one path shown on screen, in the
+debug panel, and a snapshot saved from that panel scrubs it to `<path>`
+like any other, so a file you attach to a bug report does not say where
+your home directory is. Events that come in bursts, presence changes for one, are
 logged once and then every hundredth time.
 
 ## Console mode (Linux VT, no terminal emulator)

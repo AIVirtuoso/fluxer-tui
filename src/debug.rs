@@ -97,6 +97,23 @@ pub fn enabled() -> bool {
     sink().path.is_some()
 }
 
+/// Where the log is, for a person to read: the file being written to, or
+/// the one `--debug` would use, with the home directory as `~`. For the
+/// screen and `--help` only; the log itself never carries a path, and
+/// `save_snapshot` scrubs this back to `<path>` before it reaches a file
+/// that someone might attach to a bug report.
+pub fn log_location() -> String {
+    abbreviate_home(&path().unwrap_or_else(default_path), dirs::home_dir())
+}
+
+fn abbreviate_home(path: &Path, home: Option<PathBuf>) -> String {
+    let text = path.display().to_string();
+    home.map(|h| h.display().to_string())
+        .filter(|h| !h.is_empty())
+        .and_then(|h| text.strip_prefix(&h).map(|rest| format!("~{rest}")))
+        .unwrap_or(text)
+}
+
 /// One line: the time, the area it concerns (gateway, http, media, ...),
 /// and what happened.
 pub fn log(area: &str, message: impl AsRef<str>) {
@@ -151,7 +168,7 @@ pub fn save_snapshot(facts: &[(String, String)]) -> std::io::Result<PathBuf> {
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     )?;
     for (name, value) in facts {
-        writeln!(file, "{name}: {value}")?;
+        writeln!(file, "{name}: {}", scrub_private(value))?;
     }
     writeln!(file)?;
     for line in recent(RING_LINES) {
@@ -330,6 +347,34 @@ fn shape_depth(value: &Value, key: Option<&str>, depth: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_log_location_shows_the_home_directory_as_a_tilde() {
+        let home = PathBuf::from("/home/someone");
+        assert_eq!(
+            abbreviate_home(
+                &home.join(".local/state/fluxer-tui/debug.log"),
+                Some(home.clone())
+            ),
+            "~/.local/state/fluxer-tui/debug.log"
+        );
+        // a log put somewhere else, and a run with no home, stay as they are
+        let elsewhere = Path::new("/var/log/fluxer.log");
+        assert_eq!(
+            abbreviate_home(elsewhere, Some(home)),
+            "/var/log/fluxer.log"
+        );
+        assert_eq!(abbreviate_home(elsewhere, None), "/var/log/fluxer.log");
+    }
+
+    #[test]
+    fn a_snapshot_fact_naming_a_path_is_scrubbed() {
+        // facts go on screen with the real path and into the file without it
+        assert_eq!(
+            scrub_private("kept at ~/.local/state/fluxer-tui/debug.log, snapshots beside it"),
+            "kept at <path>, snapshots beside it"
+        );
+    }
 
     #[test]
     fn a_shape_shows_fields_types_sizes_and_ids_but_no_content() {
