@@ -78,7 +78,10 @@ own section or table row further down.
   (the API's answer to a change could not be read, so every change
   looked failed, and a saved entry emptied the client at the next
   start); and a community whose member list times out or is off limits
-  no longer trips the client up, which keeps what arrived and says so.
+  no longer trips the client up, which keeps what arrived and says so;
+  and a channel that received a message over the gateway before it was
+  opened now loads its history (the client took the one message for the
+  loaded history and showed nothing else).
 
 **Sending**
 

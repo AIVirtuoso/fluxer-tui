@@ -827,6 +827,11 @@ pub struct App {
     pub guild_members_synced: HashSet<String>,
     pub api_backoff_until: HashMap<String, Instant>,
     pub loading_messages: HashSet<String>,
+    /// Channels whose history has been fetched. `messages` alone cannot
+    /// say: a message arriving over the gateway makes an entry for a
+    /// channel that was never opened, and that entry must not stop the
+    /// fetch when the channel is.
+    pub messages_loaded: HashSet<String>,
     pub loading_emojis: HashSet<String>,
     pub loading_roles: HashSet<String>,
     pub guild_roles_forbidden: HashSet<String>,
@@ -1002,6 +1007,7 @@ impl App {
             guild_members_synced: HashSet::new(),
             api_backoff_until: HashMap::new(),
             loading_messages: HashSet::new(),
+            messages_loaded: HashSet::new(),
             loading_emojis: HashSet::new(),
             loading_roles: HashSet::new(),
             guild_roles_forbidden: HashSet::new(),
@@ -3492,12 +3498,26 @@ impl App {
         } else {
             self.messages_older_exhausted.remove(channel_id);
         }
+        // Messages that came over the gateway while the fetch was on its
+        // way, or before the channel was opened, and are newer than
+        // anything fetched stay; the fetch is the history, not the present.
+        if let Some(existing) = self.messages.get(channel_id) {
+            let newest = messages.last().map(|m| snowflake_sort_key(&m.id));
+            for m in existing.iter() {
+                let key = snowflake_sort_key(&m.id);
+                if newest.is_none_or(|n| key > n) && !messages.iter().any(|f| f.id == m.id) {
+                    messages.push(m.clone());
+                }
+            }
+            messages.sort_by_key(|message| snowflake_sort_key(&message.id));
+        }
         if messages.len() > MAX_MESSAGES {
             messages.drain(0..messages.len() - MAX_MESSAGES);
         }
         self.messages_version = self.messages_version.wrapping_add(1);
         self.messages
             .insert(channel_id.to_string(), std::rc::Rc::new(messages));
+        self.messages_loaded.insert(channel_id.to_string());
         self.loading_messages.remove(channel_id);
         self.api_backoff_clear(&format!("messages:{channel_id}"));
         self.message_scroll_from_bottom = 0;
@@ -4591,6 +4611,57 @@ mod tests {
         app.guild_channels.insert("guild-1".to_string(), channels);
         app.selected_server = ServerSelection::Guild("guild-1".to_string());
         app
+    }
+
+    fn dm_message(id: &str, channel_id: &str) -> MessageResponse {
+        MessageResponse {
+            id: id.to_string(),
+            channel_id: channel_id.to_string(),
+            author: UserPartialResponse {
+                id: "other".to_string(),
+                ..Default::default()
+            },
+            content: format!("message {id}"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_gateway_message_does_not_count_as_loaded_history() {
+        let channel = ChannelResponse {
+            id: "dm-1".to_string(),
+            kind: CHANNEL_DM,
+            ..Default::default()
+        };
+        let mut app = test_app(vec![channel]);
+        // a message arrives for a channel that was never opened
+        assert!(app.upsert_message(dm_message("300", "dm-1")));
+        assert!(app.messages.contains_key("dm-1"));
+        assert!(
+            !app.messages_loaded.contains("dm-1"),
+            "the history must still be fetched when the channel is opened"
+        );
+
+        // the fetch answers with the history; the newer gateway message stays
+        app.set_channel_messages(
+            "dm-1",
+            vec![dm_message("200", "dm-1"), dm_message("100", "dm-1")],
+        );
+        assert!(app.messages_loaded.contains("dm-1"));
+        let ids: Vec<&str> = app.messages["dm-1"].iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["100", "200", "300"]);
+
+        // a fetch that already has it does not double it
+        app.set_channel_messages(
+            "dm-1",
+            vec![
+                dm_message("300", "dm-1"),
+                dm_message("200", "dm-1"),
+                dm_message("100", "dm-1"),
+            ],
+        );
+        let ids: Vec<&str> = app.messages["dm-1"].iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["100", "200", "300"]);
     }
 
     #[test]
