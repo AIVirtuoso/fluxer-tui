@@ -11,6 +11,7 @@ mod media;
 mod notify;
 mod permissions;
 mod slash_commands;
+mod term_bg;
 mod ui;
 
 use crate::api::client::{ApiError, FluxerHttpClient};
@@ -117,6 +118,44 @@ fn graphics_query_skipped(args: &Args) -> bool {
         || std::env::var("FLUXER_TUI_NO_GRAPHICS_QUERY")
             .is_ok_and(|v| !v.trim().is_empty() && v != "0")
 }
+
+/// The terminal's own background colour, for blending pictures that have
+/// transparency onto. The answer is logged either way: a terminal that
+/// does not answer leaves black under the alpha, which is worth knowing
+/// when a picture looks wrong.
+fn blend_from_terminal(app: &mut App) -> Option<[u8; 3]> {
+    let asked = std::time::Instant::now();
+    let bg = term_bg::query(Duration::from_millis(TERM_BG_TIMEOUT_MS));
+    match bg {
+        Some([r, g, b]) => debug::log(
+            "start",
+            format!(
+                "terminal background #{r:02x}{g:02x}{b:02x} ({} ms)",
+                asked.elapsed().as_millis()
+            ),
+        ),
+        None => {
+            debug::log(
+                "start",
+                format!(
+                    "terminal did not report a background ({} ms)",
+                    asked.elapsed().as_millis()
+                ),
+            );
+            app.set_status(
+                "The terminal did not say what its background is; set [ui] image_background \
+                 if pictures with transparency look wrong"
+                    .to_string(),
+            );
+        }
+    }
+    bg
+}
+
+/// How long to wait for the OSC 11 answer. The Device Status Report sent
+/// with it comes back at once from anything that does not know OSC 11, so
+/// this is only ever spent on a terminal that answers neither.
+const TERM_BG_TIMEOUT_MS: u64 = 250;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -265,6 +304,9 @@ async fn main() -> Result<()> {
     if let Some(msg) = console_fallback {
         app.set_status(msg);
     }
+    // The colour a picture's transparency is blended onto; None where the
+    // protocol carries alpha itself (the console renderer, kitty, iTerm2).
+    let mut image_bg: Option<[u8; 3]> = None;
     let _guard = TerminalGuard {
         console: console_mode,
     };
@@ -276,6 +318,23 @@ async fn main() -> Result<()> {
         debug::log("start", "terminal graphics query skipped as asked");
         app.image_picker = None;
     } else {
+        // Ask before the picker does: both read stdin raw, and the
+        // picker's own reader would swallow this answer.
+        image_bg = match term_bg::setting(&config.ui.image_background) {
+            None => {
+                app.set_status(format!(
+                    "[ui] image_background: {} is not a colour, asking the terminal instead",
+                    config.ui.image_background
+                ));
+                blend_from_terminal(&mut app)
+            }
+            Some(term_bg::Blend::None) => None,
+            Some(term_bg::Blend::Fixed(rgb)) => Some(rgb),
+            Some(term_bg::Blend::Ask) => match ui::theme::bg_rgb() {
+                Some(rgb) => Some(rgb),
+                None => blend_from_terminal(&mut app),
+            },
+        };
         app.image_picker = match ratatui_image::picker::Picker::from_query_stdio() {
             Ok(picker) => {
                 debug::log(
@@ -294,9 +353,11 @@ async fn main() -> Result<()> {
                 None
             }
         };
-        // whatever the encoder still pads gets the theme's background, not black
+        // Sixel and halfblocks have no alpha: a picture with transparency
+        // is blended onto this before it is encoded, and whatever the
+        // encoder still pads gets it too instead of black.
         if let Some(picker) = app.image_picker.as_mut()
-            && let Some(bg) = ui::theme::bg_rgb()
+            && let Some(bg) = image_bg
         {
             picker.set_background_color(image::Rgba([bg[0], bg[1], bg[2], 255]));
         }
@@ -427,10 +488,13 @@ async fn main() -> Result<()> {
             for (id, url) in app.take_custom_emoji_wants() {
                 spawn_custom_emoji_fetch(authed_client.clone(), event_tx.clone(), id, url);
             }
-            // sixel cannot show transparency: round avatars there need the
-            // theme's background colour to sit on
+            // sixel and halfblocks carry no alpha: a picture with
+            // transparency, and a round avatar, need a colour to sit on
             let opaque_bg = match app.image_picker.as_ref().map(|p| p.protocol_type()) {
-                Some(ratatui_image::picker::ProtocolType::Sixel) => ui::theme::bg_rgb(),
+                Some(
+                    ratatui_image::picker::ProtocolType::Sixel
+                    | ratatui_image::picker::ProtocolType::Halfblocks,
+                ) => image_bg,
                 _ => None,
             };
             for slot in app.take_media_wants() {

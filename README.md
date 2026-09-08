@@ -283,9 +283,9 @@ console, the message pane looks like the web app:
 
 - **Profile pictures** sit to the left of each message, two rows tall; a
   user without one gets the web app's default avatar. They are round on
-  the console, kitty and iTerm2; sixel has no transparency, so there they
-  are round only with the Fluxer theme (whose background is known) and
-  square with the terminal theme.
+  the console, kitty and iTerm2, whose pictures carry transparency, and
+  round on sixel and halfblocks as well whenever the colour to blend them
+  onto is known (see "Transparent pictures" below).
 - **Pictures, GIFs and video posters** are shown under the message as
   previews: scaled to fit about a third of the pane, never larger than the
   original. GIFs from the picker (KLIPY, Tenor) and animated WebP play.
@@ -304,6 +304,7 @@ a size cap, the oldest files evicted first. Nothing else is written.
 [ui]
 inline_media = true   # pictures and GIFs under messages
 avatars = true        # profile pictures beside messages
+image_background = "" # see "Transparent pictures" below
 
 [media]
 disk_cache_mb = 64    # 0 turns the disk cache off
@@ -314,6 +315,35 @@ audio_player = ""     # see "Audio" below
 Both `[ui]` switches are also in the settings overlay (**F2**). A picture
 cut by the pane's edge shows the part that is on screen (on sixel, whole
 six-pixel bands of it).
+
+### Transparent pictures
+
+Sixel and halfblocks carry no alpha channel, so anything transparent — the
+corners of a round avatar, a sticker, a PNG with a hole in it — has to be
+blended onto a solid colour before it is encoded. Without that the encoder
+keeps whatever RGB sits under the alpha, which is black in most files:
+black boxes where the picture should be see-through, and dark halos along
+its antialiased edges.
+
+The Fluxer theme fixes a background and that colour is used. The terminal
+theme's background is the terminal's own, so the client asks for it at
+start with an OSC 11 query; foot, xterm, kitty, wezterm, Konsole and most
+others answer. `[ui] image_background` decides what is used:
+
+```toml
+[ui]
+# "" or "auto": the theme's background where the theme fixes one, the
+#   terminal's own otherwise
+# "none":       no blending; the protocol keeps what is under the alpha
+# a colour:     "#002b36", "002b36" or "rgb:00/2b/36"
+image_background = ""
+```
+
+A terminal that answers nothing costs a quarter of a second at start,
+leaves black under the transparency and says so in the status bar; set the
+colour by hand there. The debug log records the answer either way. On the
+console, kitty and iTerm2 the pictures keep their alpha and the setting
+changes nothing.
 
 Scrolling is cheap on a terminal: when the pane merely scrolled, the
 terminal is asked to shift those rows itself (pictures move with them, as

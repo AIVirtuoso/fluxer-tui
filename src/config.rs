@@ -112,6 +112,13 @@ pub struct UiSettings {
     /// The program to play it with; `[media] audio_player` or the first
     /// usual player on PATH when empty.
     pub notify_sound_player: String,
+    /// The colour that pictures with transparency are blended onto where
+    /// the picture protocol has no alpha channel (sixel, halfblocks).
+    /// Empty or "auto" takes the theme's background where the theme fixes
+    /// one and asks the terminal for its own otherwise; "none" encodes the
+    /// alpha away and lets the protocol make of it what it will; anything
+    /// else is a colour, `#002b36` or `rgb:00/2b/36`.
+    pub image_background: String,
 }
 
 const fn default_true() -> bool {
@@ -137,6 +144,7 @@ impl Default for UiSettings {
             notify_sound: true,
             notify_sound_file: String::new(),
             notify_sound_player: String::new(),
+            image_background: String::new(),
         }
     }
 }
