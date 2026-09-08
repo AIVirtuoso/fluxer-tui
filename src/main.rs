@@ -2007,6 +2007,7 @@ fn handle_key_event(
             if let Some(channel_id) = app.active_channel_id() {
                 app.loading_messages.remove(&channel_id);
                 app.messages.remove(&channel_id);
+                app.messages_loaded.remove(&channel_id);
                 app.messages_older_exhausted.remove(&channel_id);
                 app.api_backoff_clear_channel_messages(&channel_id);
             }
@@ -2102,7 +2103,7 @@ fn schedule_needed_fetches(
 
     if let Some(channel_id) = app.active_channel_id()
         && app.active_channel_is_text()
-        && !app.messages.contains_key(&channel_id)
+        && !app.messages_loaded.contains(&channel_id)
         && app.api_backoff_can_try(&format!("messages:{channel_id}"))
         && app.loading_messages.insert(channel_id.clone())
     {
