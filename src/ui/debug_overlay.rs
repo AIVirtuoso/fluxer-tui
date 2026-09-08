@@ -66,9 +66,15 @@ pub fn facts(app: &App) -> Vec<(String, String)> {
     out.push((
         "debug log".into(),
         if crate::debug::enabled() {
-            "kept in debug.log under $XDG_STATE_HOME/fluxer-tui (~/.local/state/fluxer-tui as a rule)".into()
+            format!(
+                "kept at {}, snapshots beside it",
+                crate::debug::log_location()
+            )
         } else {
-            "off; --debug keeps one under $XDG_STATE_HOME/fluxer-tui (~/.local/state/fluxer-tui as a rule)".into()
+            format!(
+                "off; --debug or FLUXER_TUI_DEBUG=1 keeps one at {}",
+                crate::debug::log_location()
+            )
         },
     ));
     out

@@ -79,7 +79,7 @@ struct Args {
     logout: bool,
     #[arg(
         long,
-        help = "Keep a debug log (event shapes, ids, sizes, timings; never message text or names) in the state directory"
+        help = "Keep a debug log (event shapes, ids, sizes, timings; never message text or names) in $XDG_STATE_HOME/fluxer-tui/debug.log, as a rule ~/.local/state/fluxer-tui/debug.log"
     )]
     debug: bool,
     #[arg(
