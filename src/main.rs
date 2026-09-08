@@ -54,7 +54,19 @@ fn err_is_http_status(err: &AnyhowError, want: StatusCode) -> bool {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "fluxer-tui", version = env!("CARGO_PKG_VERSION"))]
+#[command(
+    name = "fluxer-tui",
+    version = env!("CARGO_PKG_VERSION"),
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\nCopyright (C) 2026 polonius-dev and the fluxer-tui fork contributors",
+        "\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>",
+        "\nParts of this program stay under the MIT license of the upstream project",
+        "\ndogbonewish/fluxer-tui; see LICENSE-MIT.",
+        "\nThis is free software: you are free to change and redistribute it.",
+        "\nThere is NO WARRANTY, to the extent permitted by law."
+    )
+)]
 #[command(about = "A ratatui-based Fluxer terminal client")]
 struct Args {
     #[arg(long)]
