@@ -74,6 +74,9 @@ own section or table row further down.
   while you write. Upstream put the line inside the box, only while it
   was empty, and the whole screen shifted by a row every time someone
   started or stopped (see "Interface overview").
+- **Others see you typing:** the client tells the channel while you
+  write, with the web client's timing, and a switch (**F2** or
+  `send_typing = false`) keeps it to itself. Upstream never sent it.
 - **A performance mode that means it:** no pictures, no animations,
   slower ticks and one frame per burst of gateway traffic, for slow
   machines (see "Tips"). Upstream's skipped little.
@@ -493,6 +496,20 @@ way the web client puts it under the input. It takes no row of its own,
 so a peer starting or stopping never moves the rest of the screen, and
 it stays in view while you write your own message. **F2** turns typing
 indicators off.
+
+Others see you typing too, the way they see the web client's users: the
+channel is told 1.5 seconds after your first key, again no sooner than
+8 seconds later while keys keep coming, and no more once 10 seconds pass
+without one or the message goes out. Nothing is sent for a slash command
+or while you edit a message, and nothing at all with the **Show others
+that you are typing** row of the settings overlay (**F2**) set to Off,
+or in the config file:
+
+```toml
+[ui]
+show_typing_indicators = true  # who else is typing, in the compose box
+send_typing = true             # tell the channel when you are typing
+```
 
 Messages that concern you are highlighted the way the web app does it: a
 message that mentions you (by name, through one of your roles, or with

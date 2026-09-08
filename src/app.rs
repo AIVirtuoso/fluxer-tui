@@ -816,6 +816,8 @@ pub struct App {
     pub forward_mode: bool,
     pub read_states: HashMap<Snowflake, ReadState>,
     pub typing_users: HashMap<Snowflake, HashMap<Snowflake, Instant>>,
+    /// The user's own typing, told to the channel; see [`OwnTyping`].
+    pub own_typing: OwnTyping,
     pub gateway_status: GatewayStatus,
     pub gateway_lazy_guild_id: Option<String>,
     pub status_message: String,
@@ -996,6 +998,7 @@ impl App {
             forward_mode: false,
             read_states: HashMap::new(),
             typing_users: HashMap::new(),
+            own_typing: OwnTyping::default(),
             gateway_status: GatewayStatus::Disconnected,
             gateway_lazy_guild_id: None,
             status_message: String::new(),
@@ -1069,7 +1072,7 @@ impl App {
         app
     }
 
-    pub const UI_SETTINGS_LAST_ROW: usize = 7;
+    pub const UI_SETTINGS_LAST_ROW: usize = 8;
     pub const SERVER_NOTIFICATION_LAST_ROW: usize = 5;
     pub const HISTORY_AUTOLOAD_THRESHOLD_ROWS: u16 = 3;
     pub const TRANSIENT_STATUS_DURATION: Duration = Duration::from_millis(1800);
@@ -1340,9 +1343,12 @@ impl App {
                 self.ui_settings.show_typing_indicators = !self.ui_settings.show_typing_indicators;
             }
             2 => {
-                self.ui_settings.performance_mode = !self.ui_settings.performance_mode;
+                self.ui_settings.send_typing = !self.ui_settings.send_typing;
             }
             3 => {
+                self.ui_settings.performance_mode = !self.ui_settings.performance_mode;
+            }
+            4 => {
                 use crate::config::Theme;
                 self.ui_settings.theme = match self.ui_settings.theme {
                     Theme::Terminal => Theme::Fluxer,
@@ -1350,13 +1356,13 @@ impl App {
                 };
                 crate::ui::theme::set_terminal_theme(self.ui_settings.theme == Theme::Terminal);
             }
-            4 => {
+            5 => {
                 self.ui_settings.inline_media = !self.ui_settings.inline_media;
             }
-            5 => {
+            6 => {
                 self.ui_settings.avatars = !self.ui_settings.avatars;
             }
-            6 => {
+            7 => {
                 use crate::config::NotifyMode;
                 self.ui_settings.notifications = match self.ui_settings.notifications {
                     NotifyMode::Auto => NotifyMode::Desktop,
@@ -1365,7 +1371,7 @@ impl App {
                     NotifyMode::Off => NotifyMode::Auto,
                 };
             }
-            7 => {
+            8 => {
                 self.ui_settings.notify_sound = !self.ui_settings.notify_sound;
             }
             _ => {}
@@ -3204,6 +3210,29 @@ impl App {
         self.typing_users.clear();
     }
 
+    /// After every key: keep the own-typing bout in step with the compose
+    /// text. A message being edited and a slash command are not typing.
+    pub fn note_own_typing(&mut self) {
+        let text = format!("{}{}", self.input, self.input_tail);
+        let counts = self.ui_settings.send_typing && self.edit_target.is_none();
+        let channel = self.active_channel_id();
+        self.own_typing
+            .note(&text, channel.as_deref(), counts, Instant::now());
+    }
+
+    /// The channel to tell "typing" now, if one is due; the send is
+    /// counted as done.
+    pub fn own_typing_due(&mut self) -> Option<String> {
+        if !self.ui_settings.send_typing {
+            self.own_typing.end_bout();
+            return None;
+        }
+        let now = Instant::now();
+        let channel = self.own_typing.due(now)?;
+        self.own_typing.sent(&channel, now);
+        Some(channel)
+    }
+
     pub fn typing_peer_names(&self, channel_id: &str) -> Vec<String> {
         let now = Instant::now();
         let Some(users) = self.typing_users.get(channel_id) else {
@@ -4562,6 +4591,83 @@ pub fn display_name(user: &UserPartialResponse) -> String {
     account_display_name(user)
 }
 
+/// The user's own typing, told to the channel the way the web client
+/// does it: the first POST 1.5 s after the first keystroke of a bout,
+/// another one no sooner than 8 s after the previous when keys kept
+/// coming, and nothing once 10 s passed without a key. An empty compose
+/// box (a sent message) ends the bout; the 8 s spacing holds across
+/// bouts in the same channel.
+#[derive(Debug, Default)]
+pub struct OwnTyping {
+    /// The compose text at the last look, to tell a key that changed it
+    /// from one that did not.
+    last_text: String,
+    /// The bout under way: its channel, first and latest change.
+    bout: Option<(String, Instant, Instant)>,
+    /// The last POST: channel and time.
+    last_sent: Option<(String, Instant)>,
+}
+
+impl OwnTyping {
+    pub const SEND_DELAY: Duration = Duration::from_millis(1500);
+    pub const REFRESH: Duration = Duration::from_secs(8);
+    pub const IDLE: Duration = Duration::from_secs(10);
+
+    /// `text` is the whole compose text, `channel` where it would go;
+    /// `counts` false ends the bout (setting off, editing a message).
+    pub fn note(&mut self, text: &str, channel: Option<&str>, counts: bool, now: Instant) {
+        let changed = text != self.last_text;
+        if changed {
+            self.last_text = text.to_string();
+        }
+        let content = text.trim();
+        let typing = counts && !content.is_empty() && !content.starts_with('/');
+        let Some(channel) = channel.filter(|_| typing) else {
+            self.bout = None;
+            return;
+        };
+        match &mut self.bout {
+            Some((c, _, last)) if c == channel => {
+                if changed {
+                    *last = now;
+                }
+            }
+            // a draft carried into another channel is not typing there
+            // until a key changes it
+            Some(_) => self.bout = None,
+            None if changed => self.bout = Some((channel.to_string(), now, now)),
+            None => {}
+        }
+    }
+
+    /// The channel a POST is due for; call [`Self::sent`] after it.
+    pub fn due(&mut self, now: Instant) -> Option<String> {
+        let (channel, started, last_change) = self.bout.as_ref()?;
+        if now.duration_since(*last_change) >= Self::IDLE {
+            self.bout = None;
+            return None;
+        }
+        if now.duration_since(*started) < Self::SEND_DELAY {
+            return None;
+        }
+        let spaced = match &self.last_sent {
+            Some((c, sent)) if c == channel => {
+                *last_change > *sent && now.duration_since(*sent) >= Self::REFRESH
+            }
+            _ => true,
+        };
+        spaced.then(|| channel.clone())
+    }
+
+    pub fn sent(&mut self, channel: &str, now: Instant) {
+        self.last_sent = Some((channel.to_string(), now));
+    }
+
+    pub fn end_bout(&mut self) {
+        self.bout = None;
+    }
+}
+
 fn fluxer_typing_phrase(names: &[String]) -> String {
     const SEVERAL: &str = "Several people are typing...";
     const HANDFUL: &str = "A handful of keyboard warriors are assembling...";
@@ -5669,5 +5775,91 @@ mod members_failure_status_tests {
 
         let s = app.members_failure_status("unknown", MembersFailure::Forbidden, false, "");
         assert!(s.starts_with("this community does not let you"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod own_typing_tests {
+    use super::*;
+
+    fn secs(t0: Instant, s: f32) -> Instant {
+        t0 + Duration::from_millis((s * 1000.0) as u64)
+    }
+
+    #[test]
+    fn the_first_post_comes_after_a_second_and_a_half_of_typing() {
+        let t0 = Instant::now();
+        let mut own = OwnTyping::default();
+        own.note("h", Some("c1"), true, t0);
+        assert_eq!(own.due(secs(t0, 1.0)), None);
+        own.note("he", Some("c1"), true, secs(t0, 1.2));
+        assert_eq!(own.due(secs(t0, 1.5)).as_deref(), Some("c1"));
+        own.sent("c1", secs(t0, 1.5));
+        // nothing more without keys, and not before eight seconds with them
+        assert_eq!(own.due(secs(t0, 5.0)), None);
+        own.note("hel", Some("c1"), true, secs(t0, 5.0));
+        assert_eq!(own.due(secs(t0, 9.4)), None);
+        assert_eq!(own.due(secs(t0, 9.5)).as_deref(), Some("c1"));
+        own.sent("c1", secs(t0, 9.5));
+        // a key that changed nothing does not count as typing
+        own.note("hel", Some("c1"), true, secs(t0, 12.0));
+        assert_eq!(own.due(secs(t0, 18.0)), None);
+    }
+
+    #[test]
+    fn ten_seconds_without_a_key_end_the_bout() {
+        let t0 = Instant::now();
+        let mut own = OwnTyping::default();
+        own.note("h", Some("c1"), true, t0);
+        assert_eq!(own.due(secs(t0, 10.0)), None);
+        // the next key starts over, with the delay counted afresh
+        own.note("hi", Some("c1"), true, secs(t0, 20.0));
+        assert_eq!(own.due(secs(t0, 21.0)), None);
+        assert_eq!(own.due(secs(t0, 21.5)).as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn a_sent_message_ends_the_bout_and_the_spacing_holds_across_bouts() {
+        let t0 = Instant::now();
+        let mut own = OwnTyping::default();
+        own.note("h", Some("c1"), true, t0);
+        assert_eq!(own.due(secs(t0, 2.0)).as_deref(), Some("c1"));
+        own.sent("c1", secs(t0, 2.0));
+        own.note("", Some("c1"), true, secs(t0, 3.0));
+        assert_eq!(own.due(secs(t0, 30.0)), None);
+        own.note("a", Some("c1"), true, secs(t0, 4.0));
+        assert_eq!(own.due(secs(t0, 6.0)), None);
+        assert_eq!(own.due(secs(t0, 10.0)).as_deref(), Some("c1"));
+        // another channel is not held back by it
+        own.note("", Some("c1"), true, secs(t0, 10.0));
+        own.note("b", Some("c2"), true, secs(t0, 10.0));
+        assert_eq!(own.due(secs(t0, 11.5)).as_deref(), Some("c2"));
+    }
+
+    #[test]
+    fn slash_commands_edits_and_the_setting_off_are_not_typing() {
+        let t0 = Instant::now();
+        let mut own = OwnTyping::default();
+        own.note("/nick x", Some("c1"), true, t0);
+        assert_eq!(own.due(secs(t0, 5.0)), None);
+        own.note("hello", Some("c1"), false, secs(t0, 6.0));
+        assert_eq!(own.due(secs(t0, 12.0)), None);
+        own.note("hello!", Some("c1"), true, secs(t0, 13.0));
+        assert_eq!(own.due(secs(t0, 14.5)).as_deref(), Some("c1"));
+        own.sent("c1", secs(t0, 14.5));
+        own.note("hello!", Some("c1"), false, secs(t0, 15.0));
+        own.note("hello!!", Some("c1"), false, secs(t0, 15.5));
+        assert_eq!(own.due(secs(t0, 30.0)), None);
+    }
+
+    #[test]
+    fn a_draft_carried_to_another_channel_waits_for_a_key() {
+        let t0 = Instant::now();
+        let mut own = OwnTyping::default();
+        own.note("h", Some("c1"), true, t0);
+        own.note("h", Some("c2"), true, secs(t0, 0.5));
+        assert_eq!(own.due(secs(t0, 5.0)), None);
+        own.note("hi", Some("c2"), true, secs(t0, 6.0));
+        assert_eq!(own.due(secs(t0, 7.5)).as_deref(), Some("c2"));
     }
 }

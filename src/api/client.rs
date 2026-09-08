@@ -562,6 +562,26 @@ impl FluxerHttpClient {
         Ok(())
     }
 
+    /// Tell the channel the user is typing; the server shows it to the
+    /// others for about ten seconds.
+    pub async fn start_typing(&self, channel_id: &str) -> Result<()> {
+        let resp = self
+            .inner
+            .request(
+                Method::POST,
+                self.url(&format!("/channels/{channel_id}/typing")),
+            )
+            .header("X-Fluxer-Platform", "desktop")
+            .header("Authorization", self.token.as_deref().unwrap_or(""))
+            .send()
+            .await
+            .context("failed to send typing")?;
+        if !resp.status().is_success() && resp.status() != StatusCode::NO_CONTENT {
+            bail!("typing failed: {}", resp.status());
+        }
+        Ok(())
+    }
+
     pub async fn add_reaction(
         &self,
         channel_id: &str,

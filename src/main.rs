@@ -474,6 +474,7 @@ async fn main() -> Result<()> {
                                 config_path.as_path(),
                                 &mut config,
                             );
+                            app.note_own_typing();
                             schedule_needed_fetches(
                                 &mut app,
                                 authed_client.clone(),
@@ -483,6 +484,7 @@ async fn main() -> Result<()> {
                         }
                         Event::Paste(text) => {
                             handle_paste_event(&mut app, &text, &authed_client, &event_tx);
+                            app.note_own_typing();
                             schedule_needed_fetches(
                                 &mut app,
                                 authed_client.clone(),
@@ -624,6 +626,9 @@ async fn main() -> Result<()> {
                 app.prune_stale_typing();
                 if t_len_prev != app.typing_users.values().map(|m| m.len()).sum::<usize>() {
                     needs_redraw = true;
+                }
+                if let Some(channel_id) = app.own_typing_due() {
+                    spawn_start_typing(authed_client.clone(), channel_id);
                 }
 
                 let s_prev = app.status_message.clone();
@@ -2844,6 +2849,24 @@ fn spawn_user_guild_settings_update(
                     "Failed to update notification settings: {err}"
                 )));
             }
+        }
+    });
+}
+
+/// Tell the channel the user is typing; a failure is only logged, the
+/// next refresh tries again.
+fn spawn_start_typing(client: FluxerHttpClient, channel_id: String) {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        match client.start_typing(&channel_id).await {
+            Ok(()) => debug::log(
+                "typing",
+                format!(
+                    "own typing sent channel={channel_id} in {} ms",
+                    started.elapsed().as_millis()
+                ),
+            ),
+            Err(err) => debug::log("typing", format!("own typing failed: {err:#}")),
         }
     });
 }
