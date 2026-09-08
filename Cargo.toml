@@ -2,9 +2,10 @@
 name = "fluxer-tui"
 version = "0.7.5"
 edition = "2024"
-description = "A TUI chat client for the Fluxer messaging platform"
+description = "A TUI chat client for the Fluxer messaging platform. Updated fork by AIVirtuoso."
 license = "MIT"
-repository = "https://github.com/dogbonewish/fluxer-tui"
+repository = "https://github.com/AIVirtuoso/fluxer-tui"
+homepage = "https://github.com/AIVirtuoso/fluxer-tui"
 readme = "README.md"
 
 [[bin]]
