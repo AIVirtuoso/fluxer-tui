@@ -118,7 +118,7 @@ pub fn input_display_row_count(app: &App, inner_width: u16) -> u16 {
         return 1;
     }
     let strip = attachment_strip_rows(app);
-    if !app.input.is_empty() {
+    if !app.input_is_empty() {
         return input_word_wrap::wrapped_row_count(
             &app.input_display_plain(),
             inner_width,
@@ -161,7 +161,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
 
     let placeholder: Option<String> = if voice_only || no_perms || !can_type {
         None
-    } else if app.input.is_empty() {
+    } else if app.input_is_empty() {
         Some(if let Some(ref reply) = app.reply_to {
             if app.forward_mode {
                 format!(
@@ -188,7 +188,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
             "You do not have permission to send messages here.".to_string(),
             crate::ui::theme::muted_style(),
         )
-    } else if can_type && !app.input.is_empty() {
+    } else if can_type && !app.input_is_empty() {
         (String::new(), Style::default().fg(crate::ui::theme::text()))
     } else if can_type {
         (
@@ -228,8 +228,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         .border_style(crate::ui::theme::focused_border(focused))
         .style(Style::default().bg(crate::ui::theme::bg_secondary()));
 
-    if can_type && !app.input.is_empty() {
-        let char_count = app.input.chars().count();
+    if can_type && !app.input_is_empty() {
+        let char_count = app.input_char_count();
         let max_chars = 2000;
         let count_str = format!(" {char_count}/{max_chars} ");
         let count_style = if char_count > max_chars {
@@ -261,10 +261,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     };
     let strip_rows = strip.len() as u16;
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if can_type && !app.input.is_empty() {
+    if can_type && !app.input_is_empty() {
         lines.extend(app.input_display(true));
     } else if can_type
-        && app.input.is_empty()
+        && app.input_is_empty()
         && let (Some(phrase), Some(ph)) = (others_typing.as_ref(), placeholder.as_ref())
     {
         let typing_style = Style::default()
@@ -289,21 +289,35 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         inner.width,
         inner.height.saturating_sub(strip_h),
     );
-    let paragraph = Paragraph::new(Text::from(lines)).wrap(ratatui::widgets::Wrap { trim: false });
-    frame.render_widget(paragraph, text_area);
-
-    if focused && can_type && !app.input.is_empty() {
-        let (col, row) = input_word_wrap::eol_cursor_col_row(
+    // The cursor row decides how far the text scrolls when it is taller
+    // than the box: the row with the cursor is always in view.
+    let cursor = if focused && can_type && !app.input_is_empty() {
+        Some(input_word_wrap::cursor_col_row(
             &app.input_display_plain(),
+            &app.input_head_display_plain(),
             inner_w,
             input_span_style(),
-        );
+        ))
+    } else {
+        None
+    };
+    let visible_rows = text_area.height.max(1);
+    let scroll = match cursor {
+        Some((_, row)) if row >= visible_rows => row - visible_rows + 1,
+        _ => 0,
+    };
+    let paragraph = Paragraph::new(Text::from(lines))
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, text_area);
+
+    if let Some((col, row)) = cursor {
         let max_x = area.x + area.width.saturating_sub(2);
         let x = (area.x + 1 + col).min(max_x);
-        let y = area.y + 1 + strip_rows + row;
+        let y = area.y + 1 + strip_rows + (row - scroll);
         Some((x, y))
     } else if focused && can_type {
-        let extra = if app.input.is_empty() && app.others_typing_phrase().is_some() {
+        let extra = if app.input_is_empty() && app.others_typing_phrase().is_some() {
             1u16
         } else {
             0

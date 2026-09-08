@@ -217,6 +217,8 @@ pub fn wrapped_row_count(input: &str, inner_width: u16, span_style: Style) -> u1
     n.max(1) as u16
 }
 
+/// Where the end of the text lands; the reference the cursor test checks against.
+#[cfg(test)]
 pub fn eol_cursor_col_row(input: &str, inner_width: u16, span_style: Style) -> (u16, u16) {
     let w = inner_width.max(1);
     let text = input_text_lines(input, span_style);
@@ -240,5 +242,175 @@ pub fn eol_cursor_col_row(input: &str, inner_width: u16, span_style: Style) -> (
         (0, 0)
     } else {
         (last_w, total_rows - 1)
+    }
+}
+
+/// Rows a single source line takes when wrapped.
+fn rows_of_line(line: &str, w: u16, span_style: Style) -> u16 {
+    let text = input_text_lines(line, span_style);
+    let base = Style::default();
+    let styled = text.iter().map(|line| {
+        let graphemes = line
+            .spans
+            .iter()
+            .flat_map(|span| span.styled_graphemes(base));
+        (graphemes, Alignment::Left)
+    });
+    let mut ww = WordWrapper::new(styled, w, false);
+    let mut n = 0u16;
+    while ww.next_line().is_some() {
+        n = n.saturating_add(1);
+    }
+    n.max(1)
+}
+
+/// Where the cursor sits in the wrapped display of `input` when the text
+/// before it is `head` (both already flattened for display): column and
+/// row inside the box. A cursor at the very end of a full row moves to
+/// the start of the next row when there is one, as the next typed
+/// character would land there.
+pub fn cursor_col_row(input: &str, head: &str, inner_width: u16, span_style: Style) -> (u16, u16) {
+    let w = inner_width.max(1);
+    let line_idx = head.matches('\n').count();
+    let head_line = head.rsplit('\n').next().unwrap_or("");
+    let base = Style::default();
+    let target = Span::raw(head_line).styled_graphemes(base).count();
+
+    let mut row: u16 = 0;
+    let mut lines = input.split('\n');
+    for _ in 0..line_idx {
+        let Some(line) = lines.next() else {
+            break;
+        };
+        row = row.saturating_add(rows_of_line(line, w, span_style));
+    }
+    let Some(line) = lines.next() else {
+        return (0, row);
+    };
+    let source_span = Span::raw(line);
+    let source: Vec<StyledGrapheme<'_>> = source_span.styled_graphemes(base).collect();
+    let text = input_text_lines(line, span_style);
+    let styled = text.iter().map(|line| {
+        let graphemes = line
+            .spans
+            .iter()
+            .flat_map(|span| span.styled_graphemes(base));
+        (graphemes, Alignment::Left)
+    });
+    let mut ww = WordWrapper::new(styled, w, false);
+    let mut si = 0usize;
+    let mut rows_in_line: Vec<(u16, Option<u16>)> = Vec::new(); // (width, cursor col if on this row)
+    while let Some(wl) = ww.next_line() {
+        let mut col: u16 = 0;
+        let mut hit: Option<u16> = None;
+        for g in wl.line.iter() {
+            while si < source.len() && source[si].symbol != g.symbol {
+                // whitespace the wrapper dropped at a break
+                if si == target && hit.is_none() {
+                    hit = Some(col);
+                }
+                si += 1;
+            }
+            if si == target && hit.is_none() {
+                hit = Some(col);
+            }
+            col = col.saturating_add(g.symbol.width() as u16);
+            si += 1;
+        }
+        if si >= target && hit.is_none() {
+            hit = Some(col);
+        }
+        rows_in_line.push((wl.width, hit));
+    }
+    let n = rows_in_line.len();
+    for (i, (_, hit)) in rows_in_line.iter().enumerate() {
+        if let Some(col) = hit {
+            if *col >= w && i + 1 < n {
+                return (0, row.saturating_add(i as u16 + 1));
+            }
+            return (*col, row.saturating_add(i as u16));
+        }
+    }
+    let last = rows_in_line.last().map(|r| r.0).unwrap_or(0);
+    (last, row.saturating_add(n.saturating_sub(1) as u16))
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    fn at(input: &str, head: &str, w: u16) -> (u16, u16) {
+        cursor_col_row(input, head, w, Style::default())
+    }
+
+    #[test]
+    fn cursor_inside_one_row() {
+        assert_eq!(at("hello", "", 20), (0, 0));
+        assert_eq!(at("hello", "hel", 20), (3, 0));
+        assert_eq!(at("hello", "hello", 20), (5, 0));
+        assert_eq!(at("", "", 20), (0, 0));
+    }
+
+    #[test]
+    fn cursor_follows_the_wrap() {
+        // "hello world" at width 8 wraps to "hello" / "world": the wrapper
+        // drops the space at the break, so a cursor after it sits where
+        // the next character would go, at the start of the second row
+        assert_eq!(at("hello world", "hello", 8), (5, 0));
+        assert_eq!(at("hello world", "hello ", 8), (0, 1));
+        assert_eq!(at("hello world", "hello w", 8), (1, 1));
+        assert_eq!(at("hello world", "hello world", 8), (5, 1));
+        // the end of the text agrees with the end-of-line helper
+        let text = "the quick brown fox jumps over the lazy dog";
+        assert_eq!(
+            at(text, text, 10),
+            eol_cursor_col_row(text, 10, Style::default())
+        );
+    }
+
+    #[test]
+    fn cursor_on_later_lines_counts_the_rows_above() {
+        assert_eq!(
+            at(
+                "ab
+cd", "ab
+", 20
+            ),
+            (0, 1)
+        );
+        assert_eq!(
+            at(
+                "ab
+cd", "ab
+c", 20
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            at(
+                "ab
+
+cd", "ab
+
+", 20
+            ),
+            (0, 2)
+        );
+        // a wrapped first line pushes the second one down
+        assert_eq!(
+            at(
+                "hello world
+x",
+                "hello world
+x",
+                8
+            ),
+            (1, 2)
+        );
+    }
+
+    #[test]
+    fn wide_characters_count_their_cells() {
+        assert_eq!(at("日本語", "日本", 20), (4, 0));
     }
 }

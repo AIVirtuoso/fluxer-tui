@@ -1,6 +1,7 @@
 mod api;
 mod app;
 mod auth;
+mod compose;
 mod config;
 mod console;
 mod debug;
@@ -698,20 +699,7 @@ fn ensure_lazy_guild_subscription(app: &mut App, gateway_cmd_tx: &UnboundedSende
     }
 }
 
-const INPUT_MAX_CHARS: usize = 2000;
-
-fn normalize_pasted_text(s: &str) -> String {
-    s.replace('\r', "")
-}
-
-fn sanitize_pasted_char(ch: char) -> Option<char> {
-    match ch {
-        '\n' => Some('\n'),
-        '\t' => Some(' '),
-        c if c.is_control() => None,
-        c => Some(c),
-    }
-}
+use crate::app::INPUT_MAX_CHARS;
 
 fn delete_word_backward(buf: &mut String) {
     if buf.is_empty() {
@@ -731,30 +719,12 @@ fn delete_word_backward(buf: &mut String) {
     }
 }
 
-fn push_chars_respecting_limit(out: &mut String, text: &str, max: usize) {
-    let room = max.saturating_sub(out.chars().count());
-    if room == 0 {
-        return;
-    }
-    let mut n = 0usize;
-    for ch in text.chars() {
-        if n >= room {
-            break;
-        }
-        if let Some(c) = sanitize_pasted_char(ch) {
-            out.push(c);
-            n += 1;
-        }
-    }
-}
-
 fn handle_paste_event(
     app: &mut App,
     text: &str,
     client: &FluxerHttpClient,
     event_tx: &UnboundedSender<AppEvent>,
 ) {
-    let text = normalize_pasted_text(text);
     if text.is_empty() {
         return;
     }
@@ -781,26 +751,27 @@ fn handle_paste_event(
     if app.focus != Focus::Input {
         return;
     }
+    app.input_record(crate::compose::InputEditKind::Discrete);
 
     if app.mention_autocomplete.is_some() {
-        push_chars_respecting_limit(&mut app.input, &text, INPUT_MAX_CHARS);
+        app.input_paste(text, INPUT_MAX_CHARS);
         app.update_mention_filter();
         return;
     }
 
     if app.emoji_autocomplete.is_some() {
-        push_chars_respecting_limit(&mut app.input, &text, INPUT_MAX_CHARS);
+        app.input_paste(text, INPUT_MAX_CHARS);
         app.update_emoji_filter();
         return;
     }
 
     if app.command_autocomplete.is_some() {
-        push_chars_respecting_limit(&mut app.input, &text, INPUT_MAX_CHARS);
+        app.input_paste(text, INPUT_MAX_CHARS);
         app.sync_command_autocomplete();
         return;
     }
 
-    push_chars_respecting_limit(&mut app.input, &text, INPUT_MAX_CHARS);
+    app.input_paste(text, INPUT_MAX_CHARS);
 
     if app.input.ends_with(':') {
         app.start_emoji_autocomplete();
@@ -893,6 +864,558 @@ fn save_debug_snapshot(app: &mut App) {
 fn persist_ui_settings(path: &Path, cfg: &mut AppConfig, app: &App) {
     cfg.ui = app.ui_settings.clone();
     let _ = save_config(path, cfg);
+}
+
+/// Which undo group a key in the compose box belongs to, or None for a
+/// key that does not edit the text (movement, undo itself).
+fn compose_edit_kind(key: &KeyEvent) -> Option<crate::compose::InputEditKind> {
+    use crate::compose::InputEditKind as K;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => None,
+        KeyCode::Up | KeyCode::Down | KeyCode::Esc => None,
+        KeyCode::Char(' ') if ctrl => None,
+        KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('e') | KeyCode::Char('E')
+            if ctrl =>
+        {
+            None
+        }
+        KeyCode::Char('b') | KeyCode::Char('B') | KeyCode::Char('f') | KeyCode::Char('F')
+            if alt && !ctrl =>
+        {
+            None
+        }
+        KeyCode::Char('z') | KeyCode::Char('Z') | KeyCode::Char('y') | KeyCode::Char('Y')
+            if ctrl =>
+        {
+            None
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') if ctrl => None,
+        KeyCode::Char(c) if !ctrl && !alt => {
+            if c.is_whitespace() {
+                Some(K::Discrete)
+            } else {
+                Some(K::Typing)
+            }
+        }
+        KeyCode::Backspace if !ctrl => Some(K::Erasing),
+        _ => Some(K::Discrete),
+    }
+}
+
+/// Cursor, selection, formatting and line keys of the compose box; the
+/// same in every state of the box (an autocomplete popup open or not).
+/// True when the key was one of them.
+fn handle_compose_editing_key(app: &mut App, key: KeyEvent) -> bool {
+    use crate::compose::Move;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Left if ctrl => app.input_move(Move::WordLeft, shift),
+        KeyCode::Right if ctrl => app.input_move(Move::WordRight, shift),
+        KeyCode::Left => app.input_move(Move::Left, shift),
+        KeyCode::Right => app.input_move(Move::Right, shift),
+        KeyCode::Home if ctrl => app.input_move(Move::TextStart, shift),
+        KeyCode::End if ctrl => app.input_move(Move::TextEnd, shift),
+        KeyCode::Home => app.input_move(Move::Home, shift),
+        KeyCode::End => app.input_move(Move::End, shift),
+        KeyCode::Char('a') | KeyCode::Char('A') if ctrl => app.input_move(Move::Home, shift),
+        KeyCode::Char('e') | KeyCode::Char('E') if ctrl => app.input_move(Move::End, shift),
+        KeyCode::Char('b') if alt && !ctrl => app.input_move(Move::WordLeft, false),
+        KeyCode::Char('f') if alt && !ctrl => app.input_move(Move::WordRight, false),
+        KeyCode::Char('B') if alt && !ctrl => app.input_move(Move::WordLeft, true),
+        KeyCode::Char('F') if alt && !ctrl => app.input_move(Move::WordRight, true),
+        KeyCode::Char(' ') if ctrl => {
+            app.input_toggle_mark();
+            if app.input_mark {
+                app.set_status("Mark set: move to select, Ctrl+Space again to drop it.");
+            }
+            true
+        }
+        KeyCode::Delete if ctrl => {
+            app.input_delete_word_forward();
+            true
+        }
+        KeyCode::Delete => {
+            app.input_delete_forward();
+            true
+        }
+        KeyCode::Char('d') | KeyCode::Char('D') if ctrl => {
+            app.input_delete_forward();
+            true
+        }
+        KeyCode::Char('d') | KeyCode::Char('D') if alt => {
+            app.input_delete_word_forward();
+            true
+        }
+        KeyCode::Char('w') | KeyCode::Char('W') if ctrl => {
+            app.input_delete_word_backward();
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Char('K') if alt && !ctrl => {
+            app.input_kill_to_line_end();
+            true
+        }
+        KeyCode::Char('z') | KeyCode::Char('Z') if ctrl => {
+            if !app.input_undo() {
+                app.set_status("Nothing to undo.");
+            }
+            true
+        }
+        KeyCode::Char('y') | KeyCode::Char('Y') if ctrl => {
+            if !app.input_redo() {
+                app.set_status("Nothing to redo.");
+            }
+            true
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') if ctrl => {
+            if app.input_copy() {
+                app.set_status("Copied.");
+            } else {
+                app.set_status("Nothing selected: Shift+arrows or Ctrl+Space select.");
+            }
+            true
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if ctrl && app.input_selection().is_some() => {
+            app.input_cut();
+            app.set_status("Cut.");
+            true
+        }
+        KeyCode::Char('v') | KeyCode::Char('V') if alt && !ctrl => {
+            if !app.input_paste_cut_buffer() {
+                app.set_status("Nothing cut or copied yet.");
+            }
+            true
+        }
+        KeyCode::Char('b') | KeyCode::Char('B') if ctrl => {
+            app.input_toggle_wrap("**");
+            true
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') if ctrl => {
+            app.input_toggle_wrap("*");
+            true
+        }
+        KeyCode::Tab if app.input_selection().is_some() => {
+            app.input_toggle_wrap("*");
+            true
+        }
+        KeyCode::Char('u') | KeyCode::Char('U') if alt && !ctrl => {
+            app.input_toggle_wrap("__");
+            true
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') if ctrl => {
+            app.input_toggle_wrap("~~");
+            true
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') if alt && !ctrl => {
+            app.input_toggle_wrap("`");
+            true
+        }
+        KeyCode::Char('p') | KeyCode::Char('P') if alt && !ctrl => {
+            app.input_toggle_wrap("||");
+            true
+        }
+        KeyCode::Enter if shift || alt => {
+            app.input_type('\n');
+            true
+        }
+        _ => false,
+    }
+}
+fn handle_input_focus_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+) {
+    if app.command_autocomplete.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.dismiss_command_autocomplete();
+            }
+            KeyCode::Up => {
+                app.autocomplete_command_prev();
+            }
+            KeyCode::Down => {
+                app.autocomplete_command_next();
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                app.insert_selected_slash_command();
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.input_delete_word_backward();
+                app.sync_command_autocomplete();
+            }
+            KeyCode::Char('h') | KeyCode::Char('H')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.input_delete_word_backward();
+                app.sync_command_autocomplete();
+            }
+            KeyCode::Backspace => {
+                app.input_backspace();
+                app.sync_command_autocomplete();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                app.input_type(ch);
+                app.sync_command_autocomplete();
+            }
+            _ => {
+                if handle_compose_editing_key(app, key) {
+                    app.sync_command_autocomplete();
+                }
+            }
+        }
+        return;
+    }
+
+    if app.mention_autocomplete.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.dismiss_mention_autocomplete();
+            }
+            KeyCode::Up => {
+                app.autocomplete_mention_prev();
+            }
+            KeyCode::Down => {
+                app.autocomplete_mention_next();
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                app.insert_selected_mention();
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.input_delete_word_backward();
+                app.update_mention_filter();
+            }
+            KeyCode::Char('h') | KeyCode::Char('H')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.input_delete_word_backward();
+                app.update_mention_filter();
+            }
+            KeyCode::Backspace => {
+                app.input_backspace();
+                app.update_mention_filter();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                app.input_type(ch);
+                app.update_mention_filter();
+            }
+            _ => {
+                if handle_compose_editing_key(app, key) {
+                    app.update_mention_filter();
+                }
+            }
+        }
+        return;
+    }
+
+    if app.emoji_autocomplete.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                if app.reaction_target.is_some() {
+                    app.reaction_target = None;
+                    app.clear_input();
+                    app.focus = Focus::Messages;
+                }
+                app.dismiss_emoji_autocomplete();
+            }
+            KeyCode::Up => {
+                app.autocomplete_emoji_prev();
+            }
+            KeyCode::Down => {
+                app.autocomplete_emoji_next();
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                if app.reaction_target.is_some() {
+                    if let Some((ch, msg, emoji)) = app.confirm_reaction_emoji() {
+                        spawn_add_reaction(client.clone(), event_tx.clone(), ch, msg, emoji);
+                        app.focus = Focus::Messages;
+                    }
+                } else {
+                    app.insert_selected_emoji();
+                }
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.input_delete_word_backward();
+                app.update_emoji_filter();
+            }
+            KeyCode::Char('h') | KeyCode::Char('H')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.input_delete_word_backward();
+                app.update_emoji_filter();
+            }
+            KeyCode::Backspace => {
+                app.input_pop();
+                app.update_emoji_filter();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                app.input_type(ch);
+                app.update_emoji_filter();
+            }
+            _ => {
+                if handle_compose_editing_key(app, key) {
+                    app.update_emoji_filter();
+                }
+            }
+        }
+        return;
+    }
+
+    if handle_compose_editing_key(app, key) {
+        if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
+            app.sync_command_autocomplete();
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            if app.input_selection().is_some() || app.input_mark {
+                app.input_clear_selection();
+                return;
+            }
+            app.dismiss_command_autocomplete();
+            if app.reaction_target.is_some() {
+                app.reaction_target = None;
+                app.dismiss_emoji_autocomplete();
+                app.clear_input();
+                app.focus = Focus::Messages;
+            } else if app.reply_to.is_some() || app.edit_target.is_some() {
+                app.cancel_reply();
+            } else {
+                app.focus = Focus::Channels;
+            }
+        }
+        KeyCode::Up => {
+            let extend = key.modifiers.contains(KeyModifiers::SHIFT);
+            if !app.input_move(crate::compose::Move::LineUp, extend) {
+                app.input_clear_selection();
+                app.focus = Focus::Messages;
+            }
+        }
+        KeyCode::Down => {
+            let extend = key.modifiers.contains(KeyModifiers::SHIFT);
+            app.input_move(crate::compose::Move::LineDown, extend);
+        }
+        KeyCode::Enter => {
+            if app.edit_target.is_some() {
+                if app.input_text().trim().is_empty() {
+                    app.set_status("Edited message cannot be empty.");
+                    return;
+                }
+                if let Some(et) = app.edit_target.clone() {
+                    let content = app.input_text();
+                    app.message_scroll_from_bottom = 0;
+                    spawn_edit_message(
+                        client.clone(),
+                        event_tx.clone(),
+                        et.channel_id,
+                        et.message_id,
+                        content,
+                    );
+                }
+                return;
+            }
+            let is_forward = app.forward_mode;
+            let has_ref = app.reply_to.is_some();
+            let allow_send = !app.input_text().trim().is_empty()
+                || (is_forward && has_ref)
+                || !app.pending_attachments.is_empty();
+            if app.active_channel_is_text() && app.can_send_in_active_channel() && allow_send {
+                let channel_id = match app.active_channel_id() {
+                    Some(channel_id) => channel_id,
+                    None => return,
+                };
+                let trimmed = app.input_text().trim().to_string();
+                let guild_id = app.active_channel().and_then(|c| c.guild_id.clone());
+                let prev_nick = guild_id
+                    .as_ref()
+                    .map(|g| app.self_nick_or_username_in_guild(g.as_str()))
+                    .unwrap_or_else(|| display_name(&me_as_partial(&app.me)));
+                let ch_perms = app.active_channel_permissions();
+                let resolved = crate::slash_commands::resolve_outgoing_slash(
+                    &trimmed,
+                    guild_id.as_deref(),
+                    &app.me.username,
+                    &prev_nick,
+                    ch_perms,
+                );
+                if let crate::slash_commands::OutgoingSlash::Blocked(msg) = &resolved {
+                    app.set_status(msg.clone());
+                    return;
+                }
+                if let crate::slash_commands::OutgoingSlash::Attach(path) = &resolved {
+                    let path = path.clone();
+                    app.dismiss_command_autocomplete();
+                    let _ = app.take_input();
+                    app.set_status(format!("Reading {path}…"));
+                    spawn_file_attach(event_tx.clone(), path);
+                    return;
+                }
+                if matches!(resolved, crate::slash_commands::OutgoingSlash::AttachPick) {
+                    app.dismiss_command_autocomplete();
+                    let _ = app.take_input();
+                    app.open_file_picker();
+                    return;
+                }
+                if matches!(resolved, crate::slash_commands::OutgoingSlash::Debug) {
+                    app.dismiss_command_autocomplete();
+                    let _ = app.take_input();
+                    app.open_debug();
+                    return;
+                }
+                if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugSave) {
+                    app.dismiss_command_autocomplete();
+                    let _ = app.take_input();
+                    save_debug_snapshot(app);
+                    return;
+                }
+                if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugFrame) {
+                    app.dismiss_command_autocomplete();
+                    let _ = app.take_input();
+                    app.debug_frame_wanted = true;
+                    return;
+                }
+                if let crate::slash_commands::OutgoingSlash::SetNick {
+                    guild_id,
+                    nick,
+                    prev_display,
+                    new_display,
+                } = resolved
+                {
+                    app.forward_mode = false;
+                    let _ = app.take_input();
+                    app.reply_to = None;
+                    app.message_scroll_from_bottom = 0;
+                    spawn_nick_change(
+                        client.clone(),
+                        event_tx.clone(),
+                        guild_id,
+                        nick,
+                        channel_id,
+                        prev_display,
+                        new_display,
+                    );
+                    return;
+                }
+                let (content_to_send, tts) = match resolved {
+                    crate::slash_commands::OutgoingSlash::Normal => (trimmed, false),
+                    crate::slash_commands::OutgoingSlash::SendContent(c) => (c, false),
+                    crate::slash_commands::OutgoingSlash::SendTts(c) => (c, true),
+                    _ => unreachable!(),
+                };
+                // Typed `:eyes:` goes out as the emoji, as from the web composer.
+                let content_to_send = crate::emoji::replace_shortcodes(&content_to_send);
+                app.forward_mode = false;
+                let _ = app.take_input();
+                let reply = app.reply_to.take();
+                let attachments = std::mem::take(&mut app.pending_attachments);
+                app.message_scroll_from_bottom = 0;
+                if !attachments.is_empty() {
+                    app.set_status(format!(
+                        "Uploading {} file{}…",
+                        attachments.len(),
+                        if attachments.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                spawn_send_message(
+                    client.clone(),
+                    event_tx.clone(),
+                    channel_id,
+                    content_to_send,
+                    reply,
+                    is_forward,
+                    tts,
+                    attachments,
+                );
+            }
+        }
+        KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input_delete_word_backward();
+            if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
+                app.sync_command_autocomplete();
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Char('H')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.input_delete_word_backward();
+            if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
+                app.sync_command_autocomplete();
+            }
+        }
+        KeyCode::Backspace => {
+            app.input_pop();
+            if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
+                app.sync_command_autocomplete();
+            }
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.dismiss_command_autocomplete();
+            app.clear_input();
+        }
+        // Ctrl+V: stage the image on the system clipboard as an attachment.
+        KeyCode::Char('v') | KeyCode::Char('V')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            if app.pending_attachments.len() >= crate::app::MAX_ATTACHMENTS_PER_MESSAGE {
+                app.set_status(format!(
+                    "Attachment limit is {} per message.",
+                    crate::app::MAX_ATTACHMENTS_PER_MESSAGE
+                ));
+            } else {
+                app.set_status("Reading image from clipboard…");
+                spawn_clipboard_attach(event_tx.clone());
+            }
+        }
+        // Ctrl+X: drop the most recently staged attachment.
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            match app.pending_attachments.pop() {
+                Some(a) => app.set_status(format!("Removed {}.", a.filename)),
+                None => app.set_status("No attachment staged."),
+            }
+        }
+        KeyCode::Char(ch)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.input_type(ch);
+            if ch == '/' {
+                app.sync_command_autocomplete();
+            } else if ch == ':' {
+                app.start_emoji_autocomplete();
+            } else if ch == '@' {
+                let member_fetch_pending = schedule_guild_members_fetch_for_mentions(
+                    app,
+                    client.clone(),
+                    event_tx.clone(),
+                );
+                app.start_mention_autocomplete();
+                if member_fetch_pending && app.mention_autocomplete.is_none() {
+                    app.set_status("Loading members for @mentions…");
+                }
+            }
+            if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
+                app.sync_command_autocomplete();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn handle_key_event(
@@ -1340,348 +1863,14 @@ fn handle_key_event(
     }
 
     if app.focus == Focus::Input {
-        if app.command_autocomplete.is_some() {
-            match key.code {
-                KeyCode::Esc => {
-                    app.dismiss_command_autocomplete();
-                }
-                KeyCode::Up => {
-                    app.autocomplete_command_prev();
-                }
-                KeyCode::Down => {
-                    app.autocomplete_command_next();
-                }
-                KeyCode::Tab | KeyCode::Enter => {
-                    app.insert_selected_slash_command();
-                }
-                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    delete_word_backward(&mut app.input);
-                    app.sync_command_autocomplete();
-                }
-                KeyCode::Char('h') | KeyCode::Char('H')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    delete_word_backward(&mut app.input);
-                    app.sync_command_autocomplete();
-                }
-                KeyCode::Backspace => {
-                    app.input.pop();
-                    app.sync_command_autocomplete();
-                }
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.input.push(ch);
-                    app.sync_command_autocomplete();
-                }
-                _ => {}
-            }
-            return;
+        let kind = compose_edit_kind(&key);
+        match kind {
+            Some(k) => app.input_record(k),
+            None => app.input_break_undo_group(),
         }
-
-        if app.mention_autocomplete.is_some() {
-            match key.code {
-                KeyCode::Esc => {
-                    app.dismiss_mention_autocomplete();
-                }
-                KeyCode::Up => {
-                    app.autocomplete_mention_prev();
-                }
-                KeyCode::Down => {
-                    app.autocomplete_mention_next();
-                }
-                KeyCode::Tab | KeyCode::Enter => {
-                    app.insert_selected_mention();
-                }
-                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    delete_word_backward(&mut app.input);
-                    app.update_mention_filter();
-                }
-                KeyCode::Char('h') | KeyCode::Char('H')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    delete_word_backward(&mut app.input);
-                    app.update_mention_filter();
-                }
-                KeyCode::Backspace => {
-                    app.input.pop();
-                    app.update_mention_filter();
-                }
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.input.push(ch);
-                    app.update_mention_filter();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if app.emoji_autocomplete.is_some() {
-            match key.code {
-                KeyCode::Esc => {
-                    if app.reaction_target.is_some() {
-                        app.reaction_target = None;
-                        app.input.clear();
-                        app.focus = Focus::Messages;
-                    }
-                    app.dismiss_emoji_autocomplete();
-                }
-                KeyCode::Up => {
-                    app.autocomplete_emoji_prev();
-                }
-                KeyCode::Down => {
-                    app.autocomplete_emoji_next();
-                }
-                KeyCode::Tab | KeyCode::Enter => {
-                    if app.reaction_target.is_some() {
-                        if let Some((ch, msg, emoji)) = app.confirm_reaction_emoji() {
-                            spawn_add_reaction(client.clone(), event_tx.clone(), ch, msg, emoji);
-                            app.focus = Focus::Messages;
-                        }
-                    } else {
-                        app.insert_selected_emoji();
-                    }
-                }
-                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    delete_word_backward(&mut app.input);
-                    app.update_emoji_filter();
-                }
-                KeyCode::Char('h') | KeyCode::Char('H')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    delete_word_backward(&mut app.input);
-                    app.update_emoji_filter();
-                }
-                KeyCode::Backspace => {
-                    app.input_pop();
-                    app.update_emoji_filter();
-                }
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.input.push(ch);
-                    app.update_emoji_filter();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        match key.code {
-            KeyCode::Esc => {
-                app.dismiss_command_autocomplete();
-                if app.reaction_target.is_some() {
-                    app.reaction_target = None;
-                    app.dismiss_emoji_autocomplete();
-                    app.input.clear();
-                    app.focus = Focus::Messages;
-                } else if app.reply_to.is_some() || app.edit_target.is_some() {
-                    app.cancel_reply();
-                } else {
-                    app.focus = Focus::Channels;
-                }
-            }
-            KeyCode::Up => {
-                app.focus = Focus::Messages;
-            }
-            KeyCode::Enter => {
-                if app.edit_target.is_some() {
-                    if app.input.trim().is_empty() {
-                        app.set_status("Edited message cannot be empty.");
-                        return;
-                    }
-                    if let Some(et) = app.edit_target.clone() {
-                        let content = app.input.clone();
-                        app.message_scroll_from_bottom = 0;
-                        spawn_edit_message(
-                            client.clone(),
-                            event_tx.clone(),
-                            et.channel_id,
-                            et.message_id,
-                            content,
-                        );
-                    }
-                    return;
-                }
-                let is_forward = app.forward_mode;
-                let has_ref = app.reply_to.is_some();
-                let allow_send = !app.input.trim().is_empty()
-                    || (is_forward && has_ref)
-                    || !app.pending_attachments.is_empty();
-                if app.active_channel_is_text() && app.can_send_in_active_channel() && allow_send {
-                    let channel_id = match app.active_channel_id() {
-                        Some(channel_id) => channel_id,
-                        None => return,
-                    };
-                    let trimmed = app.input.trim().to_string();
-                    let guild_id = app.active_channel().and_then(|c| c.guild_id.clone());
-                    let prev_nick = guild_id
-                        .as_ref()
-                        .map(|g| app.self_nick_or_username_in_guild(g.as_str()))
-                        .unwrap_or_else(|| display_name(&me_as_partial(&app.me)));
-                    let ch_perms = app.active_channel_permissions();
-                    let resolved = crate::slash_commands::resolve_outgoing_slash(
-                        &trimmed,
-                        guild_id.as_deref(),
-                        &app.me.username,
-                        &prev_nick,
-                        ch_perms,
-                    );
-                    if let crate::slash_commands::OutgoingSlash::Blocked(msg) = &resolved {
-                        app.set_status(msg.clone());
-                        return;
-                    }
-                    if let crate::slash_commands::OutgoingSlash::Attach(path) = &resolved {
-                        let path = path.clone();
-                        app.dismiss_command_autocomplete();
-                        let _ = std::mem::take(&mut app.input);
-                        app.set_status(format!("Reading {path}…"));
-                        spawn_file_attach(event_tx.clone(), path);
-                        return;
-                    }
-                    if matches!(resolved, crate::slash_commands::OutgoingSlash::AttachPick) {
-                        app.dismiss_command_autocomplete();
-                        let _ = std::mem::take(&mut app.input);
-                        app.open_file_picker();
-                        return;
-                    }
-                    if matches!(resolved, crate::slash_commands::OutgoingSlash::Debug) {
-                        app.dismiss_command_autocomplete();
-                        let _ = std::mem::take(&mut app.input);
-                        app.open_debug();
-                        return;
-                    }
-                    if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugSave) {
-                        app.dismiss_command_autocomplete();
-                        let _ = std::mem::take(&mut app.input);
-                        save_debug_snapshot(app);
-                        return;
-                    }
-                    if matches!(resolved, crate::slash_commands::OutgoingSlash::DebugFrame) {
-                        app.dismiss_command_autocomplete();
-                        let _ = std::mem::take(&mut app.input);
-                        app.debug_frame_wanted = true;
-                        return;
-                    }
-                    if let crate::slash_commands::OutgoingSlash::SetNick {
-                        guild_id,
-                        nick,
-                        prev_display,
-                        new_display,
-                    } = resolved
-                    {
-                        app.forward_mode = false;
-                        let _ = std::mem::take(&mut app.input);
-                        app.reply_to = None;
-                        app.message_scroll_from_bottom = 0;
-                        spawn_nick_change(
-                            client.clone(),
-                            event_tx.clone(),
-                            guild_id,
-                            nick,
-                            channel_id,
-                            prev_display,
-                            new_display,
-                        );
-                        return;
-                    }
-                    let (content_to_send, tts) = match resolved {
-                        crate::slash_commands::OutgoingSlash::Normal => (trimmed, false),
-                        crate::slash_commands::OutgoingSlash::SendContent(c) => (c, false),
-                        crate::slash_commands::OutgoingSlash::SendTts(c) => (c, true),
-                        _ => unreachable!(),
-                    };
-                    // Typed `:eyes:` goes out as the emoji, as from the web composer.
-                    let content_to_send = crate::emoji::replace_shortcodes(&content_to_send);
-                    app.forward_mode = false;
-                    let _ = std::mem::take(&mut app.input);
-                    let reply = app.reply_to.take();
-                    let attachments = std::mem::take(&mut app.pending_attachments);
-                    app.message_scroll_from_bottom = 0;
-                    if !attachments.is_empty() {
-                        app.set_status(format!(
-                            "Uploading {} file{}…",
-                            attachments.len(),
-                            if attachments.len() == 1 { "" } else { "s" }
-                        ));
-                    }
-                    spawn_send_message(
-                        client.clone(),
-                        event_tx.clone(),
-                        channel_id,
-                        content_to_send,
-                        reply,
-                        is_forward,
-                        tts,
-                        attachments,
-                    );
-                }
-            }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                delete_word_backward(&mut app.input);
-                if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
-                    app.sync_command_autocomplete();
-                }
-            }
-            KeyCode::Char('h') | KeyCode::Char('H')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                delete_word_backward(&mut app.input);
-                if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
-                    app.sync_command_autocomplete();
-                }
-            }
-            KeyCode::Backspace => {
-                app.input_pop();
-                if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
-                    app.sync_command_autocomplete();
-                }
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.dismiss_command_autocomplete();
-                app.input.clear();
-            }
-            // Ctrl+V: stage the image on the system clipboard as an attachment.
-            KeyCode::Char('v') | KeyCode::Char('V')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                if app.pending_attachments.len() >= crate::app::MAX_ATTACHMENTS_PER_MESSAGE {
-                    app.set_status(format!(
-                        "Attachment limit is {} per message.",
-                        crate::app::MAX_ATTACHMENTS_PER_MESSAGE
-                    ));
-                } else {
-                    app.set_status("Reading image from clipboard…");
-                    spawn_clipboard_attach(event_tx.clone());
-                }
-            }
-            // Ctrl+X: drop the most recently staged attachment.
-            KeyCode::Char('x') | KeyCode::Char('X')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                match app.pending_attachments.pop() {
-                    Some(a) => app.set_status(format!("Removed {}.", a.filename)),
-                    None => app.set_status("No attachment staged."),
-                }
-            }
-            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.input.push(ch);
-                if ch == '/' {
-                    app.sync_command_autocomplete();
-                } else if ch == ':' {
-                    app.start_emoji_autocomplete();
-                } else if ch == '@' {
-                    let member_fetch_pending = schedule_guild_members_fetch_for_mentions(
-                        app,
-                        client.clone(),
-                        event_tx.clone(),
-                    );
-                    app.start_mention_autocomplete();
-                    if member_fetch_pending && app.mention_autocomplete.is_none() {
-                        app.set_status("Loading members for @mentions…");
-                    }
-                }
-                if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
-                    app.sync_command_autocomplete();
-                }
-            }
-            _ => {}
+        handle_input_focus_key(app, key, client, event_tx);
+        if kind.is_some() {
+            app.input_forget_noop_record();
         }
         return;
     }
@@ -1839,7 +2028,7 @@ fn handle_key_event(
                     app.reaction_target = Some((ch_id, msg.id.clone()));
                 }
                 app.focus = Focus::Input;
-                app.input = ":".to_string();
+                app.set_input(":");
                 app.start_emoji_autocomplete();
                 app.set_status("Pick an emoji, Enter to react (Esc to cancel)");
             } else {
@@ -2570,10 +2759,13 @@ fn spawn_media_fetch(
 fn spawn_clipboard_attach(event_tx: UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         match crate::media::from_clipboard().await {
-            Ok(attachments) => {
+            Ok(crate::media::ClipboardContent::Files(attachments)) => {
                 for attachment in attachments {
                     let _ = event_tx.send(AppEvent::AttachmentStaged { attachment });
                 }
+            }
+            Ok(crate::media::ClipboardContent::Text(text)) => {
+                let _ = event_tx.send(AppEvent::ClipboardText { text });
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::AttachmentFailed {

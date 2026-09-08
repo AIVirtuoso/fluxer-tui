@@ -48,14 +48,24 @@ Messages
 
 Input
   Enter - send; save edit; send forward with reference
-  Backspace - delete character
-  Ctrl+Backspace / Ctrl+H - delete previous word (whitespace-separated chunk)
-  Ctrl+U - clear input
+  Shift+Enter / Alt+Enter - new line (Alt+Enter also on the console)
+  Left/Right, Home/End (Ctrl+A/Ctrl+E), Ctrl+Left/Right or Alt+B/Alt+F - move by
+           character, line, word; Ctrl+Home/End - start/end of the text
+  Up/Down - line above/below; Up on the first line leaves for the messages
+  Backspace / Delete (Ctrl+D) - delete before / after the cursor
+  Ctrl+Backspace, Ctrl+H, Ctrl+W / Alt+D - delete word before / after the cursor
+  Alt+K - delete to the end of the line     Ctrl+U - clear input
+  Shift+arrows, or Ctrl+Space then arrows - select; Esc drops the selection
+  Ctrl+C / Ctrl+X - copy / cut the selection (also to wl-copy or xclip)
+  Alt+V - paste what was cut or copied here; Ctrl+V - the system clipboard
+  Ctrl+B bold  Ctrl+I italic  Alt+U underline  Ctrl+S strike  Alt+C code  Alt+P spoiler
+           - around the selection or the word at the cursor; again removes them
+  Ctrl+Z / Ctrl+Y - undo / redo (a typed word or a run of Backspaces is one step)
   Ctrl+F or /attach - file picker: any kind of file, with a preview of pictures and videos
-  /attach <path> - attach a file by path; Ctrl+V - the image or the files on the clipboard
+  /attach <path> - attach a file by path; Ctrl+V - paste text from the clipboard, or
+           attach the image or files on it
   Ctrl+O - the last staged picture or video full size; Ctrl+X - drop the last staged file
   Enter sends text and attachments together (the compose box shows what is staged)
-  Up - back to message list
   : - custom emoji autocomplete     @ - mention autocomplete (guild/DM)
   Long lines wrap; input height grows with wrapped rows
 

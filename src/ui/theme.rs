@@ -107,6 +107,12 @@ pub fn dim_style() -> Style {
     }
 }
 
+/// The selected stretch of the compose text: reversed, which reads the
+/// same on the console and in any palette.
+pub fn compose_selection_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
 /// Tertiary text: placeholders, unfocused chrome.
 pub fn muted_style() -> Style {
     if is_terminal_theme() {

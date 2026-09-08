@@ -82,9 +82,19 @@ own section or table row further down.
 
 **Sending**
 
+- **A real editor in the compose box.** A cursor that moves by
+  character, word and line, several lines with **Shift+Enter** or
+  **Alt+Enter**, a selection (Shift+arrows, or **Ctrl+Space** and then
+  the arrows, which also works on the console), cut, copy and paste,
+  **Ctrl+B**/**Ctrl+I**/**Ctrl+S** and friends to put markdown around
+  the selection or the word at the cursor, and undo/redo with
+  **Ctrl+Z**/**Ctrl+Y**; the box scrolls to keep the cursor in view.
+  Upstream only appends and deletes at the end (see "Editing the
+  message you are writing"). Keyboard only: this fork has no mouse
+  support and will not get any.
 - **Attach any kind of file.** A file picker (**Ctrl+F** or `/attach`),
   `/attach <path>`, and **Ctrl+V** for the image or the files on the
-  clipboard; up to ten per message, with previews of staged pictures
+  clipboard (text on it is pasted into the message instead); up to ten per message, with previews of staged pictures
   and videos (see "Attaching files"). Upstream sends text only.
 
 **Sound and notifications**
@@ -316,7 +326,7 @@ Any kind of file can go with a message, up to ten at a time:
 Staged files show above the text you type, pictures and videos as
 thumbnails where the terminal draws pictures, everything else by name and
 size. **Ctrl+O** shows the last staged picture or video full size,
-**Ctrl+X** drops it, **Enter** sends text and files together. A video's
+**Ctrl+X** drops it (when nothing is selected in the text), **Enter** sends text and files together. A video's
 preview is its first frame, which `ffmpeg` on PATH provides; without it
 videos are listed by name.
 
@@ -348,6 +358,52 @@ what you see is what the web app shows:
 Bold, italic and the other inline marks may run across lines; code
 spans may not. Blank lines are kept, except at the start and end of a
 message and around a heading.
+
+## Editing the message you are writing
+
+The compose box is a small text editor, the same in a terminal
+emulator and on the console. The keys follow readline where the web
+client has no key of its own. The text is stored as typed: the markdown
+markers, `<@id>` mentions and `<:name:id>` custom emoji tokens are all
+there, a custom emoji counting as one character for every movement and
+deletion.
+
+- **Moving.** **Left**/**Right** by character, **Ctrl+Left**/**Right**
+  or **Alt+B**/**Alt+F** by word, **Home**/**End** or
+  **Ctrl+A**/**Ctrl+E** to the ends of the line, **Ctrl+Home**/**End**
+  to the ends of the text. **Up**/**Down** move between lines; **Up** on
+  the first line leaves the box for the message list as before.
+- **Lines.** **Shift+Enter** or **Alt+Enter** starts a new line
+  (**Alt+Enter** is the one the Linux console can send). **Enter**
+  sends. Pasted text keeps its line breaks.
+- **Deleting.** **Backspace** and **Delete** (or **Ctrl+D**) take the
+  character before or after the cursor; **Ctrl+Backspace**, **Ctrl+H**
+  or **Ctrl+W** the word before, **Alt+D** the word after; **Alt+K**
+  the rest of the line; **Ctrl+U** everything.
+- **Selecting.** **Shift** with any movement key extends a selection,
+  shown reversed. Where the terminal does not report Shift with the
+  arrows (the console), **Ctrl+Space** sets a mark and the plain
+  movement keys select from it; **Ctrl+Space** again or **Esc** drops
+  it. Typing, **Backspace** or **Delete** replace or remove the
+  selection.
+- **Cut, copy, paste.** **Ctrl+C** copies and **Ctrl+X** cuts the
+  selection into the client's own buffer, and onto the system clipboard
+  through `wl-copy` (Wayland) or `xclip` (X11) when one is on PATH.
+  **Alt+V** pastes that buffer. **Ctrl+V** reads the system clipboard:
+  text goes in at the cursor, an image or files copied in a file manager
+  are attached, as before. The terminal's own paste key works too.
+- **Formatting.** **Ctrl+B** bold, **Ctrl+I** italic (or **Tab** while
+  something is selected), **Alt+U** underline, **Ctrl+S**
+  strikethrough, **Alt+C** inline code, **Alt+P** spoiler. They wrap the
+  selection, or the word at the cursor; with nothing at the cursor they
+  insert a pair to type into. The same key on already-marked text
+  removes the marks, as in the web client.
+- **Undo.** **Ctrl+Z** undoes, **Ctrl+Y** redoes. A run of typed
+  characters up to a space is one step, so is a run of Backspaces;
+  everything else is a step of its own. Sending clears the history.
+- The autocompletes for `:`, `@` and `/` look at the text before the
+  cursor and insert there, so they work in the middle of a message.
+- The counter in the box's corner counts the whole text.
 
 ## Notifications
 
@@ -495,10 +551,19 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 
 | Key | Action |
 |-----|--------|
-| **Enter** | Send message, save **edit**, or forward with reference only. Long lines **wrap** and the input bar **grows** with the text. |
-| **↑** | Leave **Input** and focus **Messages**. |
-| **Backspace** | Delete character. |
-| **Ctrl+Backspace** / **Ctrl+H** | Delete the previous whitespace-separated word. |
+| **Enter** | Send message, save **edit**, or forward with reference only. Long lines **wrap** and the input bar **grows** with the text, then scrolls to the cursor. |
+| **Shift+Enter** / **Alt+Enter** | New line. |
+| **←** / **→**, **Ctrl+←** / **Ctrl+→** (or **Alt+B** / **Alt+F**) | Move by character or word. |
+| **Home** / **End** (or **Ctrl+A** / **Ctrl+E**), **Ctrl+Home** / **Ctrl+End** | Start or end of the line; of the whole text. |
+| **↑** / **↓** | Line above or below; **↑** on the first line leaves **Input** and focuses **Messages**. |
+| **Backspace** / **Delete** (or **Ctrl+D**) | Delete the character before / after the cursor (or the selection). |
+| **Ctrl+Backspace** / **Ctrl+H** / **Ctrl+W**, **Alt+D** | Delete the previous / next whitespace-separated word. |
+| **Alt+K** | Delete to the end of the line. |
+| **Shift+movement**, or **Ctrl+Space** then movement | Select; **Esc** drops the selection. |
+| **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selection (also to `wl-copy` or `xclip`) / paste it back. |
+| **Ctrl+V** | Paste text from the system clipboard at the cursor; an image or files on it are attached instead. |
+| **Ctrl+B**, **Ctrl+I** (or **Tab** with a selection), **Alt+U**, **Ctrl+S**, **Alt+C**, **Alt+P** | Bold, italic, underline, strikethrough, code, spoiler around the selection or the word at the cursor; again to remove. |
+| **Ctrl+Z** / **Ctrl+Y** | Undo / redo. |
 | `/debug`, `/debug save`, `/debug frame` | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging"). |
 | **Ctrl+U** | Clear the whole input line. |
 | **Esc** | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Channels**. |

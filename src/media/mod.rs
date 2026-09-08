@@ -10,7 +10,8 @@ mod open_external;
 mod prepare;
 
 pub use attachments::{
-    StagedAttachment, content_type_for_extension, from_clipboard, from_path, human_size,
+    ClipboardContent, StagedAttachment, content_type_for_extension, from_clipboard, from_path,
+    human_size,
 };
 pub use audio::{Player, attachment_is_audio, format_duration, player_command};
 pub use cache::{Lookup, MediaCache};
