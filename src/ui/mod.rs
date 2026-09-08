@@ -53,16 +53,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let inner_w = area.width.saturating_sub(2).max(1);
     let input_lines = input_bar::input_display_row_count(app, inner_w);
     let input_block_h = input_lines.saturating_add(2).clamp(3, 40);
-    // The typing row keeps its place whether anyone is typing or not, so
-    // the pane and the box never move when a peer starts or stops.
-    let typing_rows = input_bar::typing_row_count(app);
 
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(4),
-            Constraint::Length(typing_rows),
             Constraint::Length(input_block_h),
         ])
         .split(area);
@@ -99,8 +95,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         command_popup::render(frame, root[1], app);
     }
 
-    input_bar::render_typing_row(frame, root[2], app);
-    let cursor = input_bar::render(frame, root[3], app);
+    let cursor = input_bar::render(frame, root[2], app);
     if let Some(cursor) = cursor {
         frame.set_cursor_position(cursor);
     }
@@ -131,7 +126,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     message_pane::overlay_media(frame, area, app);
 
     if std::mem::take(&mut app.debug_frame_wanted) {
-        log_frame_map(frame, app, root[3], input_lines, cursor);
+        log_frame_map(frame, app, root[2], input_lines, cursor);
     }
 
     // The terminal backend reconciles this frame against what the terminal

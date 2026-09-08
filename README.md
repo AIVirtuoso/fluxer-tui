@@ -69,11 +69,11 @@ own section or table row further down.
   amber bar in the margin (and a tint in the Fluxer theme) on messages
   that mention you or answer you, and the message a selected reply
   answers is marked (see "Interface overview").
-- **A typing row that stays put:** who is typing shows in a row of its
-  own above the compose box, reserved whether anyone is typing or not,
-  and visible while you write. Upstream put the line inside the box,
-  only while it was empty, and the whole screen shifted by a row every
-  time someone started or stopped (see "Interface overview").
+- **A typing indicator that moves nothing:** who is typing is written
+  into the compose box's bottom edge, costing no row, and stays there
+  while you write. Upstream put the line inside the box, only while it
+  was empty, and the whole screen shifted by a row every time someone
+  started or stopped (see "Interface overview").
 - **A performance mode that means it:** no pictures, no animations,
   slower ticks and one frame per burst of gateway traffic, for slow
   machines (see "Tips"). Upstream's skipped little.
@@ -479,12 +479,12 @@ The UI has four **focus** areas, cycled with **Tab** / **Shift+Tab** (or **h**/*
 3. **Messages** - message history for the selected channel.
 4. **Input** - compose box (text channels only, when you have permission to send).
 
-A status line at the top shows gateway state, errors, and hints. The row
-between the message pane and the compose box says who is typing in the
-channel. It is always there while typing indicators are on (**F2**),
-empty when nobody is, so a peer starting or stopping never moves the
-rest of the screen, and it stays in view while you write your own
-message.
+A status line at the top shows gateway state, errors, and hints. Who is
+typing in the channel is written into the compose box's bottom edge, the
+way the web client puts it under the input. It takes no row of its own,
+so a peer starting or stopping never moves the rest of the screen, and
+it stays in view while you write your own message. **F2** turns typing
+indicators off.
 
 Messages that concern you are highlighted the way the web app does it: a
 message that mentions you (by name, through one of your roles, or with

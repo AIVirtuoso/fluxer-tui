@@ -129,50 +129,30 @@ pub fn input_display_row_count(app: &App, inner_width: u16) -> u16 {
     1u16.saturating_add(strip)
 }
 
-/// Rows the typing row above the compose box takes: one whenever typing
-/// indicators are on, whether or not anyone is typing. The row is
-/// reserved so that a peer starting or stopping never moves the rest of
-/// the screen; while it is empty it is only background.
-pub fn typing_row_count(app: &App) -> u16 {
-    if app.ui_settings.show_typing_indicators && !app.ui_settings.performance_mode {
-        1
-    } else {
-        0
-    }
-}
-
-/// The row between the message pane and the compose box that says who is
-/// typing in the current channel. Unlike the web client's, which sits
-/// under the input, it is drawn whether the input is empty or not, so it
-/// stays visible while a message is being written.
-pub fn render_typing_row(frame: &mut Frame, area: Rect, app: &App) {
-    if area.height == 0 {
-        return;
-    }
-    let bg = Style::default().bg(crate::ui::theme::bg_secondary());
-    let line = match app.others_typing_phrase() {
-        Some(phrase) => {
-            let dots = match app.input_bar_anim_phase % 4 {
-                0 => "",
-                1 => ".",
-                2 => "..",
-                _ => "...",
-            };
-            // One cell in from the edge, level with the text in the box.
-            let text = fit(
-                &typing_line_with_dots(&phrase, dots),
-                area.width.saturating_sub(1) as usize,
-            );
-            Line::from(Span::styled(
-                format!(" {text}"),
-                Style::default()
-                    .fg(crate::ui::theme::typing_others())
-                    .add_modifier(Modifier::ITALIC),
-            ))
-        }
-        None => Line::default(),
+/// The "is typing" line of the compose box, for its bottom border.
+/// Nobody typing gives `None`; the border stays a plain line.
+///
+/// The phrase lives in the border, where the web client puts it under
+/// the input, so it costs no row: the box is the same height whether a
+/// peer types or not, nothing else on the screen moves when one starts
+/// or stops, and it stays in view while a message is being written.
+fn typing_border_title(app: &App, width: u16) -> Option<Line<'static>> {
+    let phrase = app.others_typing_phrase()?;
+    let dots = match app.input_bar_anim_phase % 4 {
+        0 => "",
+        1 => ".",
+        2 => "..",
+        _ => "...",
     };
-    frame.render_widget(Paragraph::new(line).style(bg), area);
+    // the corners and a space on each side of the text
+    let room = width.saturating_sub(4) as usize;
+    let text = fit(&typing_line_with_dots(&phrase, dots), room);
+    Some(Line::from(Span::styled(
+        format!(" {text} "),
+        Style::default()
+            .fg(crate::ui::theme::typing_others())
+            .add_modifier(Modifier::ITALIC),
+    )))
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
@@ -257,6 +237,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
         .borders(Borders::ALL)
         .border_style(crate::ui::theme::focused_border(focused))
         .style(Style::default().bg(crate::ui::theme::bg_secondary()));
+    if can_type && let Some(typing) = typing_border_title(app, area.width) {
+        blk = blk.title_bottom(typing);
+    }
 
     if can_type && !app.input_is_empty() {
         let char_count = app.input_char_count();
@@ -439,42 +422,42 @@ mod tests {
     }
 
     #[test]
-    fn the_typing_row_keeps_its_place_and_shows_while_composing() {
+    fn who_is_typing_sits_in_the_bottom_border_and_moves_nothing() {
         let mut app = dm_app();
         app.focus = Focus::Input;
         let (w, h) = (80u16, 24u16);
-        // nobody typing, empty input: the box is three rows at the bottom,
-        // with an empty row reserved above it
+        // nobody typing, empty input: a three-row box at the bottom, the
+        // pane's border right above it
         let quiet = draw(&mut app, w, h);
         let box_top = h as usize - 3;
         assert!(quiet[box_top].contains('─'), "{}", quiet.join("\n"));
-        assert_eq!(quiet[box_top - 1].trim(), "", "{}", quiet.join("\n"));
-        assert!(
-            quiet[box_top - 2].contains('─'),
-            "the pane's bottom border sits above the typing row:\n{}",
-            quiet.join("\n")
-        );
+        assert!(quiet[box_top - 1].contains('─'), "{}", quiet.join("\n"));
+        assert!(!quiet[h as usize - 1].contains("typing"));
 
-        // a peer starts typing while a message is being written: the row
-        // fills in, nothing else moves
+        // a peer starts typing while a message is being written: the
+        // phrase is in the bottom border, no row moved
         app.record_typing("c1", "o");
         app.input = "hello".into();
         let busy = draw(&mut app, w, h);
+        assert_eq!(quiet[box_top - 1], busy[box_top - 1]);
         assert!(busy[box_top].contains('─'), "{}", busy.join("\n"));
-        assert!(
-            busy[box_top - 1].contains("o is typing"),
-            "{}",
-            busy.join("\n")
-        );
         assert!(busy[box_top + 1].contains("hello"), "{}", busy.join("\n"));
-        assert_eq!(quiet[box_top - 2], busy[box_top - 2]);
+        let bottom = &busy[h as usize - 1];
+        assert!(bottom.contains("└ o is typing"), "{}", busy.join("\n"));
+        assert!(bottom.ends_with('┘'), "{}", busy.join("\n"));
 
-        // with indicators off the row is not reserved at all
+        // the same with an empty input, and gone once indicators are off
+        app.input.clear();
+        let empty = draw(&mut app, w, h);
+        assert!(empty[h as usize - 1].contains("o is typing"));
+        assert!(empty[box_top + 1].contains("Type a message"));
         app.ui_settings.show_typing_indicators = false;
-        assert_eq!(typing_row_count(&app), 0);
         let off = draw(&mut app, w, h);
-        assert!(off[box_top].contains('─'), "{}", off.join("\n"));
-        assert!(off[box_top - 1].contains('─'), "{}", off.join("\n"));
+        assert!(
+            !off[h as usize - 1].contains("typing"),
+            "{}",
+            off.join("\n")
+        );
     }
 
     #[test]

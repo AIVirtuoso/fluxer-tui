@@ -58,14 +58,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
     let typing_on = app.ui_settings.show_typing_indicators;
     let typing_primary = if typing_on {
-        ("On", "Who is typing, in a row above the compose box")
+        ("On", "Who is typing, in the compose box's bottom edge")
     } else {
-        ("Off", "No typing row above the compose box")
+        ("Off", "Nothing about who is typing")
     };
     let typing_alt = if typing_on {
-        ("Off", "No typing row above the compose box")
+        ("Off", "Nothing about who is typing")
     } else {
-        ("On", "Who is typing, in a row above the compose box")
+        ("On", "Who is typing, in the compose box's bottom edge")
     };
     let perf_on = app.ui_settings.performance_mode;
     let perf_primary = if perf_on {
