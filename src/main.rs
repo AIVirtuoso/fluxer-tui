@@ -1010,8 +1010,39 @@ fn compose_edit_kind(key: &KeyEvent) -> Option<crate::compose::InputEditKind> {
                 Some(K::Typing)
             }
         }
-        KeyCode::Backspace if !ctrl => Some(K::Erasing),
+        KeyCode::Backspace if !ctrl && !alt => Some(K::Erasing),
+        KeyCode::Char('h') | KeyCode::Char('H') if ctrl && !alt => Some(K::Erasing),
         _ => Some(K::Discrete),
+    }
+}
+
+/// True for the keys that delete the word before the cursor:
+/// Ctrl+Backspace and Alt+Backspace. A terminal whose Backspace key
+/// transmits BS (xterm's default, `backarrowKey`) sends Alt+Backspace
+/// as Ctrl+Alt+H, so that counts too.
+fn is_delete_word_back_key(key: &KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Backspace => ctrl || alt,
+        KeyCode::Char('h') | KeyCode::Char('H') => ctrl && alt,
+        _ => false,
+    }
+}
+
+/// True for the keys that erase one character before the cursor.
+/// xterm's Backspace key transmits BS (^H) rather than DEL, which
+/// arrives here as Ctrl+H: it erases a character like every other
+/// Backspace key, never a word. Check [`is_delete_word_back_key`]
+/// first, since Ctrl+Backspace answers to both.
+fn is_backspace_key(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Backspace => true,
+        KeyCode::Char('h') | KeyCode::Char('H') => {
+            key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+        }
+        _ => false,
     }
 }
 
@@ -1132,6 +1163,13 @@ fn handle_compose_editing_key(app: &mut App, key: KeyEvent) -> bool {
             app.input_type('\n');
             true
         }
+        // Ctrl+J is LF, the byte a newline has always been, and the only
+        // newline key xterm leaves alone: its built-in translations bind
+        // Alt+Return to fullscreen(), so Alt+Enter never reaches us there.
+        KeyCode::Char('j') | KeyCode::Char('J') if ctrl && !alt => {
+            app.input_type('\n');
+            true
+        }
         _ => false,
     }
 }
@@ -1155,17 +1193,11 @@ fn handle_input_focus_key(
             KeyCode::Tab | KeyCode::Enter => {
                 app.insert_selected_slash_command();
             }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            _ if is_delete_word_back_key(&key) => {
                 app.input_delete_word_backward();
                 app.sync_command_autocomplete();
             }
-            KeyCode::Char('h') | KeyCode::Char('H')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                app.input_delete_word_backward();
-                app.sync_command_autocomplete();
-            }
-            KeyCode::Backspace => {
+            _ if is_backspace_key(&key) => {
                 app.input_backspace();
                 app.sync_command_autocomplete();
             }
@@ -1199,17 +1231,11 @@ fn handle_input_focus_key(
             KeyCode::Tab | KeyCode::Enter => {
                 app.insert_selected_mention();
             }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            _ if is_delete_word_back_key(&key) => {
                 app.input_delete_word_backward();
                 app.update_mention_filter();
             }
-            KeyCode::Char('h') | KeyCode::Char('H')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                app.input_delete_word_backward();
-                app.update_mention_filter();
-            }
-            KeyCode::Backspace => {
+            _ if is_backspace_key(&key) => {
                 app.input_backspace();
                 app.update_mention_filter();
             }
@@ -1255,17 +1281,11 @@ fn handle_input_focus_key(
                     app.insert_selected_emoji();
                 }
             }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            _ if is_delete_word_back_key(&key) => {
                 app.input_delete_word_backward();
                 app.update_emoji_filter();
             }
-            KeyCode::Char('h') | KeyCode::Char('H')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                app.input_delete_word_backward();
-                app.update_emoji_filter();
-            }
-            KeyCode::Backspace => {
+            _ if is_backspace_key(&key) => {
                 app.input_pop();
                 app.update_emoji_filter();
             }
@@ -1466,21 +1486,13 @@ fn handle_input_focus_key(
                 );
             }
         }
-        KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        _ if is_delete_word_back_key(&key) => {
             app.input_delete_word_backward();
             if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
                 app.sync_command_autocomplete();
             }
         }
-        KeyCode::Char('h') | KeyCode::Char('H')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.input_delete_word_backward();
-            if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
-                app.sync_command_autocomplete();
-            }
-        }
-        KeyCode::Backspace => {
+        _ if is_backspace_key(&key) => {
             app.input_pop();
             if !app.ui_settings.performance_mode || app.command_autocomplete.is_some() {
                 app.sync_command_autocomplete();
@@ -1782,6 +1794,9 @@ fn handle_key_event(
             KeyCode::Backspace if searching => {
                 app.sticker_picker_search_erase(ctrl);
             }
+            KeyCode::Char('h') | KeyCode::Char('H') if searching && ctrl => {
+                app.sticker_picker_search_erase(false);
+            }
             KeyCode::Char('u') | KeyCode::Char('U') if searching && ctrl => {
                 app.sticker_picker_search_erase(true);
             }
@@ -1896,21 +1911,13 @@ fn handle_key_event(
                     ack_channel_if_unread(app, client, old_channel_id.as_deref());
                 }
             }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            _ if is_delete_word_back_key(&key) => {
                 if let Some(p) = app.channel_picker.as_mut() {
                     delete_word_backward(&mut p.query);
                     app.filter_channel_picker();
                 }
             }
-            KeyCode::Char('h') | KeyCode::Char('H')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                if let Some(p) = app.channel_picker.as_mut() {
-                    delete_word_backward(&mut p.query);
-                    app.filter_channel_picker();
-                }
-            }
-            KeyCode::Backspace => {
+            _ if is_backspace_key(&key) => {
                 if let Some(p) = app.channel_picker.as_mut() {
                     p.query.pop();
                     app.filter_channel_picker();
@@ -3372,5 +3379,93 @@ mod redraw_tests {
         assert!(draw_now(true, true, Duration::ZERO));
         assert!(!draw_now(true, false, Duration::from_millis(50)));
         assert!(draw_now(true, false, PERF_FRAME_GAP));
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crate::api::types::UserPrivateResponse;
+    use crate::compose::InputEditKind;
+
+    fn app() -> App {
+        let me = UserPrivateResponse {
+            id: "me".into(),
+            ..Default::default()
+        };
+        App::new(
+            Default::default(),
+            me,
+            None,
+            Vec::new(),
+            Vec::new(),
+            crate::app::ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        )
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    /// xterm's Backspace key transmits BS (^H) rather than DEL unless
+    /// `backarrowKey` is turned off, and crossterm reports that byte as
+    /// Ctrl+H. It has to erase one character, like any other Backspace.
+    #[test]
+    fn ctrl_h_erases_one_character_not_a_word() {
+        let ctrl_h = key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert!(is_backspace_key(&ctrl_h));
+        assert!(!is_delete_word_back_key(&ctrl_h));
+        assert_eq!(compose_edit_kind(&ctrl_h), Some(InputEditKind::Erasing));
+        // and the compose keys leave it to the caller's Backspace arm
+        let mut a = app();
+        a.set_input("hello world");
+        assert!(!handle_compose_editing_key(&mut a, ctrl_h));
+    }
+
+    #[test]
+    fn the_word_before_the_cursor_goes_on_ctrl_or_alt_backspace() {
+        assert!(is_delete_word_back_key(&key(
+            KeyCode::Backspace,
+            KeyModifiers::CONTROL
+        )));
+        assert!(is_delete_word_back_key(&key(
+            KeyCode::Backspace,
+            KeyModifiers::ALT
+        )));
+        // Alt+Backspace on a terminal whose Backspace sends BS
+        assert!(is_delete_word_back_key(&key(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        )));
+        // a bare Backspace erases a character instead
+        let plain = key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert!(!is_delete_word_back_key(&plain));
+        assert!(is_backspace_key(&plain));
+        assert_eq!(compose_edit_kind(&plain), Some(InputEditKind::Erasing));
+    }
+
+    /// xterm binds Alt+Return to its own fullscreen() action, so the
+    /// compose box needs a newline key that reaches the client there.
+    #[test]
+    fn ctrl_j_is_a_newline_in_the_compose_box() {
+        let mut a = app();
+        a.input_type('a');
+        assert!(handle_compose_editing_key(
+            &mut a,
+            key(KeyCode::Char('j'), KeyModifiers::CONTROL)
+        ));
+        a.input_type('b');
+        assert_eq!(a.input_text(), "a\nb");
+        // Alt+Enter still does the same where the terminal passes it on
+        let mut b = app();
+        b.input_type('a');
+        assert!(handle_compose_editing_key(
+            &mut b,
+            key(KeyCode::Enter, KeyModifiers::ALT)
+        ));
+        b.input_type('b');
+        assert_eq!(b.input_text(), "a\nb");
     }
 }
