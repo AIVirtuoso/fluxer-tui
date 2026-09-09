@@ -55,17 +55,17 @@ jobs:
       - name: make rlease archive
         run: |
           mkdir -p release
-          cp target/release/fluxer-tui release/fluxer-tui
+          cp target/release/fluxter release/fluxter
           cp README.md LICENSE LICENSE-MIT release/ 2>/dev/null || true
           cd release
-          tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz fluxer-tui README.md 2>/dev/null || tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz fluxer-tui
-          sha256sum fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz > fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
+          tar czf fluxter-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz fluxter README.md 2>/dev/null || tar czf fluxter-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz fluxter
+          sha256sum fluxter-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz > fluxter-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
 
       - name: upload artifcat
         uses: actions/upload-artifact@v4
         with:
           name: fluxer-linux-x86_64
-          path: release/fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz*
+          path: release/fluxter-v${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz*
 
   # Build for macOS (64 bit)
   build-macos-intel:
@@ -83,16 +83,16 @@ jobs:
       - name: make release archive
         run: |
           mkdir -p release
-          cp target/release/fluxer-tui release/fluxer-tui
+          cp target/release/fluxter release/fluxter
           cd release
-          tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz fluxer-tui README.md 2>/dev/null || tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz fluxer-tui
-          shasum -a 256 fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz > fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz.sha256
+          tar czf fluxter-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz fluxter README.md 2>/dev/null || tar czf fluxter-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz fluxter
+          shasum -a 256 fluxter-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz > fluxter-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz.sha256
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fluxer-macos-x86_64
-          path: release/fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz*
+          path: release/fluxter-v${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz*
 
   # Build for macOS (arm64bit)
   build-macos-arm:
@@ -110,16 +110,16 @@ jobs:
       - name: make release
         run: |
           mkdir -p release
-          cp target/release/fluxer-tui release/fluxer-tui
+          cp target/release/fluxter release/fluxter
           cd release
-          tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz fluxer-tui README.md 2>/dev/null || tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz fluxer-tui
-          shasum -a 256 fluxer-tui-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz > fluxer-tui-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz.sha256
+          tar czf fluxter-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz fluxter README.md 2>/dev/null || tar czf fluxter-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz fluxter
+          shasum -a 256 fluxter-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz > fluxter-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz.sha256
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fluxer-macos-arm64
-          path: release/fluxer-tui-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz*
+          path: release/fluxter-v${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz*
 
   # Build for PowerPC 32-bit (iBook G3 / QEMU ppc)
   build-powerpc:
@@ -156,17 +156,17 @@ jobs:
       - name: make release archive
         run: |
           mkdir -p release
-          cp cross-powerpc/target/powerpc-unknown-linux-gnu/release/fluxer-tui release/fluxer-tui
-          file release/fluxer-tui
+          cp cross-powerpc/target/powerpc-unknown-linux-gnu/release/fluxter release/fluxter
+          file release/fluxter
           cd release
-          tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz fluxer-tui README.md 2>/dev/null || tar czf fluxer-tui-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz fluxer-tui
-          sha256sum fluxer-tui-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz > fluxer-tui-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz.sha256
+          tar czf fluxter-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz fluxter README.md 2>/dev/null || tar czf fluxter-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz fluxter
+          sha256sum fluxter-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz > fluxter-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz.sha256
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fluxer-powerpc-linux
-          path: release/fluxer-tui-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz*
+          path: release/fluxter-v${{ needs.prepare.outputs.version }}-powerpc-unknown-linux-gnu.tar.gz*
 
   # Build for Windows 64-bit)
   build-windows:
@@ -185,17 +185,17 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release
-          Copy-Item target/release/fluxer-tui.exe release/
+          Copy-Item target/release/fluxter.exe release/
           Copy-Item README.md release/ -ErrorAction SilentlyContinue
           Copy-Item LICENSE,LICENSE-MIT release/ -ErrorAction SilentlyContinue
-          Compress-Archive -Path release/* -DestinationPath release/fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip
-          Get-FileHash -Algorithm SHA256 release/fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip | Format-List | Out-File release/fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip.sha256
+          Compress-Archive -Path release/* -DestinationPath release/fluxter-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip
+          Get-FileHash -Algorithm SHA256 release/fluxter-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip | Format-List | Out-File release/fluxter-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip.sha256
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fluxer-windows-x86_64
-          path: release/fluxer-tui-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip*
+          path: release/fluxter-v${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip*
 
   # GitHub release
   create-release:

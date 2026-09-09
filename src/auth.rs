@@ -119,9 +119,9 @@ browser login is blocked from this IP address for now.
   The server answered INVALID_HANDOFF_CODE for a code it had just issued,
   which it does after five failed handoff attempts from one IP address
   within 15 minutes: a code typed wrongly on the login page, a code from
-  a fluxer-tui that had already exited, or an older fluxer-tui polling
+  a fluxter that had already exited, or an older client polling
   without the poll secret. Wait 15 minutes without trying again (every
-  wrong attempt starts the 15 minutes over), then run fluxer-tui once more
+  wrong attempt starts the 15 minutes over), then run fluxter once more
   and enter the code exactly as shown.";
 
 /// True for the status poll's 400 INVALID_HANDOFF_CODE, which for a code

@@ -1,5 +1,5 @@
 {
-  description = "fluxer-tui - a TUI chat client for the Fluxer messaging platform";
+  description = "fluxter - a TUI chat client for the Fluxer messaging platform";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -31,14 +31,14 @@
         # wl-clipboard/xclip are looked up on PATH at runtime for Ctrl+V, so
         # whatever the desktop already has gets used.
         postInstall = ''
-          wrapProgram $out/bin/fluxer-tui --suffix PATH : ${pkgs.lib.makeBinPath [pkgs.chafa]}
+          wrapProgram $out/bin/fluxter --suffix PATH : ${pkgs.lib.makeBinPath [pkgs.chafa]}
         '';
 
         meta = {
           description = "TUI chat client for the Fluxer messaging platform";
           homepage = "https://github.com/AIVirtuoso/fluxter";
           license = pkgs.lib.licenses.gpl3Plus;
-          mainProgram = "fluxer-tui";
+          mainProgram = "fluxter";
         };
       };
       default = fluxer-tui;

@@ -1,5 +1,5 @@
 //! Console mode: on a Linux VT there is no terminal emulator to draw pictures
-//! for us, so fluxer-tui paints its whole screen itself. The rasteriser turns
+//! for us, so fluxter paints its whole screen itself. The rasteriser turns
 //! the ratatui cell buffer (plus picture placements) into pixels, the fonts
 //! module finds a text and an emoji font, the DRM output puts the pixels on
 //! the display, and the VT module keeps the kernel console out of the way.

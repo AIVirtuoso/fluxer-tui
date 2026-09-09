@@ -215,8 +215,8 @@ async fn run_connection(
             token: token.to_string(),
             properties: GatewayIdentifyProperties {
                 os: std::env::consts::OS.to_string(),
-                browser: "fluxer-tui".to_string(),
-                device: "fluxer-tui".to_string(),
+                browser: "fluxter".to_string(),
+                device: "fluxter".to_string(),
             },
             flags: 0,
             initial_guild_id: initial_guild_id.filter(|id| !id.trim().is_empty()),

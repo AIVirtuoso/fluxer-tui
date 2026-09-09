@@ -126,7 +126,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
         Span::styled("  ", text),
-        Span::styled("fluxer-tui", accent),
+        Span::styled("fluxter", accent),
         Span::styled(" · preferences", dim),
     ]));
     lines.push(Line::from(""));

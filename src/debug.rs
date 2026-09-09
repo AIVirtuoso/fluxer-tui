@@ -75,7 +75,7 @@ pub fn init(path: &Path) -> std::io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(
         file,
-        "--- fluxer-tui {} started {}",
+        "--- fluxter {} started {}",
         env!("CARGO_PKG_VERSION"),
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     )?;
@@ -163,7 +163,7 @@ pub fn save_snapshot(facts: &[(String, String)]) -> std::io::Result<PathBuf> {
     let mut file = File::create(&path)?;
     writeln!(
         file,
-        "fluxer-tui {} debug snapshot {}",
+        "fluxter {} debug snapshot {}",
         env!("CARGO_PKG_VERSION"),
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     )?;
@@ -427,8 +427,8 @@ mod tests {
             "Console mode unavailable: <path>: permission denied"
         );
         assert_eq!(
-            scrub_private("fluxer-tui 0.7.5 needs mpv (see https://x.org/a.html)"),
-            "fluxer-tui 0.7.5 needs mpv (see https://x.org)"
+            scrub_private("fluxter 0.7.5 needs mpv (see https://x.org/a.html)"),
+            "fluxter 0.7.5 needs mpv (see https://x.org)"
         );
         assert_eq!(
             scrub_private("Failed to load: 504 Gateway Timeout."),
@@ -486,7 +486,7 @@ mod tests {
         );
         assert!(recent[0].contains("test     line"), "{:?}", recent);
         let written = std::fs::read_to_string(&file).unwrap();
-        assert!(written.starts_with("--- fluxer-tui"));
+        assert!(written.starts_with("--- fluxter"));
         assert!(written.contains("before the file"));
         assert!(written.contains(&format!("line {}", RING_LINES + 4)));
 
