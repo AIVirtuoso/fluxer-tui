@@ -146,9 +146,9 @@ impl Shadow {
 /// a cell is sent only when the terminal really shows something else. A
 /// cell with a picture sentinel is not written as text: the picture's
 /// escape sequences are printed at that position instead. When the message
-/// pane merely scrolled, the terminal is told to shift those rows itself,
-/// which moves the pictures in them too, and only what came into view is
-/// sent.
+/// pane merely scrolled, a terminal that can hold a frame back is told to
+/// shift those rows itself, which moves the pictures in them too, and only
+/// what came into view is sent.
 pub struct TermBackend<W: Write> {
     inner: CrosstermBackend<W>,
     pictures: SharedPictures,
@@ -156,6 +156,11 @@ pub struct TermBackend<W: Write> {
     shadow: Shadow,
     /// Pictures whose image data the terminal has (kitty).
     transmitted: std::collections::HashSet<u32>,
+    /// Whether the terminal holds a frame back until it is whole (DEC mode
+    /// 2026). Only then is it asked to scroll the pane: see `reconcile`.
+    /// Off until the terminal has said so, since the cost of asking a
+    /// terminal that cannot is a flicker the reader sees.
+    can_hold_frame: bool,
 }
 
 impl<W: Write> TermBackend<W> {
@@ -166,7 +171,13 @@ impl<W: Write> TermBackend<W> {
             frame,
             shadow: Shadow::new(Rect::default(), true),
             transmitted: std::collections::HashSet::new(),
+            can_hold_frame: false,
         }
+    }
+
+    /// What the terminal answered about DEC mode 2026 at start.
+    pub fn set_can_hold_frame(&mut self, yes: bool) {
+        self.can_hold_frame = yes;
     }
 
     fn reconcile(&mut self, buf: &Buffer, scroll: Option<RegionScroll>) -> io::Result<()> {
@@ -179,7 +190,16 @@ impl<W: Write> TermBackend<W> {
             // a terminal of a new size: nothing is known about what it shows
             self.shadow = Shadow::new(buf.area, true);
         }
-        if let Some(s) = scroll
+        // The pane is scrolled by the terminal only where a frame is shown
+        // whole. DECSTBM scrolls every column of those rows, and there is no
+        // way to hold it to the pane's: left and right margins (DECLRMM,
+        // private mode 69) are answered "never heard of it" by both foot and
+        // xterm. So the servers and channels boxes move with the pane and
+        // are written back in the same frame -- invisible under a
+        // synchronized update, a flicker of both boxes on every scroll step
+        // without one. Where the terminal cannot hold a frame back the pane
+        // is simply redrawn instead, which touches nothing outside it.
+        if let Some(s) = scroll.filter(|_| self.can_hold_frame)
             && s.rows != 0
             && s.area.height > 0
             && (s.rows.unsigned_abs() as u16) < s.area.height
@@ -517,6 +537,16 @@ pub enum AnyBackend {
     Console(ConsoleBackend),
 }
 
+impl AnyBackend {
+    /// Pass on what the terminal said about DEC mode 2026. The console
+    /// renderer paints whole frames of its own and has nothing to answer.
+    pub fn set_can_hold_frame(&mut self, yes: bool) {
+        if let AnyBackend::Crossterm(b) = self {
+            b.set_can_hold_frame(yes);
+        }
+    }
+}
+
 macro_rules! delegate {
     ($self:ident, $m:ident $(, $a:expr)*) => {
         match $self {
@@ -589,11 +619,14 @@ mod tests {
         frame: SharedFrame,
     }
 
+    /// A terminal that holds a frame back until it is whole, which is the
+    /// only one asked to scroll the pane. The other has its own test.
     fn rig() -> Rig {
         let pictures: SharedPictures = Rc::new(RefCell::new(HashMap::new()));
         let frame: SharedFrame = Rc::new(RefCell::new(FrameInfo::default()));
         let recorder = Recorder::default();
-        let backend = TermBackend::new(recorder.clone(), pictures.clone(), frame.clone());
+        let mut backend = TermBackend::new(recorder.clone(), pictures.clone(), frame.clone());
+        backend.set_can_hold_frame(true);
         Rig {
             backend,
             recorder,
@@ -700,6 +733,67 @@ mod tests {
         assert!(
             begin < scroll && scroll < end,
             "the scroll is inside the update: {out:?}"
+        );
+    }
+
+    /// DECSTBM scrolls every column of the rows it is given, so the boxes
+    /// beside the pane are dragged along and have to be written back. Under
+    /// a synchronized update that is part of the same frame and cannot be
+    /// seen; without one the reader sees both boxes go and come back on
+    /// every scroll step. So a terminal that cannot hold a frame back is
+    /// never asked to scroll, and the pane is redrawn instead.
+    #[test]
+    fn the_boxes_beside_the_pane_are_left_alone_where_a_frame_is_not_held_back() {
+        let before = [
+            "S:.........",
+            "news:aaaaaa",
+            "chat:bbbbbb",
+            "help:cccccc",
+            "meme:dddddd",
+            "in:........",
+        ];
+        // the same sidebar, the pane scrolled up by one row
+        let after = [
+            "S:.........",
+            "news:bbbbbb",
+            "chat:cccccc",
+            "help:dddddd",
+            "meme:eeeeee",
+            "in:........",
+        ];
+        let scroll = Some(RegionScroll {
+            area: Rect::new(5, 1, 6, 4),
+            rows: 1,
+        });
+
+        let mut r = rig();
+        r.backend.set_can_hold_frame(false);
+        r.draw(&before, None);
+        let out = r.draw(&after, scroll);
+        assert!(
+            !out.contains("\x1b[2;5r"),
+            "the terminal is not asked to scroll: {out:?}"
+        );
+        for box_label in ["news", "chat", "help", "meme"] {
+            assert!(
+                !out.contains(box_label),
+                "{box_label} was written again: {out:?}"
+            );
+        }
+        assert!(
+            out.contains("bbbbbb") && out.contains("eeeeee"),
+            "the pane is redrawn where it moved: {out:?}"
+        );
+
+        // the terminal that can: it scrolls, and pays for it by writing the
+        // boxes back inside the same frame
+        let mut r = rig();
+        r.draw(&before, None);
+        let out = r.draw(&after, scroll);
+        assert!(out.contains("\x1b[2;5r\x1b[1S\x1b[r"), "{out:?}");
+        assert!(
+            out.contains("news") && out.contains("meme"),
+            "the boxes come back in the same frame: {out:?}"
         );
     }
 

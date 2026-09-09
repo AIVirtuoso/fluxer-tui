@@ -390,6 +390,15 @@ be caught half drawn. Nothing is left of an earlier frame when that
 happens: an animation's frames all paint the same area, so each replaces
 the one before outright.
 
+It also changes how the message pane is scrolled. Where a frame is shown
+whole, the terminal is asked to shift the pane's rows itself, which keeps
+the pictures in them on screen without sending them again; that shift moves
+every column of those rows, so the Servers and Channels boxes go with it
+and are written back in the same frame. Where a frame is not held back
+that would be seen happening — both boxes flickering on every scroll step —
+so the pane is redrawn instead and the boxes are left alone. The cost is
+that a picture in view is sent again as it moves.
+
 ### xterm
 
 On the command line or in `~/.Xresources`; the first two matter, the
