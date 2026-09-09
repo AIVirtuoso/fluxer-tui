@@ -1666,7 +1666,6 @@ fn place_terminal_picture(
     let transmit = printout
         .transmit
         .map(|seq| (((serial as u32) << 8) | (frame as u32 & 0xFF), seq));
-    let opaque_rows = printout.opaque_rows.min(rect.height);
     let mut pictures = app.terminal_pictures.borrow_mut();
     for (dy, data) in printout.rows {
         let y = rect.y.saturating_add(dy.saturating_sub(r0));
@@ -1685,7 +1684,6 @@ fn place_terminal_picture(
                 data,
                 area: rect,
                 transmit: transmit.clone(),
-                opaque_rows,
             },
         );
     }

@@ -84,20 +84,46 @@ pub fn prepare_pictures(
     // same colour, and stop drawing where the picture was see-through.
     let transparent = if sixel && !alpha_ok { opaque_bg } else { None };
     let area = Rect::new(0, 0, slot.cols, slot.rows);
-    let mut pictures = Vec::with_capacity(frames.len());
-    let mut total = 0usize;
-    for img in frames {
-        let img = match slot.kind {
-            MediaKind::Avatar => cover_into(img, box_px),
-            MediaKind::Picture => stretch_to(img, box_px),
-        };
-        let mut rgba = img.into_rgba8();
-        if round {
-            circle_mask(&mut rgba);
+    // Every frame at the size it will be drawn, before flattening writes
+    // the alpha away.
+    let shaped: Vec<image::RgbaImage> = frames
+        .into_iter()
+        .map(|img| {
+            let img = match slot.kind {
+                MediaKind::Avatar => cover_into(img, box_px),
+                MediaKind::Picture => stretch_to(img, box_px),
+            };
+            let mut rgba = img.into_rgba8();
+            if round {
+                circle_mask(&mut rgba);
+            }
+            rgba
+        })
+        .collect();
+    // A position is left undrawn only where every frame is see-through.
+    // One that another frame paints has to be painted here as well, or
+    // that frame's pixels stay on the screen underneath this one; painting
+    // it is also what lets a frame replace the one before without the
+    // cells being blanked first, which is what an animation blinks with.
+    let undrawn: Arc<image::RgbaImage> = Arc::new(if shaped.len() > 1 {
+        let mut all = shaped[0].clone();
+        for frame in &shaped[1..] {
+            for (seen, px) in all.pixels_mut().zip(frame.pixels()) {
+                if px.0[3] != 0 {
+                    seen.0[3] = 255;
+                }
+            }
         }
-        // Sixel keeps the picture as it stands, before flattening writes
-        // the alpha away: a run of rows cut at the top is encoded from it,
-        // and it is what says which positions must not be drawn.
+        all
+    } else {
+        shaped.first().cloned().unwrap_or_default()
+    });
+    let mut pictures = Vec::with_capacity(shaped.len());
+    let mut total = 0usize;
+    for rgba in shaped {
+        let mut rgba = rgba;
+        // a run of rows cut at the top is re-encoded from the picture as
+        // it stands here
         let pixels = sixel.then(|| Arc::new(rgba.clone()));
         if !alpha_ok && let Some(bg) = flat {
             rgba = composite_over(&rgba, bg);
@@ -109,7 +135,12 @@ pub fn prepare_pictures(
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
-            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels, transparent)?))
+            Picture::Terminal(Arc::new(terminal_picture(
+                &protocol,
+                pixels,
+                sixel.then(|| undrawn.clone()),
+                transparent,
+            )?))
         };
         pictures.push(picture);
     }
@@ -601,54 +632,88 @@ mod tests {
     /// The contract the backend leans on: a cell said to be covered is not
     /// blanked before the picture is printed, so the picture had better
     /// paint every pixel of it. Where that is not true the cell keeps what
-    /// A picture whose transparency is flattened paints every position of
-    /// its raster, so the rows it reaches the bottom of need no blanking
-    /// first; one whose transparency is left undrawn needs all of them
-    /// blanked, or what shows through is the frame before.
+    /// The whole of the animation rule: a position no frame ever draws is
+    /// left undrawn, so the terminal's own background shows through it
+    /// exactly; one that another frame paints is painted here too, so that
+    /// showing this frame replaces that one outright and the cells never
+    /// have to be blanked between frames.
     #[test]
-    fn only_a_picture_that_paints_everything_skips_the_blanking() {
-        let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([0, 0, 0, 0]));
-        for (x, y, px) in img.enumerate_pixels_mut() {
-            if (10..70).contains(&x) && (8..52).contains(&y) {
-                *px = image::Rgba([200, 60, 200, 255]);
+    fn a_frame_paints_whatever_any_other_frame_paints() {
+        // two frames: a block on the left, then the same on the right
+        let frame = |left: bool| {
+            let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([0, 0, 0, 0]));
+            for (x, _, px) in img.enumerate_pixels_mut() {
+                let inside = if left {
+                    (8..36).contains(&x)
+                } else {
+                    (44..72).contains(&x)
+                };
+                if inside {
+                    *px = image::Rgba([200, 60, 200, 255]);
+                }
             }
+            image::Frame::new(img)
+        };
+        let mut gif = Vec::new();
+        {
+            let mut enc = image::codecs::gif::GifEncoder::new(&mut gif);
+            enc.encode_frames(vec![frame(true), frame(false)]).unwrap();
         }
-        let mut bytes = Vec::new();
-        img.write_to(
-            &mut std::io::Cursor::new(&mut bytes),
-            image::ImageFormat::Png,
-        )
-        .unwrap();
         let mut picker = Picker::from_fontsize((10, 20));
         picker.set_protocol_type(ProtocolType::Sixel);
-        let rows_for = |drop| {
-            let slot = MediaSlot::new("https://x/o.png".to_string(), 8, 3, MediaKind::Picture);
-            let (frames, _) = prepare_pictures(
-                Some(&bytes),
-                &slot,
-                Some(&picker),
-                false,
-                (10, 20),
-                Some(Flatten {
-                    colour: [0, 0x2b, 0x36],
-                    drop,
-                }),
-            )
-            .unwrap();
-            let Picture::Terminal(tp) = &frames.frames[0] else {
+        let slot = MediaSlot::new("https://x/a.gif".to_string(), 8, 3, MediaKind::Picture);
+        let (frames, _) = prepare_pictures(
+            Some(&gif),
+            &slot,
+            Some(&picker),
+            false,
+            (10, 20),
+            Some(Flatten {
+                colour: [0, 0x2b, 0x36],
+                drop: true,
+            }),
+        )
+        .unwrap();
+        assert_eq!(frames.frames.len(), 2, "both frames decoded");
+        let drawn = |i: usize| {
+            let Picture::Terminal(tp) = &frames.frames[i] else {
                 panic!()
             };
             let g = tp.area();
-            tp.printout(0, g.height, 20, None).unwrap().opaque_rows
+            let data = tp.printout(0, g.height, 20, None).unwrap().rows[0]
+                .1
+                .clone();
+            let (w, h, px) = decode_sixel(&data);
+            (w, h, px)
         };
-        assert_eq!(
-            rows_for(true),
-            0,
-            "transparency left undrawn: every row is blanked first"
+        let (w, h, a) = drawn(0);
+        let (w2, h2, b) = drawn(1);
+        assert_eq!((w, h), (w2, h2));
+        let (mut differ, mut both_drawn, mut both_undrawn) = (0, 0, 0);
+        for i in 0..w * h {
+            match (a[i].is_some(), b[i].is_some()) {
+                (true, true) => both_drawn += 1,
+                (false, false) => both_undrawn += 1,
+                _ => differ += 1,
+            }
+        }
+        // GIF carries transparency as one palette entry, and quantising a
+        // hard edge can move a pixel of it from one frame to the next, so a
+        // hairline along the blocks' edges is the encoder's and not the
+        // rule's: eight positions of 4800 here.
+        assert!(
+            differ * 200 <= w * h,
+            "{differ} positions are drawn by one frame and not the other, so that \
+             frame's pixels stay on the screen under this one"
         );
-        // 3 rows of 20 px is 60, ten whole bands: the picture reaches the
-        // bottom of all three
-        assert_eq!(rows_for(false), 3, "flattened: none of them need it");
+        assert!(
+            both_drawn > 1000,
+            "the blocks are painted in both: {both_drawn}"
+        );
+        assert!(
+            both_undrawn > 500,
+            "and what neither ever draws is left undrawn: {both_undrawn}"
+        );
     }
 
     #[test]

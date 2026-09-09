@@ -28,12 +28,6 @@ pub struct PicturePrint {
     /// Image data to send once before any row of this picture (kitty),
     /// keyed by the picture and frame it belongs to.
     pub transmit: Option<(u32, Arc<str>)>,
-    /// How many of `area`'s rows, from the first, the picture paints every
-    /// pixel of. Those are not blanked beforehand: the picture covers them
-    /// whatever was there, and blanking a cell and then painting over it is
-    /// what an animation blinks with on a terminal that cannot hold the
-    /// frame back until it is whole.
-    pub opaque_rows: u16,
 }
 
 /// Per frame: the pictures on screen, by the cell they are printed at.
@@ -221,7 +215,18 @@ impl<W: Write> TermBackend<W> {
                 if crate::app::is_picture_sentinel(current.underline_color) {
                     self.inner.draw(batch.drain(..))?;
                     if let Some(p) = pictures.get(&(x, y)) {
-                        if y == p.area.y {
+                        // A picture paints everything any of its frames
+                        // paints, so showing the next frame replaces the
+                        // one before outright and nothing has to be
+                        // blanked. Only a different picture arriving at
+                        // these cells needs them cleared first, and
+                        // blanking on every frame is what an animation
+                        // blinks with on a terminal that cannot hold a
+                        // frame back until it is whole.
+                        let arrived = self.shadow.covered[i]
+                            || crate::app::picture_serial(self.shadow.cells[i].underline_color)
+                                != crate::app::picture_serial(current.underline_color);
+                        if y == p.area.y && arrived {
                             // The cells under a picture are never written
                             // while it is there, and a picture need not
                             // cover them all: it is cut to whole sixel
@@ -231,8 +236,7 @@ impl<W: Write> TermBackend<W> {
                             // the frame before; the rows the picture paints
                             // in full are left alone, since blanking them
                             // only puts a blink in front of the picture.
-                            let first = p.area.y.saturating_add(p.opaque_rows);
-                            let blanks: Vec<(u16, u16, Cell)> = (first..p.area.bottom())
+                            let blanks: Vec<(u16, u16, Cell)> = (p.area.y..p.area.bottom())
                                 .flat_map(|yy| (p.area.x..p.area.right()).map(move |xx| (xx, yy)))
                                 .filter_map(|(xx, yy)| {
                                     let cell = buf.cell((xx, yy))?;
@@ -627,49 +631,54 @@ mod tests {
         buf
     }
 
-    /// Blanking a cell and then painting over it puts a blink in front of
-    /// the picture on any terminal that cannot hold the frame back, and an
-    /// animation redraws every frame. The rows a picture paints in full are
-    /// left alone; the rest are blanked, or what shows is the frame before.
+    /// A picture paints everything any of its frames paints, so the next
+    /// frame replaces the one before outright and the cells need no
+    /// blanking. Blanking them on every frame is what an animation blinks
+    /// with on a terminal that cannot hold a frame back. Only a different
+    /// picture arriving at those cells needs them cleared first.
     #[test]
-    fn the_rows_a_picture_fills_are_not_blanked_first() {
+    fn only_a_different_picture_blanks_the_cells_first() {
         let sixel: Arc<str> = Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\");
-        let sentinel = crate::app::picture_sentinel_style(Style::default(), 7, 0);
-        let draw = |opaque_rows| {
-            let mut r = rig();
+        let show = |r: &mut Rig, serial: u16, frame: usize| {
             let mut buf = buffer_of(&["....", "....", "....", "...."]);
-            buf[(1, 1)].set_style(sentinel);
+            buf[(1, 1)].set_style(crate::app::picture_sentinel_style(
+                Style::default(),
+                serial,
+                frame,
+            ));
             for (x, y) in [(2, 1), (1, 2), (2, 2)] {
                 buf[(x, y)].set_skip(true);
             }
+            r.pictures.borrow_mut().clear();
             r.pictures.borrow_mut().insert(
                 (1, 1),
                 PicturePrint {
                     data: sixel.clone(),
                     area: Rect::new(1, 1, 2, 2),
                     transmit: None,
-                    opaque_rows,
                 },
             );
             r.draw_buf(buf, None)
         };
-        // nothing is known to be filled: both rows are blanked
-        let out = draw(0);
-        assert!(out.contains("\x1b[2;2H  "), "the first row: {out:?}");
-        assert!(out.contains("\x1b[3;2H  "), "and the second: {out:?}");
+        let mut r = rig();
+        // it arrives: the cells are cleared of whatever was there
+        let out = show(&mut r, 7, 0);
+        assert!(out.contains("\x1b[3;2H  "), "blanked on arrival: {out:?}");
 
-        // the first row is filled by the picture: only the second is blanked
-        let out = draw(1);
-        assert!(
-            !out.contains("\x1b[2;2H  "),
-            "the first is left alone: {out:?}"
-        );
-        assert!(out.contains("\x1b[3;2H  "), "the second is not: {out:?}");
-
-        // both filled: the picture is printed with nothing blanked
-        let out = draw(2);
+        // the next frame of the same picture: printed, nothing blanked
+        let out = show(&mut r, 7, 1);
         assert!(out.contains("\x1bPq"), "still printed: {out:?}");
-        assert!(!out.contains("\x1b[3;2H  "), "nothing blanked: {out:?}");
+        assert!(
+            !out.contains("\x1b[3;2H  "),
+            "no blanking between frames: {out:?}"
+        );
+
+        // a different picture at the same cells: cleared again
+        let out = show(&mut r, 8, 0);
+        assert!(
+            out.contains("\x1b[3;2H  "),
+            "blanked for the new one: {out:?}"
+        );
     }
 
     #[test]
@@ -767,7 +776,6 @@ mod tests {
             data: Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\"),
             area,
             transmit: None,
-            opaque_rows: 0,
         };
         let sentinel = crate::app::picture_sentinel_style(Style::default(), 7, 0);
         let mut buf = buffer_of(&["....", "....", "....", "...."]);
@@ -801,7 +809,6 @@ mod tests {
                 data: picture.data.clone(),
                 area: Rect::new(1, 0, 2, 2),
                 transmit: None,
-                opaque_rows: 0,
             },
         );
         let out = r.draw_buf(

@@ -226,6 +226,11 @@ pub enum TerminalPicture {
         /// The picture's pixels, so a run of rows that starts inside a
         /// band can be encoded from its own first pixel row.
         pixels: Option<std::sync::Arc<image::RgbaImage>>,
+        /// Where no frame of this picture ever draws: those positions are
+        /// left undrawn so the terminal's own background shows through
+        /// them. Everything another frame paints is painted here too, so
+        /// that showing this frame replaces that one outright.
+        undrawn: Option<std::sync::Arc<image::RgbaImage>>,
         /// Such runs, by (first row, end row), encoded when first shown.
         cuts: std::sync::Mutex<std::collections::HashMap<(u16, u16), std::sync::Arc<str>>>,
         /// How transparency was dealt with: the colour it was flattened
@@ -253,12 +258,6 @@ pub struct PicturePrintout {
     pub transmit: Option<std::sync::Arc<str>>,
     /// (row within the block, the sequence to print at that row's first cell).
     pub rows: Vec<(u16, std::sync::Arc<str>)>,
-    /// How many of the printed rows, from the first, the picture paints
-    /// every pixel of. Those need no blanking beforehand, and blanking them
-    /// is what an animation blinks with on a terminal that cannot hold a
-    /// frame back. Zero where the picture may leave positions unpainted,
-    /// which is any picture whose transparency is left undrawn.
-    pub opaque_rows: u16,
 }
 
 impl TerminalPicture {
@@ -292,24 +291,10 @@ impl TerminalPicture {
                 bands,
                 area,
                 pixels,
+                undrawn,
                 cuts,
                 transparent,
             } => {
-                // A picture whose transparency is flattened rather than
-                // left undrawn paints every position of its raster, so the
-                // rows it reaches the bottom of need no blanking first. The
-                // raster is as wide as the block and cut to whole bands, so
-                // this is a question of geometry alone, never of what the
-                // picture happens to contain.
-                let paints_all = transparent.is_none_or(|f| !f.drop);
-                let full_rows = |painted: u32| -> u16 {
-                    if paints_all {
-                        (painted / cell_h).min(u32::from(r1 - r0)) as u16
-                    } else {
-                        0
-                    }
-                };
-                let cut_painted = u32::from(r1 - r0) * cell_h / 6 * 6;
                 if r0 > 0
                     && let (Some(pixels), Some(picker)) = (pixels, picker)
                 {
@@ -317,17 +302,22 @@ impl TerminalPicture {
                         return Some(PicturePrintout {
                             transmit: None,
                             rows: vec![(r0, data.clone())],
-                            opaque_rows: full_rows(cut_painted),
                         });
                     }
-                    if let Some(data) =
-                        encode_sixel_rows(picker, pixels, r0, r1, cell_h, area.width, *transparent)
-                    {
+                    if let Some(data) = encode_sixel_rows(
+                        picker,
+                        pixels,
+                        undrawn.as_deref(),
+                        r0,
+                        r1,
+                        cell_h,
+                        area.width,
+                        *transparent,
+                    ) {
                         cuts.lock().unwrap().insert((r0, r1), data.clone());
                         return Some(PicturePrintout {
                             transmit: None,
                             rows: vec![(r0, data)],
-                            opaque_rows: full_rows(cut_painted),
                         });
                     }
                 }
@@ -353,29 +343,18 @@ impl TerminalPicture {
                     data.push_str(band);
                 }
                 data.push_str("\x1b\\");
-                let top = u32::from(r0) * cell_h;
-                let painted = (b1 as u32 * 6).saturating_sub(top.max(b0 as u32 * 6));
                 Some(PicturePrintout {
                     transmit: None,
                     rows: vec![(r0, std::sync::Arc::from(data))],
-                    // a run that starts inside a band does not reach the top
-                    // of its first row, so none of them are whole
-                    opaque_rows: if b0 as u32 * 6 > top {
-                        0
-                    } else {
-                        full_rows(painted)
-                    },
                 })
             }
             Self::Kitty { transmit, rows, .. } => Some(PicturePrintout {
                 transmit: Some(transmit.clone()),
                 rows: (r0..r1).map(|r| (r, rows[r as usize].clone())).collect(),
-                opaque_rows: 0,
             }),
             Self::Whole { data, .. } => (r0 == 0 && r1 == rows).then(|| PicturePrintout {
                 transmit: None,
                 rows: vec![(0, data.clone())],
-                opaque_rows: 0,
             }),
         }
     }
@@ -383,9 +362,11 @@ impl TerminalPicture {
 
 /// Block rows `r0..r1` of a picture as their own sixel, cut to whole bands
 /// at the bottom, so the run's first pixel row is the row's edge exactly.
+#[allow(clippy::too_many_arguments)]
 fn encode_sixel_rows(
     picker: &ratatui_image::picker::Picker,
     pixels: &image::RgbaImage,
+    undrawn: Option<&image::RgbaImage>,
     r0: u16,
     r1: u16,
     cell_h: u32,
@@ -417,7 +398,13 @@ fn encode_sixel_rows(
         Protocol::Sixel(sixel) => Some(std::sync::Arc::from(
             transparent
                 .filter(|f| f.drop)
-                .and_then(|_| crate::media::sixel_blank_transparent(&sixel.data, &crop))
+                .and_then(|f| {
+                    let mask = undrawn.map_or_else(
+                        || crop.clone(),
+                        |m| image::imageops::crop_imm(m, 0, y0, m.width(), h).to_image(),
+                    );
+                    crate::media::sixel_blank_transparent(&sixel.data, &mask, f.colour)
+                })
                 .unwrap_or_else(|| sixel.data.clone())
                 .as_str(),
         )),
@@ -443,6 +430,7 @@ fn protocol_rows(protocol: &Protocol) -> Vec<(u16, String)> {
 pub fn terminal_picture(
     protocol: &Protocol,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
+    undrawn: Option<std::sync::Arc<image::RgbaImage>>,
     transparent: Option<crate::media::Flatten>,
 ) -> Option<TerminalPicture> {
     let area = protocol.area();
@@ -454,15 +442,20 @@ pub fn terminal_picture(
             // Stopping the picture from drawing wherever it was see-through
             // is what makes transparency real; one that is see-through
             // nowhere is printed exactly as it was encoded.
-            let blanked = match (transparent.filter(|f| f.drop), pixels.as_deref()) {
-                (Some(_), Some(px)) => crate::media::sixel_blank_transparent(&sixel.data, px),
+            let blanked = match (
+                transparent.filter(|f| f.drop),
+                undrawn.as_deref().or(pixels.as_deref()),
+            ) {
+                (Some(f), Some(mask)) => {
+                    crate::media::sixel_blank_transparent(&sixel.data, mask, f.colour)
+                }
                 _ => None,
             };
             let data = blanked.as_deref().unwrap_or(sixel.data.as_str());
             // a run cut out of this picture flattens the same way, and stops
             // drawing the same way, so the whole of it is kept
             let kept = transparent;
-            parse_sixel(data, area, pixels, kept).or_else(|| {
+            parse_sixel(data, area, pixels, undrawn, kept).or_else(|| {
                 Some(TerminalPicture::Whole {
                     data: std::sync::Arc::from(data),
                     area,
@@ -508,6 +501,7 @@ fn parse_sixel(
     data: &str,
     area: Rect,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
+    undrawn: Option<std::sync::Arc<image::RgbaImage>>,
     transparent: Option<crate::media::Flatten>,
 ) -> Option<TerminalPicture> {
     let b = data.as_bytes();
@@ -563,6 +557,7 @@ fn parse_sixel(
         bands: body.split('-').map(std::sync::Arc::from).collect(),
         area,
         pixels,
+        undrawn,
         cuts: std::sync::Mutex::new(std::collections::HashMap::new()),
         transparent,
     })
@@ -2696,7 +2691,7 @@ impl App {
                         img,
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
-                    ) && let Some(tp) = terminal_picture(&p, None, None)
+                    ) && let Some(tp) = terminal_picture(&p, None, None, None)
                     {
                         encoded.push(Picture::Terminal(std::sync::Arc::new(tp)));
                         delays.push(delay.max(Duration::from_millis(20)));
@@ -5768,6 +5763,15 @@ pub fn picture_sentinel_style(style: Style, serial: u16, frame: usize) -> Style 
     ))
 }
 
+/// Which picture a sentinel belongs to, if it is one. The frame index is
+/// not part of it: the next frame of the same picture is the same picture.
+pub fn picture_serial(underline_color: Color) -> Option<u16> {
+    match underline_color {
+        Color::Rgb(r, hi, lo) if r & 0xC0 == 0x80 => Some((u16::from(hi) << 8) | u16::from(lo)),
+        _ => None,
+    }
+}
+
 pub fn is_picture_sentinel(underline_color: Color) -> bool {
     matches!(underline_color, Color::Rgb(r, _, _) if r & 0xC0 == 0x80)
 }
@@ -5813,7 +5817,7 @@ mod custom_emoji_tests {
             Protocol::Sixel(s) => s.data.clone(),
             _ => panic!("sixel"),
         };
-        let picture = terminal_picture(&protocol, None, None).unwrap();
+        let picture = terminal_picture(&protocol, None, None, None).unwrap();
         let TerminalPicture::Sixel { bands, .. } = &picture else {
             panic!("kept in bands");
         };
@@ -5853,7 +5857,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol, None, None).unwrap();
+        let picture = terminal_picture(&protocol, None, None, None).unwrap();
         let TerminalPicture::Kitty { transmit, rows, .. } = &picture else {
             panic!("kitty keeps rows");
         };
@@ -5888,7 +5892,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol, Some(pixels), None).unwrap();
+        let picture = terminal_picture(&protocol, Some(pixels), None, None).unwrap();
         // the second row alone starts at pixel row 20: 16 rows left, cut to
         // two whole bands, all blue (no red band from above)
         let lower = picture.printout(1, 2, 20, Some(&picker)).unwrap();

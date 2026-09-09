@@ -516,7 +516,7 @@ async fn main() -> Result<()> {
                     | ratatui_image::picker::ProtocolType::Halfblocks,
                 ) => image_bg.map(|colour| crate::media::Flatten {
                     colour,
-                    drop: !image_bg_fixed && app.synchronized_output,
+                    drop: !image_bg_fixed,
                 }),
                 _ => None,
             };
