@@ -1578,6 +1578,29 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     app.pane_last = Some(view);
 
+    // Nothing on the pane says who wrote the message it opens on when
+    // that message began above the top row: a long one scrolled into, or
+    // one grouped under a message that is off the pane. Name them in the
+    // pane's own title, where it costs none of the rows -- there are only
+    // as many as the terminal gives, and every one of them is a line of
+    // somebody's message. Where the header that names them sits depends
+    // on the scroll, so the layout cannot answer this.
+    let block = match top_author(app, layout.as_deref(), pre_rows, top, &messages) {
+        Some((name, color)) => titled_block(
+            vec![
+                Span::raw(" Messages "),
+                Span::styled("\u{2191} ", crate::ui::theme::muted_style()),
+                Span::styled(
+                    name,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+            ],
+            app.focus == Focus::Messages,
+        ),
+        None => block,
+    };
+
     // only the lines on screen are handed to the paragraph
     let (lines, offset) = model.window(top, pane_visible);
     let paragraph = Paragraph::new(Text::from(lines))
@@ -1627,6 +1650,57 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
 fn block_top_row(layout: &PaneLayout, pre_rows: u32, index: usize) -> Option<u32> {
     let &(b0, _) = layout.line_ranges.get(index)?;
     Some(pre_rows + layout.cum.get(b0).copied()?)
+}
+
+/// The message whose block covers pane row `row`. None where the row is
+/// above the first message or on a blank line between two blocks: there
+/// the message below it starts with everything it has.
+fn message_at_row(layout: &PaneLayout, pre_rows: u32, row: u32) -> Option<usize> {
+    layout
+        .line_ranges
+        .iter()
+        .position(|&(b0, b1)| match (layout.cum.get(b0), layout.cum.get(b1)) {
+            (Some(&start), Some(&end)) => (pre_rows + start..pre_rows + end).contains(&row),
+            _ => false,
+        })
+}
+
+/// Who wrote the message the pane opens on, where the header that names
+/// them is above the top row and the pane itself therefore says nowhere.
+fn top_author(
+    app: &App,
+    layout: Option<&PaneLayout>,
+    pre_rows: u32,
+    top: u32,
+    messages: &[crate::api::types::MessageResponse],
+) -> Option<(String, ratatui::style::Color)> {
+    let layout = layout?;
+    let index = message_at_row(layout, pre_rows, top)?;
+    if naming_header_row(app, layout, pre_rows, index)? >= top {
+        return None;
+    }
+    let message = messages.get(index)?;
+    let guild = app.guild_id_for_channel(message.channel_id.as_str());
+    Some((
+        app.shown_name_for_user(guild.as_deref(), &message.author),
+        app.member_name_color(
+            guild.as_deref(),
+            &message.author.id,
+            message.author.id == app.me.id,
+        ),
+    ))
+}
+
+/// The pane row of the header that names message `index`: its own block,
+/// or the one it is grouped under, which is where its author's name was
+/// written. A selected message is named by its own block whatever the
+/// grouping, since it is given a header of its own.
+fn naming_header_row(app: &App, layout: &PaneLayout, pre_rows: u32, index: usize) -> Option<u32> {
+    let named_by = match layout.group_head.get(index) {
+        Some(&head) if head != index && app.selected_message_index != Some(index) => head,
+        _ => index,
+    };
+    block_top_row(layout, pre_rows, named_by)
 }
 
 /// Draw custom emoji pictures over the marked placeholder cells the paragraph
@@ -1992,8 +2066,14 @@ pub fn format_timestamp(raw: &str, clock_12h: bool) -> String {
 }
 
 fn block(title: &str, focused: bool) -> Block<'static> {
+    titled_block(vec![Span::raw(format!(" {title} "))], focused)
+}
+
+/// The same box with a title of styled spans, for the message pane, which
+/// names the author of the message it opens on in its own.
+fn titled_block(title: Vec<Span<'static>>, focused: bool) -> Block<'static> {
     Block::default()
-        .title(format!(" {title} "))
+        .title(Line::from(title))
         .borders(Borders::ALL)
         .border_style(crate::ui::theme::focused_border(focused))
         .style(Style::default().bg(crate::ui::theme::bg()))
@@ -2200,6 +2280,68 @@ mod bottom_tests {
         app.selected_message_index = Some(index);
         app.clamp_scroll_to_selected_message();
         assert_selection_on_screen(&mut app, w, h, "selected off the pane");
+    }
+
+    /// The `endN.` token of the message a row is the last row of.
+    fn end_token(row: &str) -> Option<u64> {
+        row.match_indices("end").find_map(|(i, _)| {
+            let rest = &row[i + 3..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            match rest[digits.len()..].starts_with('.') {
+                true => digits.parse().ok(),
+                false => None,
+            }
+        })
+    }
+
+    /// Whoever wrote the message the pane opens on is named on it: by a
+    /// header of their own where that is on the pane, and by the pane's
+    /// title where the message began above the top row. A row of text
+    /// with nobody's name against it anywhere is the bug.
+    #[test]
+    fn the_pane_names_the_author_of_the_message_it_opens_on() {
+        for (w, h) in [(100u16, 16u16), (80, 30), (60, 20)] {
+            let mut app = app_with(&["c1"]);
+            for n in 1..=60 {
+                app.upsert_message(msg(n, "c1"));
+            }
+            draw(&mut app, w, h);
+            let sidebar = (w / 4).clamp(22, 50);
+            let (pane_x, text_w) = (sidebar as usize + 1, (w - sidebar - 2) as usize);
+            let pane = |row: &String| row.chars().skip(pane_x).take(text_w).collect::<String>();
+            for scroll in 0..24u16 {
+                app.message_scroll_from_bottom = scroll;
+                let rows = draw(&mut app, w, h);
+                let titled = rows[1].contains('\u{2191}');
+                let first = pane(&rows[2]);
+                // A header row names its author itself. So does the
+                // message under the blank row that separates two of
+                // them, which a header always follows -- a blank row
+                // inside a message body does not, and there the title
+                // has something to say.
+                let separator = first.trim().is_empty() && pane(&rows[3]).contains("#0001");
+                if first.contains("#0001") || separator {
+                    assert!(
+                        !titled,
+                        "{w}x{h} scrolled {scroll}: the title names an author the pane \
+                         already names:\n{}",
+                        rows.join("\n")
+                    );
+                    continue;
+                }
+                let n = rows[2..]
+                    .iter()
+                    .find_map(|r| end_token(&pane(r)))
+                    .expect("a message ends somewhere on the pane");
+                let author = if n.is_multiple_of(3) { "ann" } else { "bob" };
+                assert!(
+                    rows[1].contains(&format!("\u{2191} {author}#0001")),
+                    "{w}x{h} scrolled {scroll}: the pane opens on {author}'s message {n} \
+                     and names nobody:\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
     }
 
     /// A message grouped under one from the same person carries no header
