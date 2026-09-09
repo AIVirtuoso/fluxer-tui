@@ -169,7 +169,8 @@ act on them.
 ## Requirements
 
 - Rust toolchain
-- A terminal with reasonable size (the layout expects multiple panes)
+- A terminal with reasonable size (the layout expects multiple panes);
+  see "Terminals" for which ones have been tried and what they need
 - Network access for the API, gateway WebSocket, and browser login
 
 ## Build and run
@@ -279,7 +280,8 @@ It stores `api_base_url`, `token`, `last_server_id`, and `last_channel_id` so th
 ## Pictures in chat
 
 On a terminal that can draw pictures (sixel, kitty, iTerm2) and on the
-console, the message pane looks like the web app:
+console, the message pane looks like the web app (see "Terminals" for
+which ones have been tried):
 
 - **Profile pictures** sit to the left of each message, two rows tall; a
   user without one gets the web app's default avatar. They are round on
@@ -359,6 +361,47 @@ terminal is asked to shift those rows itself (pictures move with them, as
 foot, kitty and xterm do), and only the rows that came into view are
 sent. Keys that arrive while a frame is drawn are handled together, so a
 held key scrolls as fast as the terminal keeps up.
+
+## Terminals
+
+The client runs on anything ratatui can drive. What changes between
+terminals is how pictures are drawn and whether the Alt shortcuts arrive at
+all. This table says how far each one has actually been tried, which is not
+the same as how well it is expected to work: most of the list has never
+been run.
+
+| Terminal | Pictures | How far it has been tried |
+| --- | --- | --- |
+| **foot** | sixel | Everything in this README has been used on it. The transparency was checked against the screen pixel by pixel. |
+| **Linux console** (a tty, no X or Wayland) | the client draws them itself through DRM | Used regularly; see "Console mode" below. |
+| **xterm** | sixel, once told to be a VT340 | Starts, reports its background, is detected as sixel and draws. Needs the resources below. Whether it leaves unset sixel positions alone — what makes transparency work — has not been confirmed. |
+| **tmux** | whatever tmux itself manages; halfblocks when it does no sixel | Only used for the project's own headless tests, where it comes out as halfblocks. |
+| kitty, iTerm2 | their own protocols, which carry transparency | Never tried. Nothing has to be flattened on these, so `[ui] image_background` does nothing at all. |
+| WezTerm, Konsole, mlterm, Contour, mintty | sixel | Never tried. |
+| alacritty | none of them; falls back to halfblocks | Never tried. |
+
+If a sixel terminal paints the transparent parts of a picture instead of
+leaving them alone, set `[ui] image_background` to your background colour;
+see "Transparent pictures" above.
+
+### xterm
+
+On the command line or in `~/.Xresources`; the first two matter, the
+third only improves the colours:
+
+```
+XTerm*decTerminalID: vt340       # without this there is no sixel at all
+XTerm*metaSendsEscape: true      # without this Alt+S arrives as "ó"
+XTerm*numColorRegisters: 1024    # optional; 256 is the default
+```
+
+The second one is not about this client. xterm's `eightBitInput` defaults
+to true, so a key pressed with Meta is delivered as one byte with its
+eighth bit set: Alt+S becomes `0x73 | 0x80`, which is `0xf3`, the character
+`ó`. Every Alt shortcut in the tables below is affected, not just the
+sticker picker. The client cannot reasonably guess at this, since `ó` is a
+character people type. The slash commands (`/sticker` and the rest) need no
+modifier and work either way.
 
 ## Audio
 
