@@ -219,12 +219,6 @@ recompiled (the first run compiles everything once, in release mode). `--refresh
 reusing the commit it cached for an hour. From a checkout, `nix run .#dev`
 does the same.
 
-## Community
-   
-   > *fluxer-tui running on a vintage Apple iBook - courtesy of @astromahdi#2602*
-   
-   ![fluxer-tui on iBook](assets/IMG_7484.jpeg)
-
 ## First-time login
 
 If you have no valid saved token then you can easily login via the browser. The TUI will automatically:
