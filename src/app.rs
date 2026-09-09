@@ -253,6 +253,12 @@ pub struct PicturePrintout {
     pub transmit: Option<std::sync::Arc<str>>,
     /// (row within the block, the sequence to print at that row's first cell).
     pub rows: Vec<(u16, std::sync::Arc<str>)>,
+    /// How many of the printed rows, from the first, the picture paints
+    /// every pixel of. Those need no blanking beforehand, and blanking them
+    /// is what an animation blinks with on a terminal that cannot hold a
+    /// frame back. Zero where the picture may leave positions unpainted,
+    /// which is any picture whose transparency is left undrawn.
+    pub opaque_rows: u16,
 }
 
 impl TerminalPicture {
@@ -289,6 +295,21 @@ impl TerminalPicture {
                 cuts,
                 transparent,
             } => {
+                // A picture whose transparency is flattened rather than
+                // left undrawn paints every position of its raster, so the
+                // rows it reaches the bottom of need no blanking first. The
+                // raster is as wide as the block and cut to whole bands, so
+                // this is a question of geometry alone, never of what the
+                // picture happens to contain.
+                let paints_all = transparent.is_none_or(|f| !f.drop);
+                let full_rows = |painted: u32| -> u16 {
+                    if paints_all {
+                        (painted / cell_h).min(u32::from(r1 - r0)) as u16
+                    } else {
+                        0
+                    }
+                };
+                let cut_painted = u32::from(r1 - r0) * cell_h / 6 * 6;
                 if r0 > 0
                     && let (Some(pixels), Some(picker)) = (pixels, picker)
                 {
@@ -296,6 +317,7 @@ impl TerminalPicture {
                         return Some(PicturePrintout {
                             transmit: None,
                             rows: vec![(r0, data.clone())],
+                            opaque_rows: full_rows(cut_painted),
                         });
                     }
                     if let Some(data) =
@@ -305,6 +327,7 @@ impl TerminalPicture {
                         return Some(PicturePrintout {
                             transmit: None,
                             rows: vec![(r0, data)],
+                            opaque_rows: full_rows(cut_painted),
                         });
                     }
                 }
@@ -330,18 +353,29 @@ impl TerminalPicture {
                     data.push_str(band);
                 }
                 data.push_str("\x1b\\");
+                let top = u32::from(r0) * cell_h;
+                let painted = (b1 as u32 * 6).saturating_sub(top.max(b0 as u32 * 6));
                 Some(PicturePrintout {
                     transmit: None,
                     rows: vec![(r0, std::sync::Arc::from(data))],
+                    // a run that starts inside a band does not reach the top
+                    // of its first row, so none of them are whole
+                    opaque_rows: if b0 as u32 * 6 > top {
+                        0
+                    } else {
+                        full_rows(painted)
+                    },
                 })
             }
             Self::Kitty { transmit, rows, .. } => Some(PicturePrintout {
                 transmit: Some(transmit.clone()),
                 rows: (r0..r1).map(|r| (r, rows[r as usize].clone())).collect(),
+                opaque_rows: 0,
             }),
             Self::Whole { data, .. } => (r0 == 0 && r1 == rows).then(|| PicturePrintout {
                 transmit: None,
                 rows: vec![(0, data.clone())],
+                opaque_rows: 0,
             }),
         }
     }

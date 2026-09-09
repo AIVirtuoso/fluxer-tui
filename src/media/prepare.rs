@@ -601,6 +601,56 @@ mod tests {
     /// The contract the backend leans on: a cell said to be covered is not
     /// blanked before the picture is printed, so the picture had better
     /// paint every pixel of it. Where that is not true the cell keeps what
+    /// A picture whose transparency is flattened paints every position of
+    /// its raster, so the rows it reaches the bottom of need no blanking
+    /// first; one whose transparency is left undrawn needs all of them
+    /// blanked, or what shows through is the frame before.
+    #[test]
+    fn only_a_picture_that_paints_everything_skips_the_blanking() {
+        let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([0, 0, 0, 0]));
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            if (10..70).contains(&x) && (8..52).contains(&y) {
+                *px = image::Rgba([200, 60, 200, 255]);
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let rows_for = |drop| {
+            let slot = MediaSlot::new("https://x/o.png".to_string(), 8, 3, MediaKind::Picture);
+            let (frames, _) = prepare_pictures(
+                Some(&bytes),
+                &slot,
+                Some(&picker),
+                false,
+                (10, 20),
+                Some(Flatten {
+                    colour: [0, 0x2b, 0x36],
+                    drop,
+                }),
+            )
+            .unwrap();
+            let Picture::Terminal(tp) = &frames.frames[0] else {
+                panic!()
+            };
+            let g = tp.area();
+            tp.printout(0, g.height, 20, None).unwrap().opaque_rows
+        };
+        assert_eq!(
+            rows_for(true),
+            0,
+            "transparency left undrawn: every row is blanked first"
+        );
+        // 3 rows of 20 px is 60, ten whole bands: the picture reaches the
+        // bottom of all three
+        assert_eq!(rows_for(false), 3, "flattened: none of them need it");
+    }
+
     #[test]
     fn terminal_mode_encodes_for_the_protocol_at_the_block_size() {
         let mut picker = Picker::from_fontsize((10, 20));
