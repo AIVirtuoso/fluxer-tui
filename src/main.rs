@@ -1340,6 +1340,17 @@ fn handle_input_focus_key(
                 app.focus = Focus::Messages;
             }
         }
+        // Left with nothing before the cursor leaves the compose box the
+        // way Up on its first line does, so the boxes can be walked back
+        // the way Right walks them forward: the arrow that cannot move
+        // any further inside the box moves out of it. The cursor keys of
+        // a box with text in it are untouched, since the move only fails
+        // at the very start. `handle_compose_editing_key` has already had
+        // this key and handed it on.
+        KeyCode::Left => {
+            app.input_clear_selection();
+            app.focus = Focus::Messages;
+        }
         KeyCode::Down => {
             let extend = key.modifiers.contains(KeyModifiers::SHIFT);
             app.input_move(crate::compose::Move::LineDown, extend);
@@ -3447,6 +3458,48 @@ mod key_tests {
         assert!(!is_delete_word_back_key(&plain));
         assert!(is_backspace_key(&plain));
         assert_eq!(compose_edit_kind(&plain), Some(InputEditKind::Erasing));
+    }
+
+    /// Right walks the boxes forward, Servers to Input; Left has to walk
+    /// them back the same way, and the compose box was keeping the key
+    /// for its cursor even with nothing before it to move over. It is
+    /// handed on at the start of the text only -- the caller's Left arm
+    /// then lands on the messages, as Up on the first line already did --
+    /// so the cursor keys of a box with text in it are untouched.
+    #[test]
+    fn left_leaves_the_compose_box_only_at_the_start_of_the_text() {
+        let left = key(KeyCode::Left, KeyModifiers::NONE);
+        let mut a = app();
+        a.set_input("hi");
+        // over the two characters: the box's own key both times
+        assert!(handle_compose_editing_key(&mut a, left));
+        assert!(handle_compose_editing_key(&mut a, left));
+        assert_eq!(a.input_text(), "hi");
+        // and at the start it is handed on
+        assert!(!handle_compose_editing_key(&mut a, left));
+        assert_eq!(a.input_text(), "hi", "the text is untouched");
+        assert_eq!(Focus::Input.previous(), Focus::Messages);
+
+        // an empty box hands it on at once, which is the case a reader
+        // walking the boxes is in
+        let mut b = app();
+        assert!(!handle_compose_editing_key(&mut b, left));
+
+        // Ctrl+Left is a word motion, not a way out: it stays in the box
+        let mut c = app();
+        c.set_input("one two");
+        assert!(handle_compose_editing_key(
+            &mut c,
+            key(KeyCode::Left, KeyModifiers::CONTROL)
+        ));
+        assert!(handle_compose_editing_key(
+            &mut c,
+            key(KeyCode::Left, KeyModifiers::CONTROL)
+        ));
+        assert!(handle_compose_editing_key(
+            &mut c,
+            key(KeyCode::Left, KeyModifiers::CONTROL)
+        ));
     }
 
     /// xterm binds Alt+Return to its own fullscreen() action, so the

@@ -42,14 +42,17 @@ fn unit_len_after(tail: &str) -> usize {
     tail.chars().next().map(char::len_utf8).unwrap_or(0)
 }
 
-pub fn move_left(head: &mut String, tail: &mut String) {
+/// False when there is nothing before the cursor to move over, which is
+/// how the compose box knows to hand the key on: see [`App::input_move`].
+pub fn move_left(head: &mut String, tail: &mut String) -> bool {
     let n = unit_len_before(head);
     if n == 0 {
-        return;
+        return false;
     }
     let at = head.len() - n;
     tail.insert_str(0, &head[at..]);
     head.truncate(at);
+    true
 }
 
 pub fn move_right(head: &mut String, tail: &mut String) {
@@ -578,7 +581,8 @@ impl crate::app::App {
     /// Move the cursor. With `extend` (Shift held) or an active mark the
     /// selection grows from its anchor; otherwise it is dropped. Returns
     /// false when the move was impossible (Up on the first line, Down on
-    /// the last), so the caller can give the key its other meaning.
+    /// the last, Left at the start of the text), so the caller can give
+    /// the key its other meaning.
     pub fn input_move(&mut self, mv: Move, extend: bool) -> bool {
         if extend || self.input_mark {
             if self.input_anchor.is_none() {
@@ -589,7 +593,7 @@ impl crate::app::App {
         }
         let (h, t) = (&mut self.input, &mut self.input_tail);
         match mv {
-            Move::Left => move_left(h, t),
+            Move::Left => return move_left(h, t),
             Move::Right => move_right(h, t),
             Move::Home => move_home(h, t),
             Move::End => move_end(h, t),
