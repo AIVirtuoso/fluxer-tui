@@ -11,6 +11,8 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::style::Color;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
@@ -163,6 +165,32 @@ pub struct TermBackend<W: Write> {
     can_hold_frame: bool,
 }
 
+/// Write the cells collected so far and start a new batch.
+fn draw_batch<W: Write>(
+    inner: &mut CrosstermBackend<W>,
+    batch: &mut Vec<(u16, u16, Cow<Cell>)>,
+) -> io::Result<()> {
+    inner.draw(batch.iter().map(|(x, y, c)| (*x, *y, &**c)))?;
+    batch.clear();
+    Ok(())
+}
+
+/// A cell as the terminal is allowed to see it. The marker underline
+/// colours mean something only inside the buffer, and a terminal that does
+/// not know SGR 58 reads the sequence crossterm sends for one as ordinary
+/// attributes: see [`crate::app::is_marker_underline`]. Nothing on screen
+/// depends on them, so they come off here, at the one place cells are
+/// written, rather than at each of the panes that set them.
+fn as_written(cell: &Cell) -> Cow<'_, Cell> {
+    if crate::app::is_marker_underline(cell.underline_color) {
+        let mut plain = cell.clone();
+        plain.underline_color = Color::Reset;
+        Cow::Owned(plain)
+    } else {
+        Cow::Borrowed(cell)
+    }
+}
+
 impl<W: Write> TermBackend<W> {
     pub fn new(writer: W, pictures: SharedPictures, frame: SharedFrame) -> Self {
         Self {
@@ -221,7 +249,7 @@ impl<W: Write> TermBackend<W> {
             self.shadow.cover_outside_rows(s.area);
         }
         let pictures = self.pictures.borrow();
-        let mut batch: Vec<(u16, u16, &Cell)> = Vec::new();
+        let mut batch: Vec<(u16, u16, Cow<Cell>)> = Vec::new();
         // wide characters, as in ratatui's own diff: the cells a wide
         // character spills into are never written, and when it shrinks the
         // cells after it must be
@@ -233,7 +261,7 @@ impl<W: Write> TermBackend<W> {
             if !current.skip && to_skip == 0 && (changed || invalidated > 0) {
                 let (x, y) = buf.pos_of(i);
                 if crate::app::is_picture_sentinel(current.underline_color) {
-                    self.inner.draw(batch.drain(..))?;
+                    draw_batch(&mut self.inner, &mut batch)?;
                     if let Some(p) = pictures.get(&(x, y)) {
                         // A picture paints everything any of its frames
                         // paints, so showing the next frame replaces the
@@ -277,7 +305,7 @@ impl<W: Write> TermBackend<W> {
                         self.shadow.cover(p.area);
                     }
                 } else {
-                    batch.push((x, y, current));
+                    batch.push((x, y, as_written(current)));
                 }
                 self.shadow.cells[i] = current.clone();
                 self.shadow.covered[i] = false;
@@ -290,7 +318,7 @@ impl<W: Write> TermBackend<W> {
             to_skip = width.saturating_sub(1);
             invalidated = width.max(prev_width).max(invalidated).saturating_sub(1);
         }
-        self.inner.draw(batch.into_iter())
+        draw_batch(&mut self.inner, &mut batch)
     }
 }
 
@@ -310,7 +338,9 @@ impl<W: Write> Backend for TermBackend<W> {
                 // the terminal as unknown from here
                 self.shadow = Shadow::new(self.shadow.area, true);
                 queue!(self.inner, BeginSynchronizedUpdate)?;
-                self.inner.draw(content)
+                let mut batch: Vec<(u16, u16, Cow<Cell>)> =
+                    content.map(|(x, y, c)| (x, y, as_written(c))).collect();
+                draw_batch(&mut self.inner, &mut batch)
             }
         }
     }
@@ -934,6 +964,47 @@ mod tests {
         r.backend.draw(vec![(0u16, 0u16, &a)].into_iter()).unwrap();
         Backend::flush(&mut r.backend).unwrap();
         let out = String::from_utf8(r.recorder.0.borrow().clone()).unwrap();
+        assert!(out.contains('a'), "{out:?}");
+    }
+
+    /// A marker's slot number rides in the underline colour, which crossterm
+    /// sends as `ESC[58;2;r;g;b m`. A terminal without SGR 58 skips the 58
+    /// and runs the rest as ordinary attributes, so slot 42 is a reset and a
+    /// green background there, on that cell and on every one written after
+    /// it until something writes them again. Nothing on screen wants a
+    /// marker, so none is written; an underline colour that is not a marker
+    /// still is.
+    #[test]
+    fn marker_underline_colours_are_never_written() {
+        let mut r = rig();
+        let mut buf = buffer_of(&["abcde"]);
+        buf[(1, 0)].set_style(crate::app::media_marker_style(42, 1));
+        buf[(2, 0)].set_style(crate::app::custom_emoji_marker_style(42));
+        buf[(3, 0)].set_style(crate::app::picture_sentinel_style(Style::default(), 42, 0));
+        let out = r.draw_buf(buf, None);
+        assert!(!out.contains("58;"), "a marker was written: {out:?}");
+        assert!(
+            out.contains('a') && out.contains('c'),
+            "cells still print: {out:?}"
+        );
+
+        let mut buf = buffer_of(&["vwxyz"]);
+        buf[(1, 0)].set_style(Style::default().underline_color(Color::Rgb(1, 2, 3)));
+        let out = r.draw_buf(buf, None);
+        assert!(out.contains("58;2;1;2;3"), "a real colour is kept: {out:?}");
+    }
+
+    /// The same for a frame the app did not hand over, which is passed
+    /// straight to the diff.
+    #[test]
+    fn a_marker_is_taken_off_the_fallback_path_too() {
+        let mut r = rig();
+        let mut a = Cell::new("a");
+        a.set_style(crate::app::custom_emoji_marker_style(42));
+        r.backend.draw(vec![(0u16, 0u16, &a)].into_iter()).unwrap();
+        Backend::flush(&mut r.backend).unwrap();
+        let out = String::from_utf8(r.recorder.0.borrow().clone()).unwrap();
+        assert!(!out.contains("58;"), "a marker was written: {out:?}");
         assert!(out.contains('a'), "{out:?}");
     }
 }

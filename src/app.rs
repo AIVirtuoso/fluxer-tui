@@ -5715,7 +5715,8 @@ pub fn parse_custom_emoji_token(s: &str) -> Option<CustomEmojiToken<'_>> {
 }
 
 /// Placeholder cells carry their slot number in the underline colour, which
-/// is invisible without an underline and survives Paragraph wrapping.
+/// survives Paragraph wrapping and is never shown: the backend takes every
+/// marker off again before the cell is written, see [`is_marker_underline`].
 pub fn custom_emoji_marker_style(slot: usize) -> Style {
     let k = slot.min(u16::MAX as usize) as u16;
     Style::default().underline_color(Color::Rgb(0xEE, (k >> 8) as u8, k as u8))
@@ -5774,6 +5775,19 @@ pub fn picture_serial(underline_color: Color) -> Option<u16> {
 
 pub fn is_picture_sentinel(underline_color: Color) -> bool {
     matches!(underline_color, Color::Rgb(r, _, _) if r & 0xC0 == 0x80)
+}
+
+/// Whether an underline colour is one of the markers above rather than a
+/// colour to show. They are a side channel within the buffer -- the panes
+/// write them, the overlay and the backend read them -- and no terminal is
+/// ever meant to be told about one: crossterm sends an underline colour as
+/// `ESC[58;2;r;g;b m`, and a terminal without SGR 58 (xterm has no case for
+/// it at all) skips the 58 and runs the rest as ordinary parameters, so the
+/// green byte's 0 resets every attribute and a slot number in 40..=47 turns
+/// into a background colour that stays on every cell written after it.
+pub fn is_marker_underline(underline_color: Color) -> bool {
+    matches!(underline_color, Color::Rgb(r, _, _)
+        if r & 0xC0 == 0x80 || r & 0xF0 == 0xD0 || r == 0xEE)
 }
 
 #[cfg(test)]
