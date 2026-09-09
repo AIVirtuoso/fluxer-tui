@@ -15,18 +15,47 @@ use std::time::{Duration, Instant};
 /// sending anything else is not answering our question.
 const MAX_ANSWER: usize = 256;
 
-/// Ask the terminal for its default background colour, waiting up to
-/// `timeout` for the answer. Stdin must be in raw mode and nothing else
-/// may be reading it. None when nothing answers or the answer is not a
-/// colour we understand.
-pub fn query(timeout: Duration) -> Option<[u8; 3]> {
+/// What the terminal said about itself at start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Probe {
+    /// Its default background colour, where it reported one.
+    pub background: Option<[u8; 3]>,
+    /// Whether it knows how to hold a frame back until it is whole
+    /// (DEC mode 2026). A terminal that does not draws each picture as it
+    /// arrives, so it must not be asked for animation frames quickly.
+    pub synchronized: bool,
+}
+
+/// Ask the terminal about itself, waiting up to `timeout` for the answers.
+/// Stdin must be in raw mode and nothing else may be reading it.
+pub fn probe(timeout: Duration) -> Probe {
     let mut out = std::io::stdout();
-    // A Device Status Report follows the question: every terminal answers
-    // that one, so a terminal that does not know OSC 11 ends the read
-    // straight away instead of costing the whole timeout.
-    out.write_all(b"\x1b]11;?\x1b\\\x1b[5n").ok()?;
-    out.flush().ok()?;
-    parse(&read_answer(timeout))
+    // A Device Status Report goes last: every terminal answers that one, so
+    // one that knows neither question ends the read straight away instead
+    // of costing the whole timeout.
+    if out
+        .write_all(b"\x1b]11;?\x1b\\\x1b[?2026$p\x1b[5n")
+        .and_then(|()| out.flush())
+        .is_err()
+    {
+        return Probe::default();
+    }
+    let answer = read_answer(timeout);
+    Probe {
+        background: parse(&answer),
+        synchronized: synchronized(&answer),
+    }
+}
+
+/// The answer to `CSI ? 2026 $ p`: `CSI ? 2026 ; Ps $ y`, where Ps is 0
+/// when the terminal has never heard of the mode and 1 to 4 when it has.
+/// xterm answers 0, foot answers 2.
+fn synchronized(buf: &[u8]) -> bool {
+    const HEAD: &[u8] = b"\x1b[?2026;";
+    buf.windows(HEAD.len())
+        .position(|w| w == HEAD)
+        .and_then(|at| buf.get(at + HEAD.len()))
+        .is_some_and(|ps| (b'1'..=b'4').contains(ps))
 }
 
 /// Bytes off stdin until the Device Status Report comes back, the
@@ -185,6 +214,19 @@ mod tests {
         assert_eq!(parse(b"\x1b]11;#002b36\x07"), Some([0, 0x2b, 0x36]));
         assert_eq!(parse(b"\x1b]11;#08f\x07"), Some([0, 136, 255]));
         assert_eq!(parse(b"\x1b]11;[75]#ff00ff\x07"), Some([255, 0, 255]));
+    }
+
+    #[test]
+    fn a_terminal_that_knows_the_mode_says_so() {
+        // exactly what each answers, measured 2026-09-08
+        assert!(synchronized(b"\x1b[?2026;2$y\x1b[0n"), "foot knows it");
+        assert!(!synchronized(b"\x1b[?2026;0$y\x1b[0n"), "xterm does not");
+        assert!(synchronized(b"\x1b[?2026;1$y"), "set counts as knowing it");
+        assert!(!synchronized(b"\x1b[0n"), "and no answer at all does not");
+        // both answers arrive together, in either order
+        let both = b"\x1b]11;rgb:0000/2b2b/3636\x1b\\\x1b[?2026;2$y\x1b[0n";
+        assert!(synchronized(both));
+        assert_eq!(parse(both), Some([0x00, 0x2b, 0x36]));
     }
 
     #[test]

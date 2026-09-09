@@ -1666,26 +1666,6 @@ fn place_terminal_picture(
     let transmit = printout
         .transmit
         .map(|seq| (((serial as u32) << 8) | (frame as u32 & 0xFF), seq));
-    // The map is laid out on the picture's own grid, which can be narrower
-    // than the cells it is placed in; the backend reads it by the rect, so
-    // it is re-laid here. Columns the picture does not reach are left
-    // uncovered, which is what they are.
-    let grid = picture.area().width as usize;
-    let wide = rect.width as usize;
-    let covered: std::sync::Arc<[bool]> = if printout.covered.is_empty() || grid == 0 {
-        std::sync::Arc::from(Vec::new())
-    } else if grid == wide {
-        std::sync::Arc::from(printout.covered)
-    } else {
-        let rows = printout.covered.len() / grid;
-        let mut laid = vec![false; wide * rows];
-        for r in 0..rows {
-            let take = grid.min(wide);
-            laid[r * wide..r * wide + take]
-                .copy_from_slice(&printout.covered[r * grid..r * grid + take]);
-        }
-        std::sync::Arc::from(laid)
-    };
     let mut pictures = app.terminal_pictures.borrow_mut();
     for (dy, data) in printout.rows {
         let y = rect.y.saturating_add(dy.saturating_sub(r0));
@@ -1704,7 +1684,6 @@ fn place_terminal_picture(
                 data,
                 area: rect,
                 transmit: transmit.clone(),
-                covered: covered.clone(),
             },
         );
     }

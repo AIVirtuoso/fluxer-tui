@@ -232,10 +232,6 @@ pub enum TerminalPicture {
         /// onto, which a re-encoded run has to flatten onto as well, and
         /// whether the picture is then stopped from drawing there.
         transparent: Option<crate::media::Flatten>,
-        /// One per cell of the block, row by row: whether the picture
-        /// paints every pixel of that cell, and so whether the cell has to
-        /// be blanked before the picture is printed.
-        covered: Vec<bool>,
     },
     /// Kitty places one row of placeholder cells per cell row, each naming
     /// its row of the image, once the image has been transmitted.
@@ -257,9 +253,6 @@ pub struct PicturePrintout {
     pub transmit: Option<std::sync::Arc<str>>,
     /// (row within the block, the sequence to print at that row's first cell).
     pub rows: Vec<(u16, std::sync::Arc<str>)>,
-    /// The cells of the printed rows the picture paints in full, row by
-    /// row; empty when that is not known and every cell must be blanked.
-    pub covered: Vec<bool>,
 }
 
 impl TerminalPicture {
@@ -295,30 +288,7 @@ impl TerminalPicture {
                 pixels,
                 cuts,
                 transparent,
-                covered,
             } => {
-                // The coverage map is for the whole block; only the rows
-                // being printed are of any use to the backend. A run is cut
-                // to whole bands of six pixel rows, so a cell row it does
-                // not cover from top to bottom is not covered at all,
-                // whatever the picture's own alpha says.
-                let cols = area.width as usize;
-                let rows_of = |cov: &[bool], painted: std::ops::Range<u32>| {
-                    let (a, b) = (r0 as usize * cols, r1 as usize * cols);
-                    if cov.len() < b {
-                        return Vec::new();
-                    }
-                    let mut kept = cov[a..b].to_vec();
-                    for k in 0..u32::from(r1 - r0) {
-                        if k * cell_h < painted.start || (k + 1) * cell_h > painted.end {
-                            let row = k as usize * cols;
-                            kept[row..row + cols].fill(false);
-                        }
-                    }
-                    kept
-                };
-                // what a re-encoded run actually paints: whole bands of it
-                let cut_painted = u32::from(r1 - r0) * cell_h / 6 * 6;
                 if r0 > 0
                     && let (Some(pixels), Some(picker)) = (pixels, picker)
                 {
@@ -326,7 +296,6 @@ impl TerminalPicture {
                         return Some(PicturePrintout {
                             transmit: None,
                             rows: vec![(r0, data.clone())],
-                            covered: rows_of(covered, 0..cut_painted),
                         });
                     }
                     if let Some(data) =
@@ -336,7 +305,6 @@ impl TerminalPicture {
                         return Some(PicturePrintout {
                             transmit: None,
                             rows: vec![(r0, data)],
-                            covered: rows_of(covered, 0..cut_painted),
                         });
                     }
                 }
@@ -362,25 +330,18 @@ impl TerminalPicture {
                     data.push_str(band);
                 }
                 data.push_str("\x1b\\");
-                let top = u32::from(r0) * cell_h;
                 Some(PicturePrintout {
                     transmit: None,
                     rows: vec![(r0, std::sync::Arc::from(data))],
-                    covered: rows_of(
-                        covered,
-                        (b0 as u32 * 6).saturating_sub(top)..(b1 as u32 * 6).saturating_sub(top),
-                    ),
                 })
             }
             Self::Kitty { transmit, rows, .. } => Some(PicturePrintout {
                 transmit: Some(transmit.clone()),
                 rows: (r0..r1).map(|r| (r, rows[r as usize].clone())).collect(),
-                covered: Vec::new(),
             }),
             Self::Whole { data, .. } => (r0 == 0 && r1 == rows).then(|| PicturePrintout {
                 transmit: None,
                 rows: vec![(0, data.clone())],
-                covered: Vec::new(),
             }),
         }
     }
@@ -449,7 +410,6 @@ pub fn terminal_picture(
     protocol: &Protocol,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
     transparent: Option<crate::media::Flatten>,
-    covered: Vec<bool>,
 ) -> Option<TerminalPicture> {
     let area = protocol.area();
     if area.width == 0 || area.height == 0 {
@@ -468,7 +428,7 @@ pub fn terminal_picture(
             // a run cut out of this picture flattens the same way, and stops
             // drawing the same way, so the whole of it is kept
             let kept = transparent;
-            parse_sixel(data, area, pixels, kept, covered).or_else(|| {
+            parse_sixel(data, area, pixels, kept).or_else(|| {
                 Some(TerminalPicture::Whole {
                     data: std::sync::Arc::from(data),
                     area,
@@ -515,7 +475,6 @@ fn parse_sixel(
     area: Rect,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
     transparent: Option<crate::media::Flatten>,
-    covered: Vec<bool>,
 ) -> Option<TerminalPicture> {
     let b = data.as_bytes();
     if !data.starts_with("\x1bP") {
@@ -572,7 +531,6 @@ fn parse_sixel(
         pixels,
         cuts: std::sync::Mutex::new(std::collections::HashMap::new()),
         transparent,
-        covered,
     })
 }
 
@@ -1006,6 +964,11 @@ pub struct App {
     pub debug_facts: Vec<(String, String)>,
     /// How long the last frame took to draw.
     pub last_frame_ms: u32,
+    /// Whether the terminal can hold a frame back until it is whole (DEC
+    /// mode 2026). One that cannot draws each picture as it arrives, so it
+    /// must not be asked for animation frames quickly. Assumed until the
+    /// terminal says otherwise, so nothing changes where it is not asked.
+    pub synchronized_output: bool,
     pub started_at: Instant,
     pub channel_picker: Option<ChannelPicker>,
     pub reaction_target: Option<(String, String)>,
@@ -1184,6 +1147,7 @@ impl App {
             debug_frame_wanted: false,
             debug_facts: Vec::new(),
             last_frame_ms: 0,
+            synchronized_output: true,
             started_at: Instant::now(),
             channel_picker: None,
             reaction_target: None,
@@ -2698,7 +2662,7 @@ impl App {
                         img,
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
-                    ) && let Some(tp) = terminal_picture(&p, None, None, Vec::new())
+                    ) && let Some(tp) = terminal_picture(&p, None, None)
                     {
                         encoded.push(Picture::Terminal(std::sync::Arc::new(tp)));
                         delays.push(delay.max(Duration::from_millis(20)));
@@ -2855,18 +2819,22 @@ impl App {
         }
         let floor = Duration::from_millis(50);
         let mut period = Duration::from_millis(100);
+        let mut animating = false;
         if let Some(d) = self.animation_delay_seen.get() {
             period = period.min(d.max(floor));
+            animating = true;
         }
         match &self.image_preview {
             Some(ImagePreviewState::ReadyAnimatedGif { delays, .. })
             | Some(ImagePreviewState::ReadyPixels { delays, .. }) => {
                 if let Some(d) = delays.iter().copied().min() {
                     period = period.min(d.max(floor));
+                    animating = true;
                 }
             }
             _ => {}
         }
+        let _ = animating;
         period
     }
 
@@ -5811,7 +5779,7 @@ mod custom_emoji_tests {
             Protocol::Sixel(s) => s.data.clone(),
             _ => panic!("sixel"),
         };
-        let picture = terminal_picture(&protocol, None, None, Vec::new()).unwrap();
+        let picture = terminal_picture(&protocol, None, None).unwrap();
         let TerminalPicture::Sixel { bands, .. } = &picture else {
             panic!("kept in bands");
         };
@@ -5851,7 +5819,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol, None, None, Vec::new()).unwrap();
+        let picture = terminal_picture(&protocol, None, None).unwrap();
         let TerminalPicture::Kitty { transmit, rows, .. } = &picture else {
             panic!("kitty keeps rows");
         };
@@ -5886,7 +5854,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol, Some(pixels), None, Vec::new()).unwrap();
+        let picture = terminal_picture(&protocol, Some(pixels), None).unwrap();
         // the second row alone starts at pixel row 20: 16 rows left, cut to
         // two whole bands, all blue (no red band from above)
         let lower = picture.printout(1, 2, 20, Some(&picker)).unwrap();
