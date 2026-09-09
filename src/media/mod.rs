@@ -19,10 +19,11 @@ pub use chafa::chafa_from_bytes;
 pub use disk_cache::DiskCache;
 pub use gif_anim::{decode_animation, decode_preview_animation};
 pub use inline::{
-    AVATAR_COLS, AVATAR_PREVIEW_PX, AVATAR_ROWS, BLOCK_MAX_ROWS, InlinePicture,
+    AVATAR_COLS, AVATAR_PREVIEW_PX, AVATAR_ROWS, BLOCK_MAX_ROWS, Flatten, InlinePicture,
     MAX_PICTURES_PER_MESSAGE, attachment_picture, avatar_url, avatar_url_sized, block_px,
     default_avatar_color, default_avatar_key, default_avatar_url, embed_picture,
-    parse_default_avatar_key, picture_cells, preview_limits, proxied_url, sixel_rows,
+    parse_default_avatar_key, picture_cells, preview_limits, proxied_url, sixel_drop_colour,
+    sixel_rows,
 };
 pub use local::{
     LocalSource, file_url, image_dimensions_of, is_image, is_video, parse_file_url,

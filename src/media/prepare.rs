@@ -5,8 +5,8 @@
 use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames, terminal_picture};
 use crate::media::gif_anim::decode_preview_animation;
 use crate::media::inline::{
-    INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
-    parse_default_avatar_key, sixel_rows, stretch_to, subsample,
+    Flatten, INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
+    parse_default_avatar_key, sixel_rows, sixel_snap, stretch_to, subsample,
 };
 use image::DynamicImage;
 use ratatui::layout::Rect;
@@ -24,7 +24,7 @@ pub fn prepare_pictures(
     picker: Option<&Picker>,
     pixel_mode: bool,
     cell_px: (u32, u32),
-    opaque_bg: Option<[u8; 3]>,
+    opaque_bg: Option<Flatten>,
 ) -> Option<(PictureFrames, usize)> {
     let (mut frames, mut delays) = match bytes {
         None => {
@@ -75,6 +75,19 @@ pub fn prepare_pictures(
     } else {
         box_px
     };
+    // Where the protocol has no alpha, transparency is flattened onto a
+    // colour. On sixel those pixels are then dropped from the data, and
+    // the colour is snapped to one the encoder can hit exactly so that
+    // every one of them is recognisable as the same palette entry.
+    let drop_flat = sixel && opaque_bg.is_some_and(|f| f.drop);
+    let flat = opaque_bg.map(|f| {
+        if drop_flat {
+            sixel_snap(f.colour)
+        } else {
+            f.colour
+        }
+    });
+    let transparent = if drop_flat { flat } else { None };
     let area = Rect::new(0, 0, slot.cols, slot.rows);
     let mut pictures = Vec::with_capacity(frames.len());
     let mut total = 0usize;
@@ -87,7 +100,7 @@ pub fn prepare_pictures(
         if round {
             circle_mask(&mut rgba);
         }
-        if !alpha_ok && let Some(bg) = opaque_bg {
+        if !alpha_ok && let Some(bg) = flat {
             rgba = composite_over(&rgba, bg);
         }
         total += rgba.len();
@@ -100,7 +113,7 @@ pub fn prepare_pictures(
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
-            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels)?))
+            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels, transparent)?))
         };
         pictures.push(picture);
     }
@@ -160,6 +173,169 @@ mod tests {
         assert_eq!(img.get_pixel(20, 20).0, [1, 2, 3, 255]);
     }
 
+    /// One palette index per pixel, None where the data never set it.
+    /// Enough of the format for what the encoder writes.
+    fn decode_sixel(data: &str) -> (usize, usize, Vec<Option<u32>>) {
+        let b = data.as_bytes();
+        let mut i = data.find('q').expect("a sixel") + 1;
+        let (mut w, mut h) = (0usize, 0usize);
+        if b.get(i) == Some(&b'"') {
+            i += 1;
+            let start = i;
+            while i < b.len() && (b[i].is_ascii_digit() || b[i] == b';') {
+                i += 1;
+            }
+            let raster: Vec<usize> = data[start..i]
+                .split(';')
+                .map(|n| n.parse().unwrap_or(0))
+                .collect();
+            if raster.len() >= 4 {
+                (w, h) = (raster[2], raster[3]);
+            }
+        }
+        let mut px = vec![None; w * h];
+        let (mut x, mut band, mut colour) = (0usize, 0usize, 0u32);
+        let put = |px: &mut Vec<Option<u32>>, x: usize, band: usize, c: u8, colour| {
+            for k in 0..6 {
+                if (c - 0x3f) & (1 << k) != 0 {
+                    let y = band * 6 + k;
+                    if x < w && y < h {
+                        px[y * w + x] = Some(colour);
+                    }
+                }
+            }
+        };
+        while i < b.len() {
+            match b[i] {
+                b'#' => {
+                    let mut j = i + 1;
+                    let mut n = 0u32;
+                    while j < b.len() && b[j].is_ascii_digit() {
+                        n = n * 10 + u32::from(b[j] - b'0');
+                        j += 1;
+                    }
+                    if b.get(j) == Some(&b';') {
+                        while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+                            j += 1;
+                        }
+                    } else {
+                        colour = n;
+                    }
+                    i = j;
+                }
+                b'$' => {
+                    x = 0;
+                    i += 1;
+                }
+                b'-' => {
+                    x = 0;
+                    band += 1;
+                    i += 1;
+                }
+                b'!' => {
+                    let mut j = i + 1;
+                    let mut n = 0usize;
+                    while j < b.len() && b[j].is_ascii_digit() {
+                        n = n * 10 + usize::from(b[j] - b'0');
+                        j += 1;
+                    }
+                    if let Some(&c) = b.get(j) {
+                        for _ in 0..n {
+                            put(&mut px, x, band, c, colour);
+                            x += 1;
+                        }
+                    }
+                    i = j + 1;
+                }
+                c if (0x3f..=0x7e).contains(&c) => {
+                    put(&mut px, x, band, c, colour);
+                    x += 1;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        (w, h, px)
+    }
+
+    /// Colours are written one after another across a band, each carrying
+    /// on from where the last stopped, so a run that is taken out rather
+    /// than blanked pulls every later colour of that band leftwards. This
+    /// is the test that tells the two apart: every pixel of the flattened
+    /// colour is unset afterwards, and no other pixel moves or changes.
+    #[test]
+    fn blanking_a_colour_leaves_every_other_pixel_where_it_was() {
+        // stripes, so any shift shows up as a changed pixel
+        // A sticker's shape: nothing at all in the bands top and bottom,
+        // which the encoder writes once and then carries on, and stripes
+        // in between so that any shift shows up as a changed pixel.
+        let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([0, 0, 0, 0]));
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            if !(18..42).contains(&y) {
+                continue;
+            }
+            *px = match x / 10 {
+                0 | 4 => image::Rgba([200, 0, 0, 255]),
+                1 | 5 => image::Rgba([0, 200, 0, 255]),
+                2 | 6 => image::Rgba([0, 0, 0, 0]), // flattened onto the colour
+                _ => image::Rgba([0, 0, 200, 255]),
+            };
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        // already snapped, so both runs hand the encoder the same picture
+        let colour = sixel_snap([0, 0x2b, 0x36]);
+        let encode = |drop| {
+            let slot = MediaSlot::new("https://x/s.png".to_string(), 8, 3, MediaKind::Picture);
+            let (frames, _) = prepare_pictures(
+                Some(&bytes),
+                &slot,
+                Some(&picker),
+                false,
+                (10, 20),
+                Some(Flatten { colour, drop }),
+            )
+            .unwrap();
+            let Picture::Terminal(tp) = &frames.frames[0] else {
+                panic!()
+            };
+            tp.printout(0, 3, 20, None).unwrap().rows.remove(0).1
+        };
+        let plain = encode(false);
+        let blanked = encode(true);
+        assert!(
+            blanked.starts_with("\x1bP0;1;0q"),
+            "asks the terminal to leave unset positions alone: {:?}",
+            &blanked[..12.min(blanked.len())]
+        );
+        let (w, h, before) = decode_sixel(&plain);
+        let (w2, h2, after) = decode_sixel(&blanked);
+        assert_eq!((w, h), (w2, h2), "same raster");
+        let dropped = (0..before.len())
+            .find(|&i| after[i].is_none() && before[i].is_some())
+            .expect("something was blanked");
+        let index = before[dropped];
+        let mut unset = 0;
+        for i in 0..before.len() {
+            if before[i] == index {
+                assert_eq!(after[i], None, "pixel {i} kept the flattened colour");
+                unset += 1;
+            } else {
+                assert_eq!(after[i], before[i], "pixel {i} moved or changed colour");
+            }
+        }
+        assert!(
+            unset > 1000,
+            "the whole flattened area went, not a run: {unset}"
+        );
+    }
+
     #[test]
     fn terminal_mode_encodes_for_the_protocol_at_the_block_size() {
         let mut picker = Picker::from_fontsize((10, 20));
@@ -209,9 +385,15 @@ mod tests {
         let data = tp.printout(0, 2, 20, None).unwrap().rows.remove(0).1;
         assert!(data.contains("\"1;1;40;36"), "{data:?}");
         assert_eq!(data.matches('-').count(), 5);
-        // sixel has no transparency: avatars stay square there unless the
-        // theme's background is known to sit them on
-        for bg in [None, Some([1, 2, 3])] {
+        // sixel carries no alpha of its own: an avatar is round there only
+        // when there is a colour to flatten its corners onto
+        let flat = |drop| {
+            Some(Flatten {
+                colour: [1, 2, 3],
+                drop,
+            })
+        };
+        for bg in [None, flat(false), flat(true)] {
             let (frames, _) = prepare_pictures(
                 Some(&png(100, 100)),
                 &avatar,

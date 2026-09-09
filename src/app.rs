@@ -228,6 +228,9 @@ pub enum TerminalPicture {
         pixels: Option<std::sync::Arc<image::RgbaImage>>,
         /// Such runs, by (first row, end row), encoded when first shown.
         cuts: std::sync::Mutex<std::collections::HashMap<(u16, u16), std::sync::Arc<str>>>,
+        /// The colour transparency was flattened onto, dropped from the
+        /// data so the terminal's own background shows through instead.
+        transparent: Option<[u8; 3]>,
     },
     /// Kitty places one row of placeholder cells per cell row, each naming
     /// its row of the image, once the image has been transmitted.
@@ -283,6 +286,7 @@ impl TerminalPicture {
                 area,
                 pixels,
                 cuts,
+                transparent,
             } => {
                 if r0 > 0
                     && let (Some(pixels), Some(picker)) = (pixels, picker)
@@ -294,7 +298,7 @@ impl TerminalPicture {
                         });
                     }
                     if let Some(data) =
-                        encode_sixel_rows(picker, pixels, r0, r1, cell_h, area.width)
+                        encode_sixel_rows(picker, pixels, r0, r1, cell_h, area.width, *transparent)
                     {
                         cuts.lock().unwrap().insert((r0, r1), data.clone());
                         return Some(PicturePrintout {
@@ -351,6 +355,7 @@ fn encode_sixel_rows(
     r1: u16,
     cell_h: u32,
     cols: u16,
+    transparent: Option<[u8; 3]>,
 ) -> Option<std::sync::Arc<str>> {
     let y0 = (r0 as u32 * cell_h).min(pixels.height());
     let h = ((r1 - r0) as u32 * cell_h).min(pixels.height() - y0);
@@ -367,7 +372,12 @@ fn encode_sixel_rows(
         )
         .ok()?;
     match protocol {
-        Protocol::Sixel(sixel) => Some(std::sync::Arc::from(sixel.data.as_str())),
+        Protocol::Sixel(sixel) => Some(std::sync::Arc::from(
+            transparent
+                .and_then(|bg| crate::media::sixel_drop_colour(&sixel.data, bg))
+                .unwrap_or_else(|| sixel.data.clone())
+                .as_str(),
+        )),
         _ => None,
     }
 }
@@ -390,18 +400,26 @@ fn protocol_rows(protocol: &Protocol) -> Vec<(u16, String)> {
 pub fn terminal_picture(
     protocol: &Protocol,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
+    transparent: Option<[u8; 3]>,
 ) -> Option<TerminalPicture> {
     let area = protocol.area();
     if area.width == 0 || area.height == 0 {
         return None;
     }
     match protocol {
-        Protocol::Sixel(sixel) => parse_sixel(&sixel.data, area, pixels).or_else(|| {
-            Some(TerminalPicture::Whole {
-                data: std::sync::Arc::from(sixel.data.as_str()),
-                area,
+        Protocol::Sixel(sixel) => {
+            // Dropping the flattened-on colour is what makes transparency
+            // real; a picture with none of it is printed as it was encoded.
+            let data = transparent.and_then(|bg| crate::media::sixel_drop_colour(&sixel.data, bg));
+            let data = data.as_deref().unwrap_or(sixel.data.as_str());
+            let kept = transparent.filter(|_| data != sixel.data.as_str());
+            parse_sixel(data, area, pixels, kept).or_else(|| {
+                Some(TerminalPicture::Whole {
+                    data: std::sync::Arc::from(data),
+                    area,
+                })
             })
-        }),
+        }
         Protocol::Kitty(_) => {
             let rows = protocol_rows(protocol);
             if rows.len() != area.height as usize {
@@ -441,6 +459,7 @@ fn parse_sixel(
     data: &str,
     area: Rect,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
+    transparent: Option<[u8; 3]>,
 ) -> Option<TerminalPicture> {
     let b = data.as_bytes();
     if !data.starts_with("\x1bP") {
@@ -496,6 +515,7 @@ fn parse_sixel(
         area,
         pixels,
         cuts: std::sync::Mutex::new(std::collections::HashMap::new()),
+        transparent,
     })
 }
 
@@ -2621,7 +2641,7 @@ impl App {
                         img,
                         Rect::new(0, 0, CUSTOM_EMOJI_CELLS, 1),
                         ratatui_image::Resize::Fit(None),
-                    ) && let Some(tp) = terminal_picture(&p, None)
+                    ) && let Some(tp) = terminal_picture(&p, None, None)
                     {
                         encoded.push(Picture::Terminal(std::sync::Arc::new(tp)));
                         delays.push(delay.max(Duration::from_millis(20)));
@@ -5734,7 +5754,7 @@ mod custom_emoji_tests {
             Protocol::Sixel(s) => s.data.clone(),
             _ => panic!("sixel"),
         };
-        let picture = terminal_picture(&protocol, None).unwrap();
+        let picture = terminal_picture(&protocol, None, None).unwrap();
         let TerminalPicture::Sixel { bands, .. } = &picture else {
             panic!("kept in bands");
         };
@@ -5774,7 +5794,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol, None).unwrap();
+        let picture = terminal_picture(&protocol, None, None).unwrap();
         let TerminalPicture::Kitty { transmit, rows, .. } = &picture else {
             panic!("kitty keeps rows");
         };
@@ -5809,7 +5829,7 @@ mod custom_emoji_tests {
                 ratatui_image::Resize::Fit(None),
             )
             .unwrap();
-        let picture = terminal_picture(&protocol, Some(pixels)).unwrap();
+        let picture = terminal_picture(&protocol, Some(pixels), None).unwrap();
         // the second row alone starts at pixel row 20: 16 rows left, cut to
         // two whole bands, all blue (no red band from above)
         let lower = picture.printout(1, 2, 20, Some(&picker)).unwrap();

@@ -283,9 +283,9 @@ console, the message pane looks like the web app:
 
 - **Profile pictures** sit to the left of each message, two rows tall; a
   user without one gets the web app's default avatar. They are round on
-  the console, kitty and iTerm2; sixel has no transparency, so there they
-  are round only with the Fluxer theme (whose background is known) and
-  square with the terminal theme.
+  the console, kitty, iTerm2 and sixel; on halfblocks they are round when
+  there is a colour to flatten their corners onto (see "Transparent
+  pictures" below).
 - **Pictures, GIFs and video posters** are shown under the message as
   previews: scaled to fit about a third of the pane, never larger than the
   original. GIFs from the picker (KLIPY, Tenor) and animated WebP play.
@@ -304,6 +304,7 @@ a size cap, the oldest files evicted first. Nothing else is written.
 [ui]
 inline_media = true   # pictures and GIFs under messages
 avatars = true        # profile pictures beside messages
+image_background = "" # see "Transparent pictures" below
 
 [media]
 disk_cache_mb = 64    # 0 turns the disk cache off
@@ -314,6 +315,44 @@ audio_player = ""     # see "Audio" below
 Both `[ui]` switches are also in the settings overlay (**F2**). A picture
 cut by the pane's edge shows the part that is on screen (on sixel, whole
 six-pixel bands of it).
+
+### Transparent pictures
+
+Sixel and halfblocks carry no alpha channel, so anything transparent — the
+corners of a round avatar, a sticker, a PNG with a hole in it — has to be
+dealt with before the picture is drawn. Left alone, the encoder keeps
+whatever colour sits under the alpha, which is black in most files.
+
+On sixel the client simply does not draw those pixels. A position a sixel
+never sets keeps what the terminal already had there, and the cells under a
+picture are blanked first, so the transparency shows your real background
+exactly. That is worth doing rather than painting the background colour on:
+the encoder holds only five bits per channel, so a background of `#002b36`
+would come out as `#002830`, close enough to read as a faint box around
+every avatar.
+
+Halfblocks have no such way out, so there the transparency is flattened
+onto a colour instead: the Fluxer theme's background where the theme fixes
+one, and the terminal's own otherwise, which the client asks for at start
+with an OSC 11 query. foot, xterm, kitty, wezterm, Konsole and most others
+answer it.
+
+```toml
+[ui]
+# "" or "auto": leave transparency undrawn on sixel; elsewhere flatten it
+#               onto the theme's background, or the terminal's own
+# "none":       no flattening anywhere; the protocol keeps what is under
+#               the alpha
+# a colour:     flatten onto it and draw it — "#002b36", "002b36" or
+#               "rgb:00/2b/36" — the way out for a sixel terminal that
+#               paints unset positions instead of leaving them alone
+image_background = ""
+```
+
+A terminal that answers nothing costs a quarter of a second at start and
+says so in the status bar; the debug log records the answer either way. On
+the console, kitty and iTerm2 the pictures keep their own alpha and the
+setting changes nothing.
 
 Scrolling is cheap on a terminal: when the pane merely scrolled, the
 terminal is asked to shift those rows itself (pictures move with them, as

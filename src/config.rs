@@ -112,6 +112,15 @@ pub struct UiSettings {
     /// The program to play it with; `[media] audio_player` or the first
     /// usual player on PATH when empty.
     pub notify_sound_player: String,
+    /// What becomes of transparency where the picture protocol has no
+    /// alpha channel of its own (sixel, halfblocks). Empty or "auto"
+    /// leaves it undrawn on sixel, so the terminal's own background shows
+    /// through, and flattens it elsewhere onto the theme's background or,
+    /// where the theme fixes none, the terminal's own; "none" flattens
+    /// nothing and lets the protocol make of the alpha what it will;
+    /// anything else is a colour to flatten onto and draw, `#002b36` or
+    /// `rgb:00/2b/36`, for a sixel terminal that paints unset positions.
+    pub image_background: String,
 }
 
 const fn default_true() -> bool {
@@ -137,6 +146,7 @@ impl Default for UiSettings {
             notify_sound: true,
             notify_sound_file: String::new(),
             notify_sound_player: String::new(),
+            image_background: String::new(),
         }
     }
 }
