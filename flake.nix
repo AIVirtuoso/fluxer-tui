@@ -36,7 +36,7 @@
 
         meta = {
           description = "TUI chat client for the Fluxer messaging platform";
-          homepage = "https://github.com/AIVirtuoso/fluxer-tui";
+          homepage = "https://github.com/AIVirtuoso/fluxter";
           license = pkgs.lib.licenses.gpl3Plus;
           mainProgram = "fluxer-tui";
         };
@@ -44,7 +44,7 @@
       default = fluxer-tui;
     });
 
-    # `nix run .#dev` or `nix run github:AIVirtuoso/fluxer-tui/<branch>#dev`:
+    # `nix run .#dev` or `nix run github:AIVirtuoso/fluxter/<branch>#dev`:
     # build with cargo in a target directory under the cache directory, so
     # trying a branch recompiles only what changed instead of every
     # dependency, as the sandboxed package build must.
