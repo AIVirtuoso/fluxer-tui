@@ -12,7 +12,7 @@ against upstream's master of April 2026. Each item has its own section or
 table row further down.
 
 Bugs and feature requests belong in [this client's own issue
-tracker](https://github.com/AIVirtuoso/fluxer-tui/issues); upstream cannot
+tracker](https://github.com/AIVirtuoso/fluxter/issues); upstream cannot
 act on them.
 
 **Login and packaging**
@@ -189,8 +189,8 @@ generates the emoji alias table, and cargo asks which one to install
 otherwise.
 
 ```bash
-cargo install --git https://github.com/AIVirtuoso/fluxer-tui fluxer-tui
-# a branch: cargo install --git https://github.com/AIVirtuoso/fluxer-tui --branch <branch> fluxer-tui
+cargo install --git https://github.com/AIVirtuoso/fluxter fluxer-tui
+# a branch: cargo install --git https://github.com/AIVirtuoso/fluxter --branch <branch> fluxer-tui
 ```
 
 This puts `fluxer-tui` in `~/.cargo/bin`. The crate uses edition 2024, so
@@ -204,12 +204,12 @@ below).
 
 ## Trying a branch without a full rebuild
 
-`nix run github:AIVirtuoso/fluxer-tui/<branch>` builds the package in the
+`nix run github:AIVirtuoso/fluxter/<branch>` builds the package in the
 Nix sandbox, where every new commit compiles all dependencies again. For
 quick tests use the `dev` app instead:
 
 ```sh
-nix run --refresh github:AIVirtuoso/fluxer-tui/<branch>#dev
+nix run --refresh github:AIVirtuoso/fluxter/<branch>#dev
 ```
 
 It copies the snapshot to `~/.cache/fluxer-tui/src-…` (cargo tells fresh
@@ -218,12 +218,6 @@ cargo in `~/.cache/fluxer-tui/target`, so only the crates that changed are
 recompiled (the first run compiles everything once, in release mode). `--refresh` makes Nix look the branch up again instead of
 reusing the commit it cached for an hour. From a checkout, `nix run .#dev`
 does the same.
-
-## Community
-   
-   > *fluxer-tui running on a vintage Apple iBook - courtesy of @astromahdi#2602*
-   
-   ![fluxer-tui on iBook](assets/IMG_7484.jpeg)
 
 ## First-time login
 

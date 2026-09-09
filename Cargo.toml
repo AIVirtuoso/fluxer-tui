@@ -4,8 +4,8 @@ version = "0.7.5"
 edition = "2024"
 description = "A keyboard-only TUI chat client for the Fluxer messaging platform, with inline media, notifications and Linux console support."
 license = "GPL-3.0-or-later"
-repository = "https://github.com/AIVirtuoso/fluxer-tui"
-homepage = "https://github.com/AIVirtuoso/fluxer-tui"
+repository = "https://github.com/AIVirtuoso/fluxter"
+homepage = "https://github.com/AIVirtuoso/fluxter"
 readme = "README.md"
 
 [[bin]]
