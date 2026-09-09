@@ -789,7 +789,7 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 |-----|--------|
 | **Enter** | Send message, save **edit**, or forward with reference only. Long lines **wrap** and the input bar **grows** with the text, then scrolls to the cursor. |
 | **Shift+Enter** / **Alt+Enter** / **Ctrl+J** | New line. **Ctrl+J** is the one that arrives in xterm, which binds Alt+Enter to its own fullscreen action. |
-| **←** / **→**, **Ctrl+←** / **Ctrl+→** (or **Alt+B** / **Alt+F**) | Move by character or word. |
+| **←** / **→**, **Ctrl+←** / **Ctrl+→** (or **Alt+B** / **Alt+F**) | Move by character or word; **←** with nothing before the cursor leaves **Input** and focuses **Messages**, so **←** walks the boxes back the way **→** walks them forward. **Ctrl+←** stays in the box. |
 | **Home** / **End** (or **Ctrl+A** / **Ctrl+E**), **Ctrl+Home** / **Ctrl+End** | Start or end of the line; of the whole text. |
 | **↑** / **↓** | Line above or below; **↑** on the first line leaves **Input** and focuses **Messages**. |
 | **Backspace** (or **Ctrl+H**) / **Delete** (or **Ctrl+D**) | Delete the character before / after the cursor (or the selection). |
