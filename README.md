@@ -418,6 +418,26 @@ sticker picker. The client cannot reasonably guess at this, since `ó` is a
 character people type. The slash commands (`/sticker` and the rest) need no
 modifier and work either way.
 
+Two further xterm defaults are about keys rather than pictures.
+
+**Alt+Enter never arrives.** xterm's own translations bind
+`Alt <Key>Return` to its `fullscreen()` action, so the window toggles
+full screen and the compose box hears nothing. **Ctrl+J** starts a new
+line as well and xterm passes it through untouched, so there is nothing
+to configure; to have the key itself back, override the translation:
+
+```
+XTerm*VT100.translations: #override Alt <Key>Return: string(0x1b) string(0x0d)
+```
+
+**Backspace sends `^H`, and Ctrl+Backspace sends DEL** - the other way
+round from every other terminal here - because xterm's `backarrowKey`
+defaults to true. The client reads `^H` (which reaches it as Ctrl+H) as a
+Backspace, so both delete one character; the word before the cursor goes
+on **Ctrl+W** or **Alt+Backspace**. `XTerm*backarrowKey: false` makes the
+key send DEL like elsewhere. Outside the input Ctrl+H still opens the
+keybindings overlay, so Backspace there opens it too.
+
 ## Audio
 
 **Ctrl+O** on a message with an audio attachment (a voice message, an
@@ -542,13 +562,16 @@ deletion.
   **Ctrl+A**/**Ctrl+E** to the ends of the line, **Ctrl+Home**/**End**
   to the ends of the text. **Up**/**Down** move between lines; **Up** on
   the first line leaves the box for the message list as before.
-- **Lines.** **Shift+Enter** or **Alt+Enter** starts a new line
-  (**Alt+Enter** is the one the Linux console can send). **Enter**
-  sends. Pasted text keeps its line breaks.
-- **Deleting.** **Backspace** and **Delete** (or **Ctrl+D**) take the
-  character before or after the cursor; **Ctrl+Backspace**, **Ctrl+H**
-  or **Ctrl+W** the word before, **Alt+D** the word after; **Alt+K**
-  the rest of the line; **Ctrl+U** everything.
+- **Lines.** **Shift+Enter**, **Alt+Enter** or **Ctrl+J** starts a new
+  line (**Alt+Enter** is the one the Linux console can send, **Ctrl+J**
+  the one xterm does not keep for itself). **Enter** sends. Pasted text
+  keeps its line breaks.
+- **Deleting.** **Backspace** (or **Ctrl+H**, which is the byte some
+  terminals send for it) and **Delete** (or **Ctrl+D**) take the
+  character before or after the cursor; **Ctrl+Backspace**,
+  **Alt+Backspace** or **Ctrl+W** the word before, **Ctrl+Delete** or
+  **Alt+D** the word after; **Alt+K** the rest of the line; **Ctrl+U**
+  everything.
 - **Selecting.** **Shift** with any movement key extends a selection,
   shown reversed. Where the terminal does not report Shift with the
   arrows (the console), **Ctrl+Space** sets a mark and the plain
@@ -706,7 +729,7 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+K** | Open **channel picker** (type to filter, **Enter** to jump). |
 | **Alt+A** | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps. |
 | **F1** | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close). |
-| **Ctrl+H** | Same overlay when focus is **not** the message input (in input, **Ctrl+H** / **Ctrl+Backspace** delete the previous word). |
+| **Ctrl+H** | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends). |
 | **F12** | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging"). |
 | **R** | **Refresh** active channel messages and guild metadata used for loads (clears local message cache for the channel and resets fetch/backoff state for the current guild). |
 | **Ctrl+C** | Quit - except with a **message selected** (it copies that message) or with **text selected in the input** (it copies the selection). |
@@ -753,12 +776,12 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | Key | Action |
 |-----|--------|
 | **Enter** | Send message, save **edit**, or forward with reference only. Long lines **wrap** and the input bar **grows** with the text, then scrolls to the cursor. |
-| **Shift+Enter** / **Alt+Enter** | New line. |
+| **Shift+Enter** / **Alt+Enter** / **Ctrl+J** | New line. **Ctrl+J** is the one that arrives in xterm, which binds Alt+Enter to its own fullscreen action. |
 | **←** / **→**, **Ctrl+←** / **Ctrl+→** (or **Alt+B** / **Alt+F**) | Move by character or word. |
 | **Home** / **End** (or **Ctrl+A** / **Ctrl+E**), **Ctrl+Home** / **Ctrl+End** | Start or end of the line; of the whole text. |
 | **↑** / **↓** | Line above or below; **↑** on the first line leaves **Input** and focuses **Messages**. |
-| **Backspace** / **Delete** (or **Ctrl+D**) | Delete the character before / after the cursor (or the selection). |
-| **Ctrl+Backspace** / **Ctrl+H** / **Ctrl+W**, **Alt+D** | Delete the previous / next whitespace-separated word. |
+| **Backspace** (or **Ctrl+H**) / **Delete** (or **Ctrl+D**) | Delete the character before / after the cursor (or the selection). |
+| **Ctrl+Backspace** / **Alt+Backspace** / **Ctrl+W**, **Ctrl+Delete** / **Alt+D** | Delete the previous / next whitespace-separated word. |
 | **Alt+K** | Delete to the end of the line. |
 | **Shift+movement**, or **Ctrl+Space** then movement | Select; **Esc** drops the selection. |
 | **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selected text here (also to `wl-copy` or `xclip`) / paste back what was cut or copied, a message copied with **y** included. |

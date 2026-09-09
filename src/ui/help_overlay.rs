@@ -53,12 +53,14 @@ Messages
 
 Input
   Enter - send; save edit; send forward with reference
-  Shift+Enter / Alt+Enter - new line (Alt+Enter also on the console)
+  Shift+Enter / Alt+Enter / Ctrl+J - new line (Alt+Enter is the one the
+           console sends, Ctrl+J the one xterm does not keep for itself)
   Left/Right, Home/End (Ctrl+A/Ctrl+E), Ctrl+Left/Right or Alt+B/Alt+F - move by
            character, line, word; Ctrl+Home/End - start/end of the text
   Up/Down - line above/below; Up on the first line leaves for the messages
-  Backspace / Delete (Ctrl+D) - delete before / after the cursor
-  Ctrl+Backspace, Ctrl+H, Ctrl+W / Alt+D - delete word before / after the cursor
+  Backspace (or Ctrl+H) / Delete (or Ctrl+D) - delete before / after the cursor
+  Ctrl+Backspace, Alt+Backspace, Ctrl+W / Ctrl+Delete, Alt+D - delete the word
+           before / after the cursor
   Alt+K - delete to the end of the line     Ctrl+U - clear input
   Shift+arrows, or Ctrl+Space then arrows - select; Esc drops the selection
   Ctrl+C / Ctrl+X - copy / cut the selected text here (also to wl-copy or xclip)

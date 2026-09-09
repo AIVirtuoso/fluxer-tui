@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             if app.input_mark || app.input_selection().is_some() {
                 " · selecting: Ctrl+C copy · Ctrl+X cut · Ctrl+B/I/S mark · Esc drop"
             } else {
-                " · Alt+Enter newline · Ctrl+F file · Ctrl+V paste · Ctrl+K picker · Ctrl+H help"
+                " · Alt+Enter/Ctrl+J newline · Ctrl+F file · Ctrl+V paste · Ctrl+K picker · F1 help"
             }
         }
     };
