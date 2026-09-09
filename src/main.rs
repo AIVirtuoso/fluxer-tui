@@ -1327,7 +1327,10 @@ fn handle_input_focus_key(
             } else if app.reply_to.is_some() || app.edit_target.is_some() {
                 app.cancel_reply();
             } else {
-                app.focus = Focus::Channels;
+                // Leaving the compose box lands on the messages beside it,
+                // not on the channel list two panes away: what you were
+                // reading is what Esc gives back.
+                app.focus = Focus::Messages;
             }
         }
         KeyCode::Up => {
@@ -2159,7 +2162,7 @@ fn handle_key_event(
         }
         KeyCode::Esc => {
             app.selected_message_index = None;
-            app.focus = Focus::Channels;
+            app.focus = Focus::Messages;
         }
         KeyCode::Up | KeyCode::Char('k') => match app.focus {
             Focus::Servers => {

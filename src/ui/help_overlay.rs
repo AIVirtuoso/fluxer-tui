@@ -16,7 +16,7 @@ const HELP: &str = r#"Global (almost any screen)
 Focus & navigation
   Tab / Shift+Tab - cycle: servers → channels → messages → input
   h / l / Left / Right - same as Tab (previous / next focus)
-  Esc - channels focus; clears message selection; closes overlays
+  Esc - messages focus; clears message selection; closes overlays
   i - jump to input (text channel with send permission)
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
