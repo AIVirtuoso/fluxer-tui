@@ -429,6 +429,14 @@ pub fn sixel_drop_colour(data: &str, rgb: [u8; 3]) -> Option<String> {
                     out.push_str(&data[start..i]);
                 }
             }
+            0x1b => {
+                // The string terminator is ESC followed by "\\", and that
+                // backslash is inside the range a sixel byte uses: blanking
+                // it would leave the picture unterminated. Nothing past the
+                // escape is picture data, so it is all copied as it is.
+                out.push_str(&data[i..]);
+                break;
+            }
             c => {
                 out.push(char::from(c));
                 i += 1;
@@ -602,6 +610,23 @@ mod sixel_alpha_tests {
         assert!(
             out.contains("#0!6?$!6?"),
             "both passes stop drawing: {out:?}"
+        );
+    }
+
+    /// The string terminator is ESC then "\\", and `\\` is 0x5c, right in
+    /// the middle of the range a sixel byte uses. A picture whose last
+    /// colour is the flattened one used to have its terminator blanked to
+    /// "?", leaving the picture unterminated; a sticker ends that way every
+    /// time, its last band being the transparent border.
+    #[test]
+    fn the_terminator_survives_being_last() {
+        let data = "\x1bPq\"1;1;6;6#1;2;80;20;20#0;2;0;16;19#1!3~#0!3~\x1b\\";
+        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
+        assert!(out.contains("#0!3?"), "the run stops drawing: {out:?}");
+        assert!(out.contains("#1!3~"), "the other colour is kept: {out:?}");
+        assert!(
+            out.ends_with("\x1b\\"),
+            "and the picture is still terminated: {out:?}"
         );
     }
 
