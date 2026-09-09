@@ -374,7 +374,7 @@ been run.
 | --- | --- | --- |
 | **foot** | sixel | Everything in this README has been used on it. The transparency was checked against the screen pixel by pixel. |
 | **Linux console** (a tty, no X or Wayland) | the client draws them itself through DRM | Used regularly; see "Console mode" below. |
-| **xterm** | sixel, once told to be a VT340 | Starts, reports its background, is detected as sixel and draws. Needs the resources below. Whether it leaves unset sixel positions alone — what makes transparency work — has not been confirmed. |
+| **xterm** | sixel, once told to be a VT340 | Used with pictures, stickers and animations, and checked against the screen. It leaves unset sixel positions alone, so transparency works; it cannot hold a frame back until it is whole, so a large picture can be caught part-drawn. Needs the resources below. |
 | **tmux** | whatever tmux itself manages; halfblocks when it does no sixel | Only used for the project's own headless tests, where it comes out as halfblocks. |
 | kitty, iTerm2 | their own protocols, which carry transparency | Never tried. Nothing has to be flattened on these, so `[ui] image_background` does nothing at all. |
 | WezTerm, Konsole, mlterm, Contour, mintty | sixel | Never tried. |
@@ -383,6 +383,12 @@ been run.
 If a sixel terminal paints the transparent parts of a picture instead of
 leaving them alone, set `[ui] image_background` to your background colour;
 see "Transparent pictures" above.
+
+A terminal that cannot hold a frame back until it is whole — xterm is one,
+foot and kitty are not — draws a picture as it arrives, so a large one can
+be caught half drawn. Nothing is left of an earlier frame when that
+happens: an animation's frames all paint the same area, so each replaces
+the one before outright.
 
 ### xterm
 
