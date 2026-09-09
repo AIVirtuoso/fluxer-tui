@@ -112,12 +112,14 @@ pub struct UiSettings {
     /// The program to play it with; `[media] audio_player` or the first
     /// usual player on PATH when empty.
     pub notify_sound_player: String,
-    /// The colour that pictures with transparency are blended onto where
-    /// the picture protocol has no alpha channel (sixel, halfblocks).
-    /// Empty or "auto" takes the theme's background where the theme fixes
-    /// one and asks the terminal for its own otherwise; "none" encodes the
-    /// alpha away and lets the protocol make of it what it will; anything
-    /// else is a colour, `#002b36` or `rgb:00/2b/36`.
+    /// What becomes of transparency where the picture protocol has no
+    /// alpha channel of its own (sixel, halfblocks). Empty or "auto"
+    /// leaves it undrawn on sixel, so the terminal's own background shows
+    /// through, and flattens it elsewhere onto the theme's background or,
+    /// where the theme fixes none, the terminal's own; "none" flattens
+    /// nothing and lets the protocol make of the alpha what it will;
+    /// anything else is a colour to flatten onto and draw, `#002b36` or
+    /// `rgb:00/2b/36`, for a sixel terminal that paints unset positions.
     pub image_background: String,
 }
 

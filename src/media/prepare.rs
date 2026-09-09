@@ -5,8 +5,8 @@
 use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames, terminal_picture};
 use crate::media::gif_anim::decode_preview_animation;
 use crate::media::inline::{
-    INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
-    parse_default_avatar_key, sixel_rows, stretch_to, subsample,
+    Flatten, INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
+    parse_default_avatar_key, sixel_rows, sixel_snap, stretch_to, subsample,
 };
 use image::DynamicImage;
 use ratatui::layout::Rect;
@@ -24,7 +24,7 @@ pub fn prepare_pictures(
     picker: Option<&Picker>,
     pixel_mode: bool,
     cell_px: (u32, u32),
-    opaque_bg: Option<[u8; 3]>,
+    opaque_bg: Option<Flatten>,
 ) -> Option<(PictureFrames, usize)> {
     let (mut frames, mut delays) = match bytes {
         None => {
@@ -75,6 +75,19 @@ pub fn prepare_pictures(
     } else {
         box_px
     };
+    // Where the protocol has no alpha, transparency is flattened onto a
+    // colour. On sixel those pixels are then dropped from the data, and
+    // the colour is snapped to one the encoder can hit exactly so that
+    // every one of them is recognisable as the same palette entry.
+    let drop_flat = sixel && opaque_bg.is_some_and(|f| f.drop);
+    let flat = opaque_bg.map(|f| {
+        if drop_flat {
+            sixel_snap(f.colour)
+        } else {
+            f.colour
+        }
+    });
+    let transparent = if drop_flat { flat } else { None };
     let area = Rect::new(0, 0, slot.cols, slot.rows);
     let mut pictures = Vec::with_capacity(frames.len());
     let mut total = 0usize;
@@ -87,7 +100,7 @@ pub fn prepare_pictures(
         if round {
             circle_mask(&mut rgba);
         }
-        if !alpha_ok && let Some(bg) = opaque_bg {
+        if !alpha_ok && let Some(bg) = flat {
             rgba = composite_over(&rgba, bg);
         }
         total += rgba.len();
@@ -100,7 +113,7 @@ pub fn prepare_pictures(
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
-            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels)?))
+            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels, transparent)?))
         };
         pictures.push(picture);
     }
@@ -209,9 +222,15 @@ mod tests {
         let data = tp.printout(0, 2, 20, None).unwrap().rows.remove(0).1;
         assert!(data.contains("\"1;1;40;36"), "{data:?}");
         assert_eq!(data.matches('-').count(), 5);
-        // sixel has no transparency: avatars stay square there unless the
-        // theme's background is known to sit them on
-        for bg in [None, Some([1, 2, 3])] {
+        // sixel carries no alpha of its own: an avatar is round there only
+        // when there is a colour to flatten its corners onto
+        let flat = |drop| {
+            Some(Flatten {
+                colour: [1, 2, 3],
+                drop,
+            })
+        };
+        for bg in [None, flat(false), flat(true)] {
             let (frames, _) = prepare_pictures(
                 Some(&png(100, 100)),
                 &avatar,

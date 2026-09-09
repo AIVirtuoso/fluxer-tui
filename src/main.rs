@@ -307,6 +307,10 @@ async fn main() -> Result<()> {
     // The colour a picture's transparency is blended onto; None where the
     // protocol carries alpha itself (the console renderer, kitty, iTerm2).
     let mut image_bg: Option<[u8; 3]> = None;
+    // A colour named in the config is used as it is: the pixels keep it
+    // instead of being dropped, for a terminal that paints unset sixel
+    // positions rather than leaving them alone.
+    let mut image_bg_fixed = false;
     let _guard = TerminalGuard {
         console: console_mode,
     };
@@ -329,7 +333,10 @@ async fn main() -> Result<()> {
                 blend_from_terminal(&mut app)
             }
             Some(term_bg::Blend::None) => None,
-            Some(term_bg::Blend::Fixed(rgb)) => Some(rgb),
+            Some(term_bg::Blend::Fixed(rgb)) => {
+                image_bg_fixed = true;
+                Some(rgb)
+            }
             Some(term_bg::Blend::Ask) => match ui::theme::bg_rgb() {
                 Some(rgb) => Some(rgb),
                 None => blend_from_terminal(&mut app),
@@ -489,12 +496,18 @@ async fn main() -> Result<()> {
                 spawn_custom_emoji_fetch(authed_client.clone(), event_tx.clone(), id, url);
             }
             // sixel and halfblocks carry no alpha: a picture with
-            // transparency, and a round avatar, need a colour to sit on
+            // transparency, and a round avatar, need a colour to sit on.
+            // On sixel those pixels are then dropped, unless a colour was
+            // asked for by hand, which is the way out for a terminal that
+            // does not leave unset positions alone.
             let opaque_bg = match app.image_picker.as_ref().map(|p| p.protocol_type()) {
                 Some(
                     ratatui_image::picker::ProtocolType::Sixel
                     | ratatui_image::picker::ProtocolType::Halfblocks,
-                ) => image_bg,
+                ) => image_bg.map(|colour| crate::media::Flatten {
+                    colour,
+                    drop: !image_bg_fixed,
+                }),
                 _ => None,
             };
             for slot in app.take_media_wants() {
@@ -3011,7 +3024,7 @@ fn spawn_media_fetch(
     picker: Option<ratatui_image::picker::Picker>,
     pixel_mode: bool,
     cell_px: (u32, u32),
-    opaque_bg: Option<[u8; 3]>,
+    opaque_bg: Option<crate::media::Flatten>,
     disk: Option<std::sync::Arc<crate::media::DiskCache>>,
     local: Option<crate::media::LocalSource>,
 ) {

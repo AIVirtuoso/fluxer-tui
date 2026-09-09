@@ -278,6 +278,119 @@ pub fn sixel_rows(height: u32) -> u32 {
     (height / 6 * 6).max(6)
 }
 
+/// How a picture's transparency is dealt with on a protocol that carries
+/// no alpha channel of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Flatten {
+    /// The colour transparency is flattened onto.
+    pub colour: [u8; 3],
+    /// Whether those pixels are then dropped from the sixel, so that the
+    /// terminal's own background shows through them exactly rather than
+    /// the encoder's nearest guess at it.
+    pub drop: bool,
+}
+
+/// The sixel encoder buckets colours at five bits a channel, so only
+/// multiples of eight survive it: ask for `#002b36` and the picture comes
+/// back painted `#002830`. Flattening transparency onto a snapped colour
+/// instead means the encoder reproduces it exactly, which both keeps the
+/// dithering from spreading an error across the flat area and leaves one
+/// palette entry that `sixel_drop_colour` can recognise.
+pub fn sixel_snap(rgb: [u8; 3]) -> [u8; 3] {
+    rgb.map(|c| c & 0xf8)
+}
+
+/// The colour as sixel writes it: components are hundredths, not bytes.
+fn sixel_percent(rgb: [u8; 3]) -> [u32; 3] {
+    rgb.map(|c| (c as u32 * 100 + 127) / 255)
+}
+
+/// The colour a `#n;2;r;g;b` definition sets, in sixel's own hundredths.
+fn defined_colour(def: &str) -> Option<[u32; 3]> {
+    let mut fields = def.trim_start_matches('#').split(';');
+    fields.next()?;
+    if fields.next()? != "2" {
+        return None;
+    }
+    let mut rgb = [0u32; 3];
+    for slot in &mut rgb {
+        *slot = fields.next()?.parse().ok()?;
+    }
+    Some(rgb)
+}
+
+/// Drop the pixels of one colour from a sixel and ask the terminal to
+/// leave those positions alone (`P2 = 1`), so what is already on the
+/// screen shows through them.
+///
+/// Sixel has no alpha channel, which is why transparency is flattened onto
+/// a background colour before encoding; but the encoder's idea of that
+/// colour is only ever a multiple of eight per channel, so the flattened
+/// area comes out close to the terminal's background rather than equal to
+/// it. The cells under a picture are blanked before it is printed, so
+/// leaving those pixels unset shows the terminal's real background instead,
+/// with none of the encoder's colour loss.
+///
+/// `rgb` has to be a colour the encoder can hit exactly (`sixel_snap`).
+/// None when the picture has no such colour, and so nothing to drop.
+pub fn sixel_drop_colour(data: &str, rgb: [u8; 3]) -> Option<String> {
+    if !data.starts_with("\x1bP") {
+        return None;
+    }
+    let b = data.as_bytes();
+    let want = sixel_percent(rgb);
+    let mut out = String::with_capacity(data.len());
+    // P2 = 1: a position this data never sets keeps what the screen had
+    out.push_str("\x1bP0;1;0q");
+    let mut i = data.find('q')? + 1;
+    let mut target = None;
+    while i < b.len() {
+        if b[i] != b'#' {
+            let start = i;
+            while i < b.len() && b[i] != b'#' {
+                i += 1;
+            }
+            out.push_str(&data[start..i]);
+            continue;
+        }
+        let mut j = i + 1;
+        let mut index = 0u32;
+        while j < b.len() && b[j].is_ascii_digit() {
+            index = index * 10 + u32::from(b[j] - b'0');
+            j += 1;
+        }
+        if j == i + 1 {
+            out.push('#');
+            i += 1;
+            continue;
+        }
+        if b.get(j) == Some(&b';') {
+            // "#n;2;r;g;b" defines a colour; every definition is kept, so
+            // the indices the rest of the data selects still mean the same
+            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+                j += 1;
+            }
+            if defined_colour(&data[i..j]) == Some(want) {
+                target = Some(index);
+            }
+            out.push_str(&data[i..j]);
+            i = j;
+            continue;
+        }
+        // "#n" selects a colour; its run ends at the next control
+        let mut end = j;
+        while end < b.len() && !matches!(b[end], b'#' | b'$' | b'-' | 0x1b) {
+            end += 1;
+        }
+        if target != Some(index) {
+            out.push_str(&data[i..end]);
+        }
+        i = end;
+    }
+    target?;
+    Some(out)
+}
+
 /// Scale a picture to exactly `box_px`, ignoring its shape. Pictures in
 /// chat are laid out within half a cell of their shape, so the stretch is
 /// invisible; a protocol picture that does not fill its cells exactly would
@@ -355,6 +468,66 @@ pub fn subsample(
         out_frames.push(frames[i].take().expect("each index kept once"));
     }
     (out_frames, out_delays)
+}
+
+#[cfg(test)]
+mod sixel_alpha_tests {
+    use super::*;
+
+    /// `#002b36` is not a colour the encoder can hold: five bits a channel
+    /// leaves only multiples of eight.
+    #[test]
+    fn snapping_lands_on_what_the_encoder_can_reproduce() {
+        assert_eq!(sixel_snap([0x00, 0x2b, 0x36]), [0x00, 0x28, 0x30]);
+        assert_eq!(sixel_snap([0xff, 0xff, 0xff]), [0xf8, 0xf8, 0xf8]);
+        assert_eq!(
+            sixel_snap([0x28, 0x30, 0x00]),
+            [0x28, 0x30, 0x00],
+            "already"
+        );
+    }
+
+    #[test]
+    fn the_flattened_colour_is_dropped_and_the_rest_kept() {
+        // #0 is the flattened-on colour, #1 the picture's own
+        let data = "\x1bPq\"1;1;12;6#0;2;0;16;19#1;2;80;20;20#0!6~$#1!6~-#0~~~$#1~~~\x1b\\";
+        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
+        assert!(
+            out.starts_with("\x1bP0;1;0q"),
+            "asks for transparency: {out:?}"
+        );
+        assert!(!out.contains("#0!6~"), "the flattened run is gone: {out:?}");
+        assert!(!out.contains("#0~~~"), "in every band: {out:?}");
+        assert!(out.contains("#1!6~"), "the picture is kept: {out:?}");
+        assert!(out.contains("#1~~~"), "in every band: {out:?}");
+        assert!(
+            out.contains("#0;2;0;16;19"),
+            "definitions stay, so the indices still mean the same: {out:?}"
+        );
+        assert!(out.ends_with("\x1b\\"), "still terminated: {out:?}");
+    }
+
+    #[test]
+    fn a_picture_without_that_colour_is_left_alone() {
+        let data = "\x1bPq\"1;1;6;6#1;2;80;20;20#1!6~\x1b\\";
+        assert_eq!(sixel_drop_colour(data, [0x00, 0x28, 0x30]), None);
+    }
+
+    /// `#1` must not match `#12`: the whole run of digits is the index.
+    #[test]
+    fn an_index_is_not_a_prefix_of_another() {
+        // 0x28 is written as 16 hundredths, and index 1 is a different grey
+        let data = "\x1bPq\"1;1;6;6#1;2;20;20;20#12;2;16;16;16#1!6~$#12!6~\x1b\\";
+        let out = sixel_drop_colour(data, [0x28, 0x28, 0x28]).expect("index 12 is in it");
+        assert!(out.contains("#1!6~"), "index 1 is kept: {out:?}");
+        assert!(!out.contains("#12!6~"), "index 12 is dropped: {out:?}");
+    }
+
+    #[test]
+    fn anything_that_is_not_a_sixel_is_refused() {
+        assert_eq!(sixel_drop_colour("", [0, 0x28, 0x30]), None);
+        assert_eq!(sixel_drop_colour("\x1b_Ga=T\x1b\\", [0, 0x28, 0x30]), None);
+    }
 }
 
 #[cfg(test)]
