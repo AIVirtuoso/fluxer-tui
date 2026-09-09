@@ -6,7 +6,7 @@ use crate::app::{MediaKind, MediaSlot, Picture, PictureFrames, terminal_picture}
 use crate::media::gif_anim::decode_preview_animation;
 use crate::media::inline::{
     Flatten, INLINE_MAX_FRAMES, block_px, circle_mask, composite_over, cover_into, disc_image,
-    parse_default_avatar_key, sixel_rows, sixel_snap, stretch_to, subsample,
+    parse_default_avatar_key, sixel_rows, stretch_to, subsample,
 };
 use image::DynamicImage;
 use ratatui::layout::Rect;
@@ -18,21 +18,15 @@ use std::time::Duration;
 /// The cells whose every pixel the picture paints, row by row. A cell that
 /// is only partly painted, or not reached at all because the picture was
 /// cut to whole sixel bands, is not one of them.
-fn covered_cells(
-    alpha: &[u8],
-    img: (u32, u32),
-    grid: (u16, u16),
-    cell_px: (u32, u32),
-) -> Vec<bool> {
-    let (iw, ih) = img;
+fn covered_cells(alpha: &image::RgbaImage, grid: (u16, u16), cell_px: (u32, u32)) -> Vec<bool> {
     let (cw, ch) = (cell_px.0.max(1), cell_px.1.max(1));
     (0..grid.1)
         .flat_map(|r| (0..grid.0).map(move |c| (r, c)))
         .map(|(r, c)| {
             let (x0, y0) = (u32::from(c) * cw, u32::from(r) * ch);
-            x0 + cw <= iw
-                && y0 + ch <= ih
-                && (y0..y0 + ch).all(|y| (x0..x0 + cw).all(|x| alpha[(y * iw + x) as usize] == 255))
+            x0 + cw <= alpha.width()
+                && y0 + ch <= alpha.height()
+                && (y0..y0 + ch).all(|y| (x0..x0 + cw).all(|x| alpha.get_pixel(x, y).0[3] == 255))
         })
         .collect()
 }
@@ -98,18 +92,13 @@ pub fn prepare_pictures(
         box_px
     };
     // Where the protocol has no alpha, transparency is flattened onto a
-    // colour. On sixel those pixels are then dropped from the data, and
-    // the colour is snapped to one the encoder can hit exactly so that
-    // every one of them is recognisable as the same palette entry.
-    let drop_flat = sixel && opaque_bg.is_some_and(|f| f.drop);
-    let flat = opaque_bg.map(|f| {
-        if drop_flat {
-            sixel_snap(f.colour)
-        } else {
-            f.colour
-        }
-    });
-    let transparent = if drop_flat { flat } else { None };
+    // colour. On sixel the picture is then stopped from drawing wherever it
+    // was see-through, so the terminal's own background shows there; the
+    // colour is what is left under the parts that are only half see-through.
+    let flat = opaque_bg.map(|f| f.colour);
+    // What a run cut out of this picture has to repeat: flatten onto the
+    // same colour, and stop drawing where the picture was see-through.
+    let transparent = if sixel && !alpha_ok { opaque_bg } else { None };
     let area = Rect::new(0, 0, slot.cols, slot.rows);
     let mut pictures = Vec::with_capacity(frames.len());
     let mut total = 0usize;
@@ -122,17 +111,10 @@ pub fn prepare_pictures(
         if round {
             circle_mask(&mut rgba);
         }
-        // The alpha, kept before flattening writes it away. Which cells
-        // the picture paints in full cannot be settled yet: the protocol
-        // picks the grid it will use, and it is not always the block the
-        // slot asked for.
-        let alpha: Option<(u32, u32, Vec<u8>)> = (!pixel_mode).then(|| {
-            (
-                rgba.width(),
-                rgba.height(),
-                rgba.pixels().map(|p| p.0[3]).collect(),
-            )
-        });
+        // Sixel keeps the picture as it stands, before flattening writes
+        // the alpha away: a run of rows cut at the top is encoded from it,
+        // and it is what says which positions must not be drawn.
+        let pixels = sixel.then(|| Arc::new(rgba.clone()));
         if !alpha_ok && let Some(bg) = flat {
             rgba = composite_over(&rgba, bg);
         }
@@ -140,9 +122,6 @@ pub fn prepare_pictures(
         let picture = if pixel_mode {
             Picture::Pixels(Arc::new(rgba))
         } else {
-            // sixel keeps the pixels: a run of rows cut at the top is
-            // encoded from them when it is first shown
-            let pixels = sixel.then(|| Arc::new(rgba.clone()));
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
@@ -151,8 +130,8 @@ pub fn prepare_pictures(
             // what makes an animation flicker on a terminal that cannot
             // hold a frame back until it is done.
             let grid = protocol.area();
-            let covered = alpha.as_ref().map_or_else(Vec::new, |(w, h, a)| {
-                covered_cells(a, (*w, *h), (grid.width, grid.height), cell_px)
+            let covered = pixels.as_ref().map_or_else(Vec::new, |px| {
+                covered_cells(px, (grid.width, grid.height), cell_px)
             });
             Picture::Terminal(Arc::new(terminal_picture(
                 &protocol,
@@ -336,7 +315,7 @@ mod tests {
         let mut picker = Picker::from_fontsize((10, 20));
         picker.set_protocol_type(ProtocolType::Sixel);
         // already snapped, so both runs hand the encoder the same picture
-        let colour = sixel_snap([0, 0x2b, 0x36]);
+        let colour = [0, 0x2b, 0x36];
         let encode = |drop| {
             let slot = MediaSlot::new("https://x/s.png".to_string(), 8, 3, MediaKind::Picture);
             let (frames, _) = prepare_pictures(
@@ -456,6 +435,183 @@ mod tests {
         assert!(
             cut[cols..].iter().all(|c| !*c),
             "the second is cut short: {cut:?}"
+        );
+    }
+
+    /// A picture is allowed to contain the very colour its transparency is
+    /// flattened onto. Those pixels are the picture, not its background,
+    /// and they have to be drawn; blanking them would show whatever was on
+    /// the screen before through the middle of it.
+    #[test]
+    fn the_picture_keeps_its_own_pixels_of_the_flattened_colour() {
+        let flat = [0u8, 0x28, 0x30];
+        // opaque throughout, and the left half is exactly the flattened
+        // colour: nothing here is transparent, so nothing may be blanked
+        let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([250, 250, 250, 255]));
+        for (x, _, px) in img.enumerate_pixels_mut() {
+            if x < 40 {
+                *px = image::Rgba([flat[0], flat[1], flat[2], 255]);
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let slot = MediaSlot::new("https://x/f.png".to_string(), 8, 3, MediaKind::Picture);
+        let (frames, _) = prepare_pictures(
+            Some(&bytes),
+            &slot,
+            Some(&picker),
+            false,
+            (10, 20),
+            Some(Flatten {
+                colour: flat,
+                drop: true,
+            }),
+        )
+        .unwrap();
+        let Picture::Terminal(tp) = &frames.frames[0] else {
+            panic!()
+        };
+        let data = tp.printout(0, 3, 20, None).unwrap().rows.remove(0).1;
+        let (w, h, px) = decode_sixel(&data);
+        let unset = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|(x, y)| px[y * w + x].is_none())
+            .count();
+        assert_eq!(unset, 0, "an opaque picture leaves no pixel undrawn");
+    }
+
+    /// The whole of it, on a picture shaped like a real sticker: a
+    /// see-through border, white in the middle, and a stripe of exactly the
+    /// colour the transparency is flattened onto. Every see-through pixel
+    /// must stop drawing so the terminal's background shows there, and
+    /// every other pixel must draw, or what was on the screen before shows
+    /// through the middle of the picture.
+    #[test]
+    fn every_see_through_pixel_stops_and_every_other_one_draws() {
+        let flat = [0u8, 0x2b, 0x36];
+        let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([0, 0, 0, 0]));
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = match (x, y) {
+                // a see-through border all the way round
+                (x, y) if !(10..70).contains(&x) || !(12..48).contains(&y) => {
+                    image::Rgba([0, 0, 0, 0])
+                }
+                // a stripe of the background's own colour, opaque
+                (x, _) if x < 30 => image::Rgba([flat[0], flat[1], flat[2], 255]),
+                // and white
+                _ => image::Rgba([255, 255, 255, 255]),
+            };
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let slot = MediaSlot::new("https://x/s.png".to_string(), 8, 3, MediaKind::Picture);
+        let (frames, _) = prepare_pictures(
+            Some(&bytes),
+            &slot,
+            Some(&picker),
+            false,
+            (10, 20),
+            Some(Flatten {
+                colour: flat,
+                drop: true,
+            }),
+        )
+        .unwrap();
+        let Picture::Terminal(tp) = &frames.frames[0] else {
+            panic!()
+        };
+        let data = tp.printout(0, 3, 20, None).unwrap().rows.remove(0).1;
+        let (w, h, px) = decode_sixel(&data);
+        assert_eq!((w, h), (80, 60), "the picture fills its block");
+        let (mut wrongly_drawn, mut wrongly_blank) = (0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                let clear = img.get_pixel(x as u32, y as u32).0[3] == 0;
+                match (clear, px[y * w + x].is_none()) {
+                    (true, false) => wrongly_drawn += 1,
+                    (false, true) => wrongly_blank += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(wrongly_drawn, 0, "see-through pixels that still draw");
+        assert_eq!(
+            wrongly_blank, 0,
+            "the picture's own pixels that stopped drawing"
+        );
+    }
+
+    /// A run of rows cut at the top is re-encoded from the picture as it
+    /// was before flattening, so it has to flatten again the same way. If
+    /// it did not, the encoder would keep whatever sits under the alpha,
+    /// which is black in most files.
+    #[test]
+    fn a_cut_run_flattens_and_blanks_the_same_way_as_the_whole() {
+        let flat = [0u8, 0x2b, 0x36];
+        let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([200, 30, 30, 255]));
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            if x < 20 || y < 10 {
+                *px = image::Rgba([0, 0, 0, 0]);
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let cut = |drop| {
+            let slot = MediaSlot::new("https://x/r.png".to_string(), 8, 3, MediaKind::Picture);
+            let (frames, _) = prepare_pictures(
+                Some(&bytes),
+                &slot,
+                Some(&picker),
+                false,
+                (10, 20),
+                Some(Flatten { colour: flat, drop }),
+            )
+            .unwrap();
+            let Picture::Terminal(tp) = &frames.frames[0] else {
+                panic!()
+            };
+            // rows 1..3, which starts inside a band and is re-encoded
+            let data = tp
+                .printout(1, 3, 20, Some(&picker))
+                .unwrap()
+                .rows
+                .remove(0)
+                .1;
+            let (w, h, px) = decode_sixel(&data);
+            (w, h, px.iter().filter(|p| p.is_none()).count())
+        };
+
+        // told to draw the flattened colour: the run covers every pixel
+        let (w, h, blank) = cut(false);
+        assert!(w > 0 && h > 0, "the run encoded");
+        assert_eq!(blank, 0, "nothing is left undrawn when nothing is blanked");
+
+        // told to blank it: only what was see-through stops drawing, and
+        // rows 1..3 start at y = 20, past the see-through top strip
+        let (_, _, blank) = cut(true);
+        assert!(blank > 0, "the see-through left edge stops drawing");
+        assert!(
+            blank < w * h,
+            "but the picture itself still draws: {blank} of {}",
+            w * h
         );
     }
 

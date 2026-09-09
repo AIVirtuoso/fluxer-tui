@@ -228,9 +228,10 @@ pub enum TerminalPicture {
         pixels: Option<std::sync::Arc<image::RgbaImage>>,
         /// Such runs, by (first row, end row), encoded when first shown.
         cuts: std::sync::Mutex<std::collections::HashMap<(u16, u16), std::sync::Arc<str>>>,
-        /// The colour transparency was flattened onto, dropped from the
-        /// data so the terminal's own background shows through instead.
-        transparent: Option<[u8; 3]>,
+        /// How transparency was dealt with: the colour it was flattened
+        /// onto, which a re-encoded run has to flatten onto as well, and
+        /// whether the picture is then stopped from drawing there.
+        transparent: Option<crate::media::Flatten>,
         /// One per cell of the block, row by row: whether the picture
         /// paints every pixel of that cell, and so whether the cell has to
         /// be blanked before the picture is printed.
@@ -394,7 +395,7 @@ fn encode_sixel_rows(
     r1: u16,
     cell_h: u32,
     cols: u16,
-    transparent: Option<[u8; 3]>,
+    transparent: Option<crate::media::Flatten>,
 ) -> Option<std::sync::Arc<str>> {
     let y0 = (r0 as u32 * cell_h).min(pixels.height());
     let h = ((r1 - r0) as u32 * cell_h).min(pixels.height() - y0);
@@ -402,10 +403,17 @@ fn encode_sixel_rows(
         return None;
     }
     let h = h / 6 * 6;
+    // `pixels` is the picture before flattening, so the crop still says
+    // which positions were see-through; the encoder is handed a flattened
+    // copy and the crop is kept to blank them out of what comes back.
     let crop = image::imageops::crop_imm(pixels, 0, y0, pixels.width(), h).to_image();
+    let encoded = transparent.map_or_else(
+        || crop.clone(),
+        |f| crate::media::composite_over(&crop, f.colour),
+    );
     let protocol = picker
         .new_protocol(
-            image::DynamicImage::ImageRgba8(crop),
+            image::DynamicImage::ImageRgba8(encoded),
             Rect::new(0, 0, cols, r1 - r0),
             ratatui_image::Resize::Fit(None),
         )
@@ -413,7 +421,8 @@ fn encode_sixel_rows(
     match protocol {
         Protocol::Sixel(sixel) => Some(std::sync::Arc::from(
             transparent
-                .and_then(|bg| crate::media::sixel_drop_colour(&sixel.data, bg))
+                .filter(|f| f.drop)
+                .and_then(|_| crate::media::sixel_blank_transparent(&sixel.data, &crop))
                 .unwrap_or_else(|| sixel.data.clone())
                 .as_str(),
         )),
@@ -439,7 +448,7 @@ fn protocol_rows(protocol: &Protocol) -> Vec<(u16, String)> {
 pub fn terminal_picture(
     protocol: &Protocol,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
-    transparent: Option<[u8; 3]>,
+    transparent: Option<crate::media::Flatten>,
     covered: Vec<bool>,
 ) -> Option<TerminalPicture> {
     let area = protocol.area();
@@ -448,11 +457,17 @@ pub fn terminal_picture(
     }
     match protocol {
         Protocol::Sixel(sixel) => {
-            // Dropping the flattened-on colour is what makes transparency
-            // real; a picture with none of it is printed as it was encoded.
-            let data = transparent.and_then(|bg| crate::media::sixel_drop_colour(&sixel.data, bg));
-            let data = data.as_deref().unwrap_or(sixel.data.as_str());
-            let kept = transparent.filter(|_| data != sixel.data.as_str());
+            // Stopping the picture from drawing wherever it was see-through
+            // is what makes transparency real; one that is see-through
+            // nowhere is printed exactly as it was encoded.
+            let blanked = match (transparent.filter(|f| f.drop), pixels.as_deref()) {
+                (Some(_), Some(px)) => crate::media::sixel_blank_transparent(&sixel.data, px),
+                _ => None,
+            };
+            let data = blanked.as_deref().unwrap_or(sixel.data.as_str());
+            // a run cut out of this picture flattens the same way, and stops
+            // drawing the same way, so the whole of it is kept
+            let kept = transparent;
             parse_sixel(data, area, pixels, kept, covered).or_else(|| {
                 Some(TerminalPicture::Whole {
                     data: std::sync::Arc::from(data),
@@ -499,7 +514,7 @@ fn parse_sixel(
     data: &str,
     area: Rect,
     pixels: Option<std::sync::Arc<image::RgbaImage>>,
-    transparent: Option<[u8; 3]>,
+    transparent: Option<crate::media::Flatten>,
     covered: Vec<bool>,
 ) -> Option<TerminalPicture> {
     let b = data.as_bytes();
