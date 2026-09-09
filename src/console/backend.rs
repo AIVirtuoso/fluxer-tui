@@ -28,6 +28,10 @@ pub struct PicturePrint {
     /// Image data to send once before any row of this picture (kitty),
     /// keyed by the picture and frame it belongs to.
     pub transmit: Option<(u32, Arc<str>)>,
+    /// One per cell of `area`, row by row: whether the picture paints every
+    /// pixel of that cell. Those cells are not blanked first, since the
+    /// picture covers whatever was there. Empty means blank all of them.
+    pub covered: Arc<[bool]>,
 }
 
 /// Per frame: the pictures on screen, by the cell they are printed at.
@@ -217,12 +221,28 @@ impl<W: Write> TermBackend<W> {
                     if let Some(p) = pictures.get(&(x, y)) {
                         if y == p.area.y {
                             // The cells under a picture are never written
-                            // while it is there, and a sixel is cut to whole
-                            // bands: blank them first, so the pixels it
-                            // leaves show the background, not what was there.
+                            // while it is there, and a picture need not
+                            // cover them all: it is cut to whole sixel
+                            // bands, and what it leaves transparent shows
+                            // whatever was on the screen. Those cells are
+                            // blanked first so that what shows is the
+                            // background. A cell the picture paints in full
+                            // is left alone, because blanking it and then
+                            // painting over it is a flicker on any terminal
+                            // that does not hold the frame back until the
+                            // end (xterm knows nothing of DEC mode 2026),
+                            // and an animation redraws every frame.
+                            let cols = p.area.width as usize;
                             let blanks: Vec<(u16, u16, Cell)> = (p.area.y..p.area.bottom())
                                 .flat_map(|yy| (p.area.x..p.area.right()).map(move |xx| (xx, yy)))
                                 .filter_map(|(xx, yy)| {
+                                    let at =
+                                        (yy - p.area.y) as usize * cols + (xx - p.area.x) as usize;
+                                    // no map means nothing is known to be
+                                    // covered, so every cell is blanked
+                                    if p.covered.get(at).copied().unwrap_or(false) {
+                                        return None;
+                                    }
                                     let cell = buf.cell((xx, yy))?;
                                     let mut blank = Cell::default();
                                     blank.set_fg(cell.fg).set_bg(cell.bg);
@@ -615,6 +635,53 @@ mod tests {
         buf
     }
 
+    /// Blanking a cell and then painting over it is a flicker on any
+    /// terminal that does not hold the frame back until the end, and an
+    /// animation redraws every frame. A cell the picture paints in full
+    /// does not need blanking, so it is left alone.
+    #[test]
+    fn cells_the_picture_covers_are_not_blanked_first() {
+        let sixel: Arc<str> = Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\");
+        let sentinel = crate::app::picture_sentinel_style(Style::default(), 7, 0);
+        let draw = |covered: Vec<bool>| {
+            let mut r = rig();
+            let mut buf = buffer_of(&["....", "....", "....", "...."]);
+            buf[(1, 1)].set_style(sentinel);
+            for (x, y) in [(2, 1), (1, 2), (2, 2)] {
+                buf[(x, y)].set_skip(true);
+            }
+            r.pictures.borrow_mut().insert(
+                (1, 1),
+                PicturePrint {
+                    data: sixel.clone(),
+                    area: Rect::new(1, 1, 2, 2),
+                    transmit: None,
+                    covered: Arc::from(covered),
+                },
+            );
+            r.draw_buf(buf, None)
+        };
+        // nothing known: every cell is blanked, as before
+        let out = draw(Vec::new());
+        assert!(
+            out.contains("\x1b[3;2H  "),
+            "blanks the second row: {out:?}"
+        );
+
+        // every cell covered: the picture is printed with nothing blanked
+        let out = draw(vec![true; 4]);
+        assert!(out.contains("\x1bPq"), "still printed: {out:?}");
+        assert!(!out.contains("\x1b[3;2H  "), "nothing blanked: {out:?}");
+
+        // only the second row is covered
+        let out = draw(vec![false, false, true, true]);
+        assert!(
+            !out.contains("\x1b[3;2H  "),
+            "second row left alone: {out:?}"
+        );
+        assert!(out.contains("\x1bPq"), "still printed: {out:?}");
+    }
+
     #[test]
     fn a_frame_is_one_synchronized_update() {
         let mut r = rig();
@@ -710,6 +777,7 @@ mod tests {
             data: Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\"),
             area,
             transmit: None,
+            covered: Arc::from(Vec::new()),
         };
         let sentinel = crate::app::picture_sentinel_style(Style::default(), 7, 0);
         let mut buf = buffer_of(&["....", "....", "....", "...."]);
@@ -743,6 +811,7 @@ mod tests {
                 data: picture.data.clone(),
                 area: Rect::new(1, 0, 2, 2),
                 transmit: None,
+                covered: Arc::from(Vec::new()),
             },
         );
         let out = r.draw_buf(

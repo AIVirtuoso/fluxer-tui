@@ -15,6 +15,28 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The cells whose every pixel the picture paints, row by row. A cell that
+/// is only partly painted, or not reached at all because the picture was
+/// cut to whole sixel bands, is not one of them.
+fn covered_cells(
+    alpha: &[u8],
+    img: (u32, u32),
+    grid: (u16, u16),
+    cell_px: (u32, u32),
+) -> Vec<bool> {
+    let (iw, ih) = img;
+    let (cw, ch) = (cell_px.0.max(1), cell_px.1.max(1));
+    (0..grid.1)
+        .flat_map(|r| (0..grid.0).map(move |c| (r, c)))
+        .map(|(r, c)| {
+            let (x0, y0) = (u32::from(c) * cw, u32::from(r) * ch);
+            x0 + cw <= iw
+                && y0 + ch <= ih
+                && (y0..y0 + ch).all(|y| (x0..x0 + cw).all(|x| alpha[(y * iw + x) as usize] == 255))
+        })
+        .collect()
+}
+
 /// The pictures of a block, and the bytes of pixels they hold (what the
 /// memory cache counts). None when the bytes are not a picture. `bytes` is
 /// None for an avatar drawn locally.
@@ -100,6 +122,17 @@ pub fn prepare_pictures(
         if round {
             circle_mask(&mut rgba);
         }
+        // The alpha, kept before flattening writes it away. Which cells
+        // the picture paints in full cannot be settled yet: the protocol
+        // picks the grid it will use, and it is not always the block the
+        // slot asked for.
+        let alpha: Option<(u32, u32, Vec<u8>)> = (!pixel_mode).then(|| {
+            (
+                rgba.width(),
+                rgba.height(),
+                rgba.pixels().map(|p| p.0[3]).collect(),
+            )
+        });
         if !alpha_ok && let Some(bg) = flat {
             rgba = composite_over(&rgba, bg);
         }
@@ -113,7 +146,20 @@ pub fn prepare_pictures(
             let protocol = picker?
                 .new_protocol(DynamicImage::ImageRgba8(rgba), area, Resize::Fit(None))
                 .ok()?;
-            Picture::Terminal(Arc::new(terminal_picture(&protocol, pixels, transparent)?))
+            // Now the grid is known: cells the picture paints every pixel
+            // of need no blanking before it is printed, and blanking is
+            // what makes an animation flicker on a terminal that cannot
+            // hold a frame back until it is done.
+            let grid = protocol.area();
+            let covered = alpha.as_ref().map_or_else(Vec::new, |(w, h, a)| {
+                covered_cells(a, (*w, *h), (grid.width, grid.height), cell_px)
+            });
+            Picture::Terminal(Arc::new(terminal_picture(
+                &protocol,
+                pixels,
+                transparent,
+                covered,
+            )?))
         };
         pictures.push(picture);
     }
@@ -333,6 +379,83 @@ mod tests {
         assert!(
             unset > 1000,
             "the whole flattened area went, not a run: {unset}"
+        );
+    }
+
+    /// The backend skips blanking a cell the picture paints in full, so
+    /// the map had better be right: a cell that is only partly painted,
+    /// or that the picture never reaches because it was cut to whole
+    /// sixel bands, must not be in it, or the cell keeps what was there.
+    #[test]
+    fn only_the_cells_a_picture_really_fills_are_marked_covered() {
+        let mut picker = Picker::from_fontsize((10, 20));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let png = |w: u32, h: u32, clear: bool| {
+            let mut img = image::RgbaImage::from_pixel(w, h, image::Rgba([9, 8, 7, 255]));
+            if clear {
+                // the top-left quarter is see-through
+                for (x, y, px) in img.enumerate_pixels_mut() {
+                    if x < w / 2 && y < h / 2 {
+                        *px = image::Rgba([0, 0, 0, 0]);
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let covered = |bytes: &[u8], cols, rows, cell: (u32, u32)| {
+            let slot = MediaSlot::new(
+                "https://x/c.png".to_string(),
+                cols,
+                rows,
+                MediaKind::Picture,
+            );
+            let (frames, _) = prepare_pictures(
+                Some(bytes),
+                &slot,
+                Some(&picker),
+                false,
+                cell,
+                Some(Flatten {
+                    colour: [0, 0x28, 0x30],
+                    drop: true,
+                }),
+            )
+            .unwrap();
+            let Picture::Terminal(tp) = &frames.frames[0] else {
+                panic!()
+            };
+            (
+                tp.area(),
+                tp.printout(0, rows, cell.1, None).unwrap().covered,
+            )
+        };
+
+        // 3 rows of 20 px is 60, ten whole bands: every cell is reached
+        let (area, all) = covered(&png(80, 60, false), 8, 3, (10, 20));
+        assert_eq!(area, Rect::new(0, 0, 8, 3));
+        assert_eq!(all.len(), 24, "one per cell of the grid the protocol took");
+        assert!(all.iter().all(|c| *c), "an opaque picture fills them all");
+
+        // see-through in the top-left quarter: those cells are not covered
+        let (_, some) = covered(&png(80, 60, true), 8, 3, (10, 20));
+        assert!(!some[0], "top-left is see-through: {some:?}");
+        assert!(!some[3], "and across to the middle: {some:?}");
+        assert!(some[4], "but not past it: {some:?}");
+        assert!(some[16], "nor on the bottom row: {some:?}");
+
+        // 2 rows of 25 px is 50, which is eight whole bands and 2 px over,
+        // so the picture never reaches the bottom of the second row. The
+        // protocol settles on its own grid here, and the map follows it.
+        let (area, cut) = covered(&png(80, 50, false), 8, 2, (10, 25));
+        let cols = area.width as usize;
+        assert_eq!(cut.len(), cols * area.height as usize);
+        assert!(cut[..cols].iter().all(|c| *c), "the first row is reached");
+        assert!(
+            cut[cols..].iter().all(|c| !*c),
+            "the second is cut short: {cut:?}"
         );
     }
 
