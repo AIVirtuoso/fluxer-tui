@@ -1,10 +1,10 @@
-# Fluxer TUI
+# Fluxter (Fluxer Terminal)
 
 TUI for [Fluxer](https://fluxer.app), built with Ratatui.
 
 ## What this client does differently
 
-fluxer-tui began as a fork of
+fluxter began as a fork of
 [dogbonewish/fluxer-tui](https://github.com/dogbonewish/fluxer-tui) and is
 developed on its own now; that client is called "upstream" below. This one
 keeps its config file, keys and slash commands and differs as follows, set
