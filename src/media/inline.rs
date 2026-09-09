@@ -290,54 +290,14 @@ pub struct Flatten {
     pub drop: bool,
 }
 
-/// The sixel encoder buckets colours at five bits a channel, so only
-/// multiples of eight survive it: ask for `#002b36` and the picture comes
-/// back painted `#002830`. Flattening transparency onto a snapped colour
-/// instead means the encoder reproduces it exactly, which both keeps the
-/// dithering from spreading an error across the flat area and leaves one
-/// palette entry that `sixel_drop_colour` can recognise.
-pub fn sixel_snap(rgb: [u8; 3]) -> [u8; 3] {
-    rgb.map(|c| c & 0xf8)
+/// A colour as sixel writes one: hundredths, not eighths of a byte. This
+/// is the one place the format is kinder than the encoder, which keeps
+/// only five bits a channel: 100 here is 255 exactly.
+fn as_percent(rgb: [u8; 3]) -> [u32; 3] {
+    rgb.map(|c| (u32::from(c) * 100 + 127) / 255)
 }
 
-/// The colour as sixel writes it: components are hundredths, not bytes.
-fn sixel_percent(rgb: [u8; 3]) -> [u32; 3] {
-    rgb.map(|c| (c as u32 * 100 + 127) / 255)
-}
-
-/// Every palette index a sixel defines as `want`. The quantiser can reach
-/// the same colour by more than one route and define it twice, and only
-/// blanking one of them leaves the other painting.
-fn indices_of_colour(data: &str, want: [u32; 3]) -> Vec<u32> {
-    let b = data.as_bytes();
-    let mut found = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'#' {
-            i += 1;
-            continue;
-        }
-        let mut j = i + 1;
-        let mut index = 0u32;
-        while j < b.len() && b[j].is_ascii_digit() {
-            index = index * 10 + u32::from(b[j] - b'0');
-            j += 1;
-        }
-        if j > i + 1 && b.get(j) == Some(&b';') {
-            let start = i;
-            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
-                j += 1;
-            }
-            if defined_colour(&data[start..j]) == Some(want) && !found.contains(&index) {
-                found.push(index);
-            }
-        }
-        i = j.max(i + 1);
-    }
-    found
-}
-
-/// The colour a `#n;2;r;g;b` definition sets, in sixel's own hundredths.
+/// The colour a `#n;2;r;g;b` definition sets, in hundredths.
 fn defined_colour(def: &str) -> Option<[u32; 3]> {
     let mut fields = def.trim_start_matches('#').split(';');
     fields.next()?;
@@ -351,96 +311,201 @@ fn defined_colour(def: &str) -> Option<[u32; 3]> {
     Some(rgb)
 }
 
-/// Blank out the pixels of one colour in a sixel and ask the terminal to
-/// leave those positions alone (`P2 = 1`), so what is already on the
-/// screen shows through them.
+/// The palette index nearest `want`, which is the one the flattened parts
+/// of the picture were quantised to.
+fn nearest_index(data: &str, want: [u32; 3]) -> Option<u32> {
+    let b = data.as_bytes();
+    let (mut best, mut at) = (i64::MAX, None);
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' {
+            let mut j = i + 1;
+            let mut index = 0u32;
+            while j < b.len() && b[j].is_ascii_digit() {
+                index = index * 10 + u32::from(b[j] - b'0');
+                j += 1;
+            }
+            if j > i + 1 && b.get(j) == Some(&b';') {
+                let start = i;
+                while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+                    j += 1;
+                }
+                if let Some(c) = defined_colour(&data[start..j]) {
+                    let d: i64 = (0..3)
+                        .map(|k| (i64::from(c[k]) - i64::from(want[k])).pow(2))
+                        .sum();
+                    if d < best {
+                        (best, at) = (d, Some(index));
+                    }
+                }
+            }
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    at
+}
+
+/// A byte that draws: one sixel is six pixels of a band, `?` none of them.
+fn is_sixel_data(c: u8) -> bool {
+    (0x3f..=0x7e).contains(&c)
+}
+
+/// One sixel byte with the bits of its transparent pixels taken out.
+fn without_transparent(c: u8, x: u32, band: u32, alpha: &RgbaImage) -> u8 {
+    let mut bits = c - 0x3f;
+    for k in 0..6 {
+        let y = band * 6 + k;
+        if x < alpha.width() && y < alpha.height() && alpha.get_pixel(x, y).0[3] == 0 {
+            bits &= !(1 << k);
+        }
+    }
+    0x3f + bits
+}
+
+/// Write a stretch of picture bytes back out, run-length encoded the way
+/// the encoder writes it, so that blanking a wide stretch of them does not
+/// make the picture any bigger than it was.
+fn write_run(out: &mut String, run: &mut Vec<u8>) {
+    let mut i = 0;
+    while i < run.len() {
+        let c = char::from(run[i]);
+        let mut n = 1;
+        while i + n < run.len() && run[i + n] == run[i] {
+            n += 1;
+        }
+        if n >= 4 {
+            out.push('!');
+            out.push_str(&n.to_string());
+            out.push(c);
+        } else {
+            for _ in 0..n {
+                out.push(c);
+            }
+        }
+        i += n;
+    }
+    run.clear();
+}
+
+/// Stop the picture drawing wherever it was transparent, and ask the
+/// terminal to leave those positions alone (`P2 = 1`) so that what is
+/// already on the screen shows through them.
 ///
 /// Sixel has no alpha channel, which is why transparency is flattened onto
 /// a background colour before encoding; but the encoder's idea of that
 /// colour is only ever a multiple of eight per channel, so the flattened
 /// area comes out close to the terminal's background rather than equal to
 /// it. The cells under a picture are blanked before it is printed, so
-/// leaving those pixels unset shows the terminal's real background instead,
-/// with none of the encoder's colour loss.
+/// leaving those positions undrawn shows the terminal's real background
+/// instead, with none of the encoder's colour loss.
 ///
-/// `rgb` has to be a colour the encoder can hit exactly (`sixel_snap`).
-/// None when the picture has no such colour, and so nothing to drop.
-pub fn sixel_drop_colour(data: &str, rgb: [u8; 3]) -> Option<String> {
-    if !data.starts_with("\x1bP") {
+/// Which positions those are is read from `alpha`, the picture as it was
+/// before it was flattened. Asking the palette instead would take the
+/// picture's own pixels with it wherever it happens to be the colour of
+/// the background, and they would show whatever was on the screen before.
+///
+/// None when nothing was transparent, and so nothing has to change.
+pub fn sixel_blank_transparent(
+    data: &str,
+    alpha: &RgbaImage,
+    flattened_onto: [u8; 3],
+) -> Option<String> {
+    if !data.starts_with("\x1bP") || alpha.pixels().all(|p| p.0[3] != 0) {
         return None;
     }
     let b = data.as_bytes();
-    let targets = indices_of_colour(data, sixel_percent(rgb));
-    if targets.is_empty() {
-        return None;
-    }
+    // The parts that were flattened rather than left undrawn are painted
+    // the encoder's nearest colour, which keeps five bits a channel and so
+    // cannot be the background exactly: white comes out at 248. The format
+    // itself is kinder, so that one palette entry is written out as the
+    // colour actually wanted, and those parts stop showing as a paler
+    // shape around the picture. Anything else quantised to the same entry
+    // moves by a few levels, which is not enough to see.
+    let want = as_percent(flattened_onto);
+    let exact = nearest_index(data, want);
     let mut out = String::with_capacity(data.len());
     // P2 = 1: a position this data never sets keeps what the screen had
     out.push_str("\x1bP0;1;0q");
     let mut i = data.find('q')? + 1;
-    // The chosen colour carries on across "$" and "-", so whole bands are
-    // written with no "#n" in front of them at all; what is being drawn
-    // has to be tracked rather than read off the run itself.
-    let mut chosen = None;
+    let (mut x, mut band) = (0u32, 0u32);
+    let mut run: Vec<u8> = Vec::new();
     while i < b.len() {
         match b[i] {
+            0x1b => {
+                // The terminator is ESC and a backslash, and that backslash
+                // is itself in the range a picture byte uses; nothing past
+                // the escape is picture data.
+                write_run(&mut out, &mut run);
+                out.push_str(&data[i..]);
+                return Some(out);
+            }
             b'#' => {
+                write_run(&mut out, &mut run);
                 let mut j = i + 1;
                 let mut index = 0u32;
                 while j < b.len() && b[j].is_ascii_digit() {
                     index = index * 10 + u32::from(b[j] - b'0');
                     j += 1;
                 }
-                if j == i + 1 {
-                    out.push('#');
-                    i += 1;
-                    continue;
-                }
                 if b.get(j) == Some(&b';') {
-                    // "#n;2;r;g;b" defines a colour rather than choosing
-                    // it; every definition is kept, so the indices the
-                    // rest of the data selects still mean the same
                     while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
                         j += 1;
                     }
-                } else {
-                    chosen = Some(index);
+                    if exact == Some(index) {
+                        out.push_str(&format!("#{index};2;{};{};{}", want[0], want[1], want[2]));
+                        i = j;
+                        continue;
+                    }
                 }
+                let j = j.max(i + 1);
                 out.push_str(&data[i..j]);
                 i = j;
             }
-            c if is_sixel_data(c) || c == b'!' => {
-                let start = i;
-                while i < b.len() && (is_sixel_data(b[i]) || b[i] == b'!' || b[i].is_ascii_digit())
-                {
-                    i += 1;
+            c @ (b'$' | b'-') => {
+                write_run(&mut out, &mut run);
+                out.push(char::from(c));
+                x = 0;
+                band += u32::from(c == b'-');
+                i += 1;
+            }
+            b'!' => {
+                let mut j = i + 1;
+                let mut n = 0u32;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    n = n * 10 + u32::from(b[j] - b'0');
+                    j += 1;
                 }
-                if chosen.is_some_and(|n| targets.contains(&n)) {
-                    // The run stays where it is: colours are written one
-                    // after another across a band, each carrying on from
-                    // where the last one stopped, so taking a run out
-                    // would pull everything after it leftwards. Only its
-                    // data is replaced, by the sixel that sets no pixel
-                    // and advances exactly as far.
-                    for &c in &b[start..i] {
-                        out.push(if is_sixel_data(c) { '?' } else { char::from(c) });
+                match b.get(j) {
+                    Some(&c) if is_sixel_data(c) => {
+                        for _ in 0..n {
+                            run.push(without_transparent(c, x, band, alpha));
+                            x += 1;
+                        }
+                        i = j + 1;
                     }
-                } else {
-                    out.push_str(&data[start..i]);
+                    _ => {
+                        write_run(&mut out, &mut run);
+                        out.push_str(&data[i..j.min(b.len())]);
+                        i = j;
+                    }
                 }
             }
+            c if is_sixel_data(c) => {
+                run.push(without_transparent(c, x, band, alpha));
+                x += 1;
+                i += 1;
+            }
             c => {
+                write_run(&mut out, &mut run);
                 out.push(char::from(c));
                 i += 1;
             }
         }
     }
+    write_run(&mut out, &mut run);
     Some(out)
-}
-
-/// A byte that draws: one sixel is six pixels of a band, `?` none of them.
-fn is_sixel_data(c: u8) -> bool {
-    (0x3f..=0x7e).contains(&c)
 }
 
 /// Scale a picture to exactly `box_px`, ignoring its shape. Pictures in
@@ -526,106 +591,138 @@ pub fn subsample(
 mod sixel_alpha_tests {
     use super::*;
 
-    /// `#002b36` is not a colour the encoder can hold: five bits a channel
-    /// leaves only multiples of eight.
-    #[test]
-    fn snapping_lands_on_what_the_encoder_can_reproduce() {
-        assert_eq!(sixel_snap([0x00, 0x2b, 0x36]), [0x00, 0x28, 0x30]);
-        assert_eq!(sixel_snap([0xff, 0xff, 0xff]), [0xf8, 0xf8, 0xf8]);
-        assert_eq!(
-            sixel_snap([0x28, 0x30, 0x00]),
-            [0x28, 0x30, 0x00],
-            "already"
-        );
+    /// `alpha` is the picture before it was flattened: 0 where it was
+    /// see-through. Six pixels of a band per byte, one column at a time.
+    fn mask(w: u32, h: u32, clear: &[(u32, u32)]) -> RgbaImage {
+        let mut img = RgbaImage::from_pixel(w, h, Rgba([1, 2, 3, 255]));
+        for (x, y) in clear {
+            img.put_pixel(*x, *y, Rgba([0, 0, 0, 0]));
+        }
+        img
     }
 
     #[test]
-    fn the_flattened_colour_stops_drawing_and_the_rest_is_kept() {
-        // #0 is the flattened-on colour, #1 the picture's own
-        let data = "\x1bPq\"1;1;12;6#0;2;0;16;19#1;2;80;20;20#0!6~$#1!6~-#0~~~$#1~~~\x1b\\";
-        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
+    fn a_see_through_column_stops_drawing_and_the_rest_is_kept() {
+        // one band, six columns; the first column was see-through
+        let alpha = mask(6, 6, &[(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5)]);
+        let data = "\x1bPq\"1;1;6;6#0;2;80;20;20~~~~~~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0, 0x2b, 0x36])
+            .expect("something was see-through");
         assert!(
             out.starts_with("\x1bP0;1;0q"),
             "asks for transparency: {out:?}"
         );
         assert!(
-            !out.contains("#0!6~"),
-            "the flattened run draws nothing: {out:?}"
-        );
-        assert!(!out.contains("#0~~~"), "in every band: {out:?}");
-        assert!(out.contains("#0!6?"), "but still advances as far: {out:?}");
-        assert!(out.contains("#0???"), "in every band: {out:?}");
-        assert!(out.contains("#1!6~"), "the picture is kept: {out:?}");
-        assert!(out.contains("#1~~~"), "in every band: {out:?}");
-        assert_eq!(
-            out.len() - "\x1bP0;1;0q".len(),
-            data.len() - "\x1bPq".len(),
-            "nothing was taken out, so nothing after it shifted: {out:?}"
-        );
-        assert!(
-            out.contains("#0;2;0;16;19"),
-            "definitions stay, so the indices still mean the same: {out:?}"
+            out.contains("?!5~"),
+            "only the first column stops, and what is left is run-length \
+             encoded again: {out:?}"
         );
         assert!(out.ends_with("\x1b\\"), "still terminated: {out:?}");
     }
 
-    /// The chosen colour carries on across "$" and "-", so a band can draw
-    /// without naming a colour at all; those pixels are the flattened
-    /// colour just the same and have to stop drawing too. Real stickers
-    /// come out this way: a run of bands that is nothing but the flattened
-    /// colour is written once and then simply carried on.
+    /// The picture is allowed to be the colour of the background. Only
+    /// where it was see-through does it stop drawing, never because of what
+    /// colour it happens to be.
     #[test]
-    fn a_run_that_inherits_the_colour_is_blanked_too() {
-        let data = "\x1bPq\"1;1;6;24#0;2;0;16;19#1;2;80;20;20#0!6~-!6~-#1!6~-!6~\x1b\\";
-        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
-        assert!(out.contains("#0!6?"), "the run that names it: {out:?}");
-        assert!(
-            out.contains("-!6?-"),
-            "and the band that inherits it: {out:?}"
-        );
-        assert!(
-            out.contains("#1!6~"),
-            "the picture's own colour stays: {out:?}"
-        );
-        assert!(
-            out.ends_with("-!6~\x1b\\"),
-            "as does the band inheriting that: {out:?}"
-        );
+    fn an_opaque_picture_is_never_touched() {
+        let alpha = mask(6, 6, &[]);
+        let data = "\x1bPq\"1;1;6;6#0;2;0;16;19!6~\x1b\\";
+        assert_eq!(sixel_blank_transparent(data, &alpha, [0, 0x2b, 0x36]), None);
     }
 
-    /// A "$" returns to the left of the same band without choosing a
-    /// colour again, so the second pass draws in the first one's colour.
+    /// The chosen colour carries on across "$" and "-", and so does the
+    /// place being drawn: the column resets, the band moves on.
     #[test]
-    fn a_second_pass_over_a_band_inherits_it_as_well() {
-        let data = "\x1bPq\"1;1;6;6#1;2;80;20;20#0;2;0;16;19#0!6~$!6~\x1b\\";
-        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
-        assert!(
-            out.contains("#0!6?$!6?"),
-            "both passes stop drawing: {out:?}"
-        );
+    fn the_position_is_followed_across_bands_and_passes() {
+        // 6 wide, two bands; the whole second band was see-through
+        let clear: Vec<(u32, u32)> = (0..6).flat_map(|x| (6..12).map(move |y| (x, y))).collect();
+        let alpha = mask(6, 12, &clear);
+        let data = "\x1bPq\"1;1;6;12#0;2;80;20;20!6~-!6~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0, 0x2b, 0x36])
+            .expect("the second band was see-through");
+        assert!(out.contains("!6~-"), "the first band still draws: {out:?}");
+        assert!(out.ends_with("!6?\x1b\\"), "the second does not: {out:?}");
     }
 
     #[test]
-    fn a_picture_without_that_colour_is_left_alone() {
-        let data = "\x1bPq\"1;1;6;6#1;2;80;20;20#1!6~\x1b\\";
-        assert_eq!(sixel_drop_colour(data, [0x00, 0x28, 0x30]), None);
+    fn a_second_pass_over_a_band_is_followed_too() {
+        let alpha = mask(6, 6, &[(3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5)]);
+        let data = "\x1bPq\"1;1;6;6#0;2;80;20;20!6~$#1;2;10;10;10!6~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0, 0x2b, 0x36])
+            .expect("a column was see-through");
+        assert_eq!(
+            out.matches("~~~?~~").count(),
+            2,
+            "both passes stop at the same column: {out:?}"
+        );
     }
 
-    /// `#1` must not match `#12`: the whole run of digits is the index.
+    /// The terminator is ESC and a backslash, and 0x5c is in the middle of
+    /// the range a picture byte uses; blanking it would leave the picture
+    /// unterminated, which foot draws anyway and xterm does not.
     #[test]
-    fn an_index_is_not_a_prefix_of_another() {
-        // 0x28 is written as 16 hundredths, and index 1 is a different grey
-        let data = "\x1bPq\"1;1;6;6#1;2;20;20;20#12;2;16;16;16#1!6~$#12!6~\x1b\\";
-        let out = sixel_drop_colour(data, [0x28, 0x28, 0x28]).expect("index 12 is in it");
-        assert!(out.contains("#1!6~"), "index 1 is kept: {out:?}");
-        assert!(!out.contains("#12!6~"), "index 12 draws nothing: {out:?}");
-        assert!(out.contains("#12!6?"), "but still advances: {out:?}");
+    fn the_terminator_survives_being_last() {
+        let clear: Vec<(u32, u32)> = (0..6).flat_map(|x| (0..6).map(move |y| (x, y))).collect();
+        let alpha = mask(6, 6, &clear);
+        let data = "\x1bPq\"1;1;6;6#0;2;80;20;20!6~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0, 0x2b, 0x36]).expect("all see-through");
+        assert!(out.contains("!6?"), "nothing draws: {out:?}");
+        assert!(out.ends_with("\x1b\\"), "still terminated: {out:?}");
+    }
+
+    /// The encoder keeps five bits a channel, so the parts of a picture
+    /// that were flattened onto the background come out near it rather than
+    /// equal to it: white is 97 hundredths, which is 247. Sixel itself
+    /// writes colours in hundredths, where 100 is 255 exactly, so that one
+    /// entry is written out as the colour actually wanted and the flattened
+    /// parts stop showing as a paler shape around the picture.
+    #[test]
+    fn the_flattened_colour_is_written_out_exactly() {
+        let alpha = mask(6, 6, &[(0, 0)]);
+        // #1 is what the encoder made of white, #0 something else entirely
+        let data = "\x1bPq\"1;1;6;6#0;2;20;20;20#1;2;97;97;97#1!6~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0xff, 0xff, 0xff]).expect("see-through");
+        assert!(
+            out.contains("#1;2;100;100;100"),
+            "the flattened colour is written out as white itself: {out:?}"
+        );
+        assert!(
+            out.contains("#0;2;20;20;20"),
+            "the rest is untouched: {out:?}"
+        );
+
+        // and against a background the format cannot hold exactly, it is
+        // still the nearest hundredths rather than the encoder's fifths
+        let data = "\x1bPq\"1;1;6;6#0;2;0;16;19#1;2;80;20;20#0!6~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0x00, 0x2b, 0x36]).expect("see-through");
+        assert!(
+            out.contains("#0;2;0;17;21"),
+            "0x2b is 17, 0x36 is 21: {out:?}"
+        );
     }
 
     #[test]
     fn anything_that_is_not_a_sixel_is_refused() {
-        assert_eq!(sixel_drop_colour("", [0, 0x28, 0x30]), None);
-        assert_eq!(sixel_drop_colour("\x1b_Ga=T\x1b\\", [0, 0x28, 0x30]), None);
+        let alpha = mask(6, 6, &[(0, 0)]);
+        assert_eq!(sixel_blank_transparent("", &alpha, [0, 0x2b, 0x36]), None);
+        assert_eq!(
+            sixel_blank_transparent("\x1b_Ga=T\x1b\\", &alpha, [0, 0x2b, 0x36]),
+            None
+        );
+    }
+
+    /// Blanking a wide stretch must not make the picture bigger.
+    #[test]
+    fn a_blanked_stretch_is_run_length_encoded_again() {
+        let clear: Vec<(u32, u32)> = (0..20).flat_map(|x| (0..6).map(move |y| (x, y))).collect();
+        let alpha = mask(20, 6, &clear);
+        let data = "\x1bPq\"1;1;20;6#0;2;80;20;20!20~\x1b\\";
+        let out = sixel_blank_transparent(data, &alpha, [0, 0x2b, 0x36]).expect("all see-through");
+        assert!(out.contains("!20?"), "written as one run: {out:?}");
+        assert!(
+            out.len() <= data.len() + 8,
+            "no bigger than it was: {out:?}"
+        );
     }
 }
 

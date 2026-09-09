@@ -162,6 +162,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             scroll,
         };
     }
+    blank_placeholders(frame);
+}
+
+/// U+2800 stands in for the cells a picture is printed over. It is used
+/// rather than a space because it survives being wrapped, and it draws as
+/// nothing in a font that has it. xterm's does not, and draws a box in its
+/// place, so a block of them shows as hatching wherever a picture has not
+/// been printed over them yet.
+///
+/// By this point the layout is settled and nothing reads these cells by
+/// their symbol again, so what goes to the terminal can be a space. The
+/// frame kept for the debug panel is taken before this, and keeps them.
+fn blank_placeholders(frame: &mut Frame) {
+    let area = frame.area();
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y))
+                && cell.symbol() == "\u{2800}"
+            {
+                cell.set_symbol(" ");
+            }
+        }
+    }
 }
 
 /// The frame as drawn, to the debug log: the layout the compose box got

@@ -123,9 +123,8 @@ fn graphics_query_skipped(args: &Args) -> bool {
 /// transparency onto. The answer is logged either way: a terminal that
 /// does not answer leaves black under the alpha, which is worth knowing
 /// when a picture looks wrong.
-fn blend_from_terminal(app: &mut App) -> Option<[u8; 3]> {
-    let asked = std::time::Instant::now();
-    let bg = term_bg::query(Duration::from_millis(TERM_BG_TIMEOUT_MS));
+fn blend_from_terminal(app: &mut App, bg: Option<[u8; 3]>, took: Duration) -> Option<[u8; 3]> {
+    let asked = std::time::Instant::now() - took;
     match bg {
         Some([r, g, b]) => debug::log(
             "start",
@@ -323,14 +322,25 @@ async fn main() -> Result<()> {
         app.image_picker = None;
     } else {
         // Ask before the picker does: both read stdin raw, and the
-        // picker's own reader would swallow this answer.
+        // picker's own reader would swallow the answers.
+        let asked = std::time::Instant::now();
+        let probe = term_bg::probe(Duration::from_millis(TERM_BG_TIMEOUT_MS));
+        let took = asked.elapsed();
+        app.synchronized_output = probe.synchronized;
+        debug::log(
+            "start",
+            format!(
+                "terminal {} hold a frame back (DEC 2026)",
+                if probe.synchronized { "can" } else { "cannot" }
+            ),
+        );
         image_bg = match term_bg::setting(&config.ui.image_background) {
             None => {
                 app.set_status(format!(
                     "[ui] image_background: {} is not a colour, asking the terminal instead",
                     config.ui.image_background
                 ));
-                blend_from_terminal(&mut app)
+                blend_from_terminal(&mut app, probe.background, took)
             }
             Some(term_bg::Blend::None) => None,
             Some(term_bg::Blend::Fixed(rgb)) => {
@@ -339,7 +349,7 @@ async fn main() -> Result<()> {
             }
             Some(term_bg::Blend::Ask) => match ui::theme::bg_rgb() {
                 Some(rgb) => Some(rgb),
-                None => blend_from_terminal(&mut app),
+                None => blend_from_terminal(&mut app, probe.background, took),
             },
         };
         app.image_picker = match ratatui_image::picker::Picker::from_query_stdio() {

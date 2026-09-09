@@ -2039,6 +2039,18 @@ mod bottom_tests {
             .collect()
     }
 
+    /// Which rows carry a picture's marker cells. The placeholder glyph
+    /// goes to the terminal as a space, so the marker is what says a
+    /// block's cells were reserved.
+    fn marked_rows(app: &mut App, w: u16, h: u16) -> Vec<bool> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).any(|x| crate::app::media_marker(buf[(x, y)].style()).is_some()))
+            .collect()
+    }
+
     /// The pane's last content row: above its bottom border, which sits
     /// above the three-row input box.
     fn bottom_row(rows: &[String]) -> &str {
@@ -2118,8 +2130,17 @@ mod bottom_tests {
             "a square block of cells"
         );
         assert!(
-            rows.iter().any(|r| r.contains('\u{2800}')),
+            marked_rows(&mut app, 80, 20).iter().any(|m| *m),
             "the block's marker cells are not on the pane:\n{}",
+            rows.join("\n")
+        );
+        // U+2800 keeps a block's cells from being wrapped away, but a font
+        // without it draws a box: xterm's does, so a block of them shows as
+        // hatching wherever no picture has been printed over them. None of
+        // them may reach the terminal.
+        assert!(
+            !rows.iter().any(|r| r.contains('\u{2800}')),
+            "a placeholder reached the terminal:\n{}",
             rows.join("\n")
         );
     }
@@ -2196,8 +2217,9 @@ mod bottom_tests {
         })
         .unwrap();
         let buf = t.backend().buffer().clone();
+        // the placeholder goes out as a space, so compare it as one
         let expected: String = (0..text_w)
-            .map(|x| buf[(x, total - 1)].symbol().to_string())
+            .map(|x| buf[(x, total - 1)].symbol().replace('\u{2800}', " "))
             .collect();
         let pane_x = sidebar as usize + 1;
         let actual: String = bottom_row(&rows)

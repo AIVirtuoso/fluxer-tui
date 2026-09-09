@@ -215,11 +215,27 @@ impl<W: Write> TermBackend<W> {
                 if crate::app::is_picture_sentinel(current.underline_color) {
                     self.inner.draw(batch.drain(..))?;
                     if let Some(p) = pictures.get(&(x, y)) {
-                        if y == p.area.y {
+                        // A picture paints everything any of its frames
+                        // paints, so showing the next frame replaces the
+                        // one before outright and nothing has to be
+                        // blanked. Only a different picture arriving at
+                        // these cells needs them cleared first, and
+                        // blanking on every frame is what an animation
+                        // blinks with on a terminal that cannot hold a
+                        // frame back until it is whole.
+                        let arrived = self.shadow.covered[i]
+                            || crate::app::picture_serial(self.shadow.cells[i].underline_color)
+                                != crate::app::picture_serial(current.underline_color);
+                        if y == p.area.y && arrived {
                             // The cells under a picture are never written
-                            // while it is there, and a sixel is cut to whole
-                            // bands: blank them first, so the pixels it
-                            // leaves show the background, not what was there.
+                            // while it is there, and a picture need not
+                            // cover them all: it is cut to whole sixel
+                            // bands, and what it leaves transparent shows
+                            // whatever was on the screen. Blank those first,
+                            // so what shows is the background rather than
+                            // the frame before; the rows the picture paints
+                            // in full are left alone, since blanking them
+                            // only puts a blink in front of the picture.
                             let blanks: Vec<(u16, u16, Cell)> = (p.area.y..p.area.bottom())
                                 .flat_map(|yy| (p.area.x..p.area.right()).map(move |xx| (xx, yy)))
                                 .filter_map(|(xx, yy)| {
@@ -613,6 +629,56 @@ mod tests {
             }
         }
         buf
+    }
+
+    /// A picture paints everything any of its frames paints, so the next
+    /// frame replaces the one before outright and the cells need no
+    /// blanking. Blanking them on every frame is what an animation blinks
+    /// with on a terminal that cannot hold a frame back. Only a different
+    /// picture arriving at those cells needs them cleared first.
+    #[test]
+    fn only_a_different_picture_blanks_the_cells_first() {
+        let sixel: Arc<str> = Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\");
+        let show = |r: &mut Rig, serial: u16, frame: usize| {
+            let mut buf = buffer_of(&["....", "....", "....", "...."]);
+            buf[(1, 1)].set_style(crate::app::picture_sentinel_style(
+                Style::default(),
+                serial,
+                frame,
+            ));
+            for (x, y) in [(2, 1), (1, 2), (2, 2)] {
+                buf[(x, y)].set_skip(true);
+            }
+            r.pictures.borrow_mut().clear();
+            r.pictures.borrow_mut().insert(
+                (1, 1),
+                PicturePrint {
+                    data: sixel.clone(),
+                    area: Rect::new(1, 1, 2, 2),
+                    transmit: None,
+                },
+            );
+            r.draw_buf(buf, None)
+        };
+        let mut r = rig();
+        // it arrives: the cells are cleared of whatever was there
+        let out = show(&mut r, 7, 0);
+        assert!(out.contains("\x1b[3;2H  "), "blanked on arrival: {out:?}");
+
+        // the next frame of the same picture: printed, nothing blanked
+        let out = show(&mut r, 7, 1);
+        assert!(out.contains("\x1bPq"), "still printed: {out:?}");
+        assert!(
+            !out.contains("\x1b[3;2H  "),
+            "no blanking between frames: {out:?}"
+        );
+
+        // a different picture at the same cells: cleared again
+        let out = show(&mut r, 8, 0);
+        assert!(
+            out.contains("\x1b[3;2H  "),
+            "blanked for the new one: {out:?}"
+        );
     }
 
     #[test]
