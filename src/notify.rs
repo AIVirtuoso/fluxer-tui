@@ -61,7 +61,7 @@ pub fn mail_recipient(configured: &str) -> String {
 
 fn desktop_args(n: &Notification) -> Vec<String> {
     vec![
-        "--app-name=fluxer-tui".to_string(),
+        "--app-name=fluxter".to_string(),
         n.title.clone(),
         n.body.clone(),
     ]
@@ -70,7 +70,7 @@ fn desktop_args(n: &Notification) -> Vec<String> {
 fn mail_args(n: &Notification, to: &str) -> Vec<String> {
     vec![
         "-s".to_string(),
-        format!("[fluxer-tui] {}", n.title),
+        format!("[fluxter] {}", n.title),
         to.to_string(),
     ]
 }
@@ -332,7 +332,7 @@ mod tests {
         );
         let got = wait_for(&log).await;
         assert!(
-            got.starts_with("-s\n[fluxer-tui] ann in #general\nzero\nhello there\n\n#general"),
+            got.starts_with("-s\n[fluxter] ann in #general\nzero\nhello there\n\n#general"),
             "{got:?}"
         );
         assert!(rx.try_recv().is_err(), "no complaint when the program ran");
@@ -353,7 +353,7 @@ mod tests {
             tx.clone(),
         );
         let got = wait_for(&log).await;
-        assert_eq!(got, "--app-name=fluxer-tui\nann in #general\nhello there\n");
+        assert_eq!(got, "--app-name=fluxter\nann in #general\nhello there\n");
         send(
             Backend::Desktop,
             n(),
@@ -432,12 +432,9 @@ mod tests {
     #[test]
     fn the_programs_get_the_notification_as_they_expect_it() {
         let d = desktop_args(&n());
-        assert_eq!(
-            d,
-            ["--app-name=fluxer-tui", "ann in #general", "hello there"]
-        );
+        assert_eq!(d, ["--app-name=fluxter", "ann in #general", "hello there"]);
         let m = mail_args(&n(), "zero");
-        assert_eq!(m, ["-s", "[fluxer-tui] ann in #general", "zero"]);
+        assert_eq!(m, ["-s", "[fluxter] ann in #general", "zero"]);
         let body = mail_body(&n());
         assert!(body.starts_with("hello there\n\n#general \u{00B7} Linux Hub \u{00B7} "));
         assert_eq!(mail_recipient("  bob "), "bob");

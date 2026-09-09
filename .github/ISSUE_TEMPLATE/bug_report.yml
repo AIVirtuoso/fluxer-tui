@@ -33,7 +33,7 @@ body:
     id: version
     attributes:
       label: Version / commit
-      description: Output of `fluxer-tui --version` or git commit hash if you built from source.
+      description: Output of `fluxter --version` or git commit hash if you built from source.
   - type: textarea
     id: environment
     attributes:

@@ -56,11 +56,11 @@ fn err_is_http_status(err: &AnyhowError, want: StatusCode) -> bool {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "fluxer-tui",
+    name = "fluxter",
     version = env!("CARGO_PKG_VERSION"),
     long_version = concat!(
         env!("CARGO_PKG_VERSION"),
-        "\nCopyright (C) 2026 polonius-dev and the fluxer-tui contributors",
+        "\nCopyright (C) 2026 polonius-dev and the fluxter contributors",
         "\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>",
         "\nParts of this program stay under the MIT license of the upstream project",
         "\ndogbonewish/fluxer-tui; see LICENSE-MIT.",
@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
     debug::log(
         "start",
         format!(
-            "fluxer-tui {} on {} {}, config {}",
+            "fluxter {} on {} {}, config {}",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
@@ -501,7 +501,7 @@ async fn main() -> Result<()> {
             let drawing = Instant::now();
             if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
                 debug::log("draw", format!("failed: {e}"));
-                eprintln!("fluxer-tui: terminal draw failed: {e}");
+                eprintln!("fluxter: terminal draw failed: {e}");
                 break;
             }
             let took = drawing.elapsed();

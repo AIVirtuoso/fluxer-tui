@@ -177,7 +177,7 @@ act on them.
 
 ```bash
 cargo build --release
-# binary: target/release/fluxer-tui
+# binary: target/release/fluxter
 cargo run --release
 ```
 
@@ -193,7 +193,7 @@ cargo install --git https://github.com/AIVirtuoso/fluxter fluxer-tui
 # a branch: cargo install --git https://github.com/AIVirtuoso/fluxter --branch <branch> fluxer-tui
 ```
 
-This puts `fluxer-tui` in `~/.cargo/bin`. The crate uses edition 2024, so
+This puts `fluxter` in `~/.cargo/bin`. The crate uses edition 2024, so
 Rust 1.85 or newer is needed; the console-mode dependencies (drm, swash)
 are pure Rust, so no C libraries have to be installed. A few tools are
 looked up on PATH at runtime and are optional: `chafa` for text-art
@@ -232,8 +232,8 @@ server counts failed handoff attempts per IP address and refuses every
 handoff request for 15 minutes after the fifth failure, answering
 `INVALID_HANDOFF_CODE` even for a code it has just issued. Failures
 come from a code typed wrongly on the login page, a code from a
-fluxer-tui that had already exited, or an older fluxer-tui (upstream
-0.7.5) polling without the poll secret. fluxer-tui stops as soon as it
+fluxter that had already exited, or an older client (upstream
+0.7.5) polling without the poll secret. fluxter stops as soon as it
 sees this instead of waiting five minutes for nothing. Wait 15 minutes
 without trying again, since every wrong attempt starts the 15 minutes
 over, then run it once more and enter the code exactly as shown.
@@ -241,13 +241,13 @@ over, then run it once more and enter the code exactly as shown.
 You can pass a token once without storing it in config:
 
 ```bash
-target/release/fluxer-tui --token 'YOUR_TOKEN_HERE'
+target/release/fluxter --token 'YOUR_TOKEN_HERE'
 ```
 
 To clear the saved token and exit:
 
 ```bash
-target/release/fluxer-tui/fluxer-tui --logout
+target/release/fluxter --logout
 ```
 
 `--debug` keeps a debug log, `--debug-log FILE` says where, and
@@ -894,7 +894,7 @@ logged once and then every hundredth time.
 ## Console mode (Linux VT, no terminal emulator)
 
 On a plain Linux virtual console there is no terminal emulator to draw
-pictures, so fluxer-tui paints its own screen through DRM/KMS: text with a
+pictures, so fluxter paints its own screen through DRM/KMS: text with a
 real font, colour emoji, custom emoji, animated emoji, image previews and
 GIFs, all on the console. It switches on by itself when `TERM=linux` and
 stdin is a VT (a getty login on tty7, say), and needs:
@@ -934,7 +934,7 @@ instead of a display, which is how the console renderer is tested.
 
 ## License
 
-Copyright (C) 2026 polonius-dev and the fluxer-tui contributors.
+Copyright (C) 2026 polonius-dev and the fluxter contributors.
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the

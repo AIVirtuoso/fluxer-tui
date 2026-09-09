@@ -9,7 +9,7 @@ homepage = "https://github.com/AIVirtuoso/fluxter"
 readme = "README.md"
 
 [[bin]]
-name = "fluxer-tui"
+name = "fluxter"
 path = "src/main.rs"
 
 [dependencies]

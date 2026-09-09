@@ -57,12 +57,12 @@ jobs:
       - name: copy binary + verify
         run: |
           mkdir -p cross-powerpc/out
-          cp cross-powerpc/target/${{ env.TARGET }}/release/fluxer-tui cross-powerpc/out/fluxer-tui
-          file cross-powerpc/out/fluxer-tui
-          ls -lh cross-powerpc/out/fluxer-tui
+          cp cross-powerpc/target/${{ env.TARGET }}/release/fluxter cross-powerpc/out/fluxter
+          file cross-powerpc/out/fluxter
+          ls -lh cross-powerpc/out/fluxter
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fluxer-tui-powerpc-linux-gnu
-          path: cross-powerpc/out/fluxer-tui
+          name: fluxter-powerpc-linux-gnu
+          path: cross-powerpc/out/fluxter
