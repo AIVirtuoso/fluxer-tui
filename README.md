@@ -722,7 +722,7 @@ close. The profile of a selected message's author is on **u** now.
 | **i** | Jump to **Input** (text channel, if you can send). |
 | **p** | **Pings**: the messages that mentioned you, newest first, from every community and direct message (see "Interface overview"). **↑** / **↓** move, **Enter** jumps to one, **x** dismisses it, **X** dismisses all, **R** reloads, **Esc** / **q** close. |
 | **Enter** | On a **link** channel: open URL in browser. On a **text** channel: jump to **Input**. |
-| **Esc** | Clear message selection; focus **Channels**. |
+| **Esc** | Clear message selection; focus **Messages**. |
 | **↑** / **k** | Move selection / scroll (depends on focus; see below). |
 | **↓** / **j** | Move selection / scroll (depends on focus). |
 | **PageUp** | Scroll message list up (larger step). |
@@ -794,7 +794,7 @@ Edited messages show **(edited)** in dim italics after the timestamp when the AP
 | **Ctrl+Z** / **Ctrl+Y** | Undo / redo. |
 | `/debug`, `/debug save`, `/debug frame` | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging"). |
 | **Ctrl+U** | Clear the whole input line. |
-| **Esc** | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Channels**. |
+| **Esc** | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Messages**. |
 | **:** (colon) | Start **custom emoji** autocomplete (server emojis + unicode picker). |
 | **@** | Start **@mention** autocomplete (users/roles in guilds; DMs use recipients). Triggers loading full member list from the API only when needed. |
 
