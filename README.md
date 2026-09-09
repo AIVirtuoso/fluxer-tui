@@ -374,7 +374,7 @@ been run.
 | --- | --- | --- |
 | **foot** | sixel | Everything in this README has been used on it. The transparency was checked against the screen pixel by pixel. |
 | **Linux console** (a tty, no X or Wayland) | the client draws them itself through DRM | Used regularly; see "Console mode" below. |
-| **xterm** | sixel, once told to be a VT340 | Used with pictures, stickers and animations, and checked against the screen. It leaves unset sixel positions alone, so transparency works; it cannot hold a frame back until it is whole, so a large picture can be caught part-drawn. Needs the resources below. |
+| **xterm** | sixel, once told to be a VT340 | Used with pictures, stickers and animations, and checked against the screen. It leaves unset sixel positions alone, so transparency works; it cannot hold a frame back until it is whole, so a large picture can be caught part-drawn. It has no coloured underlines (SGR 58) either, which the client is careful never to rely on. Needs the resources below. |
 | **tmux** | whatever tmux itself manages; halfblocks when it does no sixel | Only used for the project's own headless tests, where it comes out as halfblocks. |
 | kitty, iTerm2 | their own protocols, which carry transparency | Never tried. Nothing has to be flattened on these, so `[ui] image_background` does nothing at all. |
 | WezTerm, Konsole, mlterm, Contour, mintty | sixel | Never tried. |
