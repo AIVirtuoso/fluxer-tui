@@ -750,8 +750,8 @@ Changing channels marks read state for the new channel when applicable.
 
 | Key | Action |
 |-----|--------|
-| **↑** / **k** | With **message select mode** on: previous message. Otherwise: scroll up a few lines. |
-| **↓** / **j** | With **message select mode** on: next message. Otherwise: scroll down a few lines. |
+| **↑** / **k** | With **message select mode** on: previous message; the pane scrolls to it once it would go off the top. Otherwise: scroll up a few lines. |
+| **↓** / **j** | With **message select mode** on: next message; the pane scrolls to it once it would go off the bottom. Otherwise: scroll down a few lines. |
 | **s** | **Select** mode: select the latest message (start of thread for reply / react / forward). |
 | **G** | Jump to the **newest** message (also from the Servers and Channels focus). While you are scrolled up, the view stays on the message you are reading as new messages arrive or older ones load. |
 | **y** / **Ctrl+C** | **Copy** the selected message: its text, and the link of each file on it, one per line. It goes to the system clipboard through `wl-copy` (Wayland) or `xclip` (X11) when one of them is there, and always to the client's own cut buffer, so **Alt+V** in the input pastes it - that is the way on the Linux console, where there is no clipboard. |

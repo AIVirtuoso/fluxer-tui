@@ -2088,6 +2088,75 @@ mod bottom_tests {
         }
     }
 
+    /// Both ends of the selected message on the drawn pane: it must hold
+    /// the whole of a message that fits on it.
+    fn assert_selection_on_screen(app: &mut App, w: u16, h: u16, what: &str) {
+        let idx = app.selected_message_index.expect("a selection");
+        let id = app.active_messages()[idx].id.clone();
+        let rows = draw(app, w, h);
+        for token in [format!("m{id} "), format!("end{id}.")] {
+            assert!(
+                rows.iter().any(|r| r.contains(&token)),
+                "{w}x{h}: {what}: message {id} is selected, {token:?} is not on the pane:\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+
+    /// Walking the selection through the history keeps the selected
+    /// message on the screen. Selecting a message that is grouped under
+    /// the one before it adds a timestamp row, so the pane's content
+    /// changes height at the edge of every group; the anchor that keeps a
+    /// reader in place when a message arrives must not put the view back
+    /// and leave the selection off the pane.
+    #[test]
+    fn the_selection_stays_on_screen_while_walking_the_history() {
+        for (w, h) in [(100u16, 30u16), (80, 20), (60, 24)] {
+            let mut app = app_with(&["c1"]);
+            for n in 1..=60 {
+                app.upsert_message(msg(n, "c1"));
+            }
+            draw(&mut app, w, h);
+            // s: select the newest message
+            let count = app.active_messages().len();
+            app.selected_message_index = Some(count - 1);
+            app.clamp_scroll_to_selected_message();
+            assert_selection_on_screen(&mut app, w, h, "s");
+            for _ in 1..count {
+                app.move_selected_message(-1);
+                assert_selection_on_screen(&mut app, w, h, "up");
+            }
+            assert_eq!(app.selected_message_index, Some(0));
+            for _ in 1..count {
+                app.move_selected_message(1);
+                assert_selection_on_screen(&mut app, w, h, "down");
+            }
+            assert_eq!(app.selected_message_index, Some(count - 1));
+        }
+    }
+
+    /// Selecting a message that is off the pane brings it on, even when
+    /// it is grouped under the message before it and selecting it is
+    /// what changes the pane's height.
+    #[test]
+    fn selecting_a_message_off_the_pane_scrolls_to_it() {
+        let (w, h) = (100u16, 30u16);
+        let mut app = app_with(&["c1"]);
+        for n in 1..=60 {
+            app.upsert_message(msg(n, "c1"));
+        }
+        draw(&mut app, w, h);
+        // 32 follows 31 from the same author within five minutes
+        let index = app
+            .active_messages()
+            .iter()
+            .position(|m| m.id == "32")
+            .expect("message 32");
+        app.selected_message_index = Some(index);
+        app.clamp_scroll_to_selected_message();
+        assert_selection_on_screen(&mut app, w, h, "selected off the pane");
+    }
+
     /// A sticker on a message is named in the pane, and takes a block of
     /// cells for its picture where the terminal draws pictures.
     #[test]
