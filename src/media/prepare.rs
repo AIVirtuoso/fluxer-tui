@@ -615,6 +615,103 @@ mod tests {
         );
     }
 
+    /// What the terminal ends up with, worked through: the cells the
+    /// picture does not cover are blanked, then the picture draws, and a
+    /// position it never draws keeps what was there. Show one picture,
+    /// then another over it, and nothing of the first may be left. This is
+    /// the sticker picker scrolled from one sticker to the next.
+    #[test]
+    fn a_picture_shown_over_another_leaves_nothing_of_it() {
+        const JUNK: u8 = 9;
+        const BG: u8 = 0;
+        let (cols, rows) = (8u16, 3u16);
+        let cell = (10u32, 20u32);
+        let mut picker = Picker::from_fontsize((cell.0 as u16, cell.1 as u16));
+        picker.set_protocol_type(ProtocolType::Sixel);
+        // two stickers of different shapes, each see-through around itself
+        let sticker = |inset: u32| {
+            let mut img = image::RgbaImage::from_pixel(80, 60, image::Rgba([0, 0, 0, 0]));
+            for (x, y, px) in img.enumerate_pixels_mut() {
+                if x >= inset && x < 80 - inset && y >= inset / 2 && y < 60 - inset / 2 {
+                    *px = image::Rgba([200, 60, 60, 255]);
+                }
+            }
+            let mut out = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let shown = |bytes: &[u8]| {
+            let slot = MediaSlot::new(
+                "https://x/p.png".to_string(),
+                cols,
+                rows,
+                MediaKind::Picture,
+            );
+            let (frames, _) = prepare_pictures(
+                Some(bytes),
+                &slot,
+                Some(&picker),
+                false,
+                cell,
+                Some(Flatten {
+                    colour: [0, 0x2b, 0x36],
+                    drop: true,
+                }),
+            )
+            .unwrap();
+            let Picture::Terminal(tp) = &frames.frames[0] else {
+                panic!()
+            };
+            let out = tp.printout(0, rows, cell.1, None).unwrap();
+            (tp.area(), out.covered, out.rows[0].1.clone())
+        };
+
+        let (w, h) = (80usize, 60usize);
+        let mut screen = vec![JUNK; w * h];
+        let mut drew_last = vec![false; w * h];
+        for (mark, bytes) in [(1u8, sticker(4)), (2u8, sticker(16))] {
+            let (area, covered, data) = shown(&bytes);
+            // the backend blanks every cell the picture does not cover
+            for r in 0..area.height as usize {
+                for c in 0..area.width as usize {
+                    if covered
+                        .get(r * area.width as usize + c)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    for y in r * cell.1 as usize..(r + 1) * cell.1 as usize {
+                        for x in c * cell.0 as usize..(c + 1) * cell.0 as usize {
+                            if x < w && y < h {
+                                screen[y * w + x] = BG;
+                            }
+                        }
+                    }
+                }
+            }
+            // then the picture draws, and only where it draws
+            let (dw, dh, px) = decode_sixel(&data);
+            drew_last.fill(false);
+            for y in 0..dh.min(h) {
+                for x in 0..dw.min(w) {
+                    if px[y * dw + x].is_some() {
+                        screen[y * w + x] = mark;
+                        drew_last[y * w + x] = true;
+                    }
+                }
+            }
+        }
+        let stale = (0..w * h)
+            .filter(|i| !drew_last[*i] && screen[*i] != BG)
+            .count();
+        assert_eq!(
+            stale, 0,
+            "pixels the second sticker does not draw still show something older"
+        );
+    }
+
     #[test]
     fn terminal_mode_encodes_for_the_protocol_at_the_block_size() {
         let mut picker = Picker::from_fontsize((10, 20));

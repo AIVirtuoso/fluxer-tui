@@ -566,14 +566,13 @@ mod tests {
             rows[(bottom - 2) as usize].contains("shot.png"),
             "{rows:#?}"
         );
-        assert!(
-            rows[(bottom - 5) as usize].contains('\u{2800}'),
-            "{rows:#?}"
-        );
-        assert!(
-            rows[(bottom - 6) as usize].contains('\u{2800}'),
-            "{rows:#?}"
-        );
+        // the placeholder goes out as a space; the marker is what says the
+        // thumbnail's cells were reserved
+        let marked = |y: u16| {
+            (0..buf.area.width).any(|x| crate::app::media_marker(buf[(x, y)].style()).is_some())
+        };
+        assert!(marked(bottom - 5), "{rows:#?}");
+        assert!(marked(bottom - 6), "{rows:#?}");
         assert!(rows[(bottom - 7) as usize].contains("Input"), "{rows:#?}");
     }
 
