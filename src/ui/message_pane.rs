@@ -560,9 +560,12 @@ fn build_message_lines(
     messages: &[crate::api::types::MessageResponse],
     text_w: u16,
     pane_rows: u16,
-) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>, Vec<usize>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut line_ranges = vec![(0usize, 0usize); messages.len()];
+    // the message whose header names this one's author: itself, unless it
+    // is grouped under another from the same person
+    let mut group_head: Vec<usize> = (0..messages.len()).collect();
     let mut prev_author_id: Option<&str> = None;
     let mut prev_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
     let margin = Margin {
@@ -614,6 +617,9 @@ fn build_message_lines(
                 (Some(prev), Some(cur)) => (cur - prev).num_minutes().abs() < 5,
                 _ => false,
             };
+        if within_group && idx > 0 {
+            group_head[idx] = group_head[idx - 1];
+        }
 
         let mention = app.message_highlights_me(message);
         let block_style = if mention {
@@ -686,21 +692,12 @@ fn build_message_lines(
             ));
         } else if within_group && !is_selected_msg {
             // grouped under the previous message: no header
-        } else if within_group && is_selected_msg {
-            let timestamp = format_timestamp(&message.timestamp, clock_12h);
-            let mut hdr = vec![Span::styled(
-                format!("[{timestamp}] "),
-                crate::ui::theme::dim_style(),
-            )];
-            if message_was_edited(message) {
-                hdr.push(edited_span());
-            }
-            rows.push(BlockRow {
-                spans: hdr,
-                style: header_style,
-                kind: RowKind::Header,
-            });
         } else {
+            // The selected message carries a header of its own even when
+            // it is grouped under one from the same person, so the pane
+            // always names whoever wrote the message the reader is on:
+            // the one above it that would have named them may be off the
+            // top of the pane.
             rows.push(header_row(
                 message,
                 &author,
@@ -904,7 +901,9 @@ fn build_message_lines(
             rows.push(body_row(reaction_spans));
         }
 
-        let avatar_slot = if margin.avatars && !within_group {
+        // the header the avatar's two rows hang off: every message that
+        // has one, grouped or not
+        let avatar_slot = if margin.avatars && (!within_group || is_selected_msg) {
             Some(app.register_media_slot(app.avatar_slot(
                 gid.as_deref(),
                 &message.author,
@@ -925,7 +924,7 @@ fn build_message_lines(
         line_ranges[idx] = (block_start, lines.len());
     }
 
-    (lines, line_ranges)
+    (lines, line_ranges, group_head)
 }
 
 /// Rows each line takes at `text_w`. Lines are wrapped before they get
@@ -1022,6 +1021,9 @@ pub struct PaneLayout {
     /// starts, `cum[lines.len()]` the body's height.
     pub cum: Vec<u32>,
     pub line_ranges: Vec<(usize, usize)>,
+    /// For each message, the one whose header names its author: itself,
+    /// or the message it is grouped under.
+    pub group_head: Vec<usize>,
     media_slots: Vec<crate::app::MediaSlot>,
     emoji_slots: Vec<String>,
     emoji_wants: Vec<(String, bool)>,
@@ -1073,7 +1075,7 @@ pub fn pane_layout(
     }
     app.media_slots.borrow_mut().clear();
     app.custom_emoji_slots.borrow_mut().clear();
-    let (lines, line_ranges) = build_message_lines(app, messages, text_w, pane_rows);
+    let (lines, line_ranges, group_head) = build_message_lines(app, messages, text_w, pane_rows);
     let heights = paragraph_line_heights(&lines, text_w);
     let mut cum = Vec::with_capacity(lines.len() + 1);
     cum.push(0u32);
@@ -1085,6 +1087,7 @@ pub fn pane_layout(
         lines,
         cum,
         line_ranges,
+        group_head,
         media_slots: app.media_slots.borrow().clone(),
         emoji_slots: app.custom_emoji_slots.borrow().clone(),
         emoji_wants: app.custom_emoji_wanted.borrow().clone(),
@@ -1582,6 +1585,48 @@ fn render_messages(frame: &mut Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false })
         .scroll((offset, 0));
     frame.render_widget(paragraph, area);
+
+    // The selected message carries a header of its own inside a group,
+    // and the author's picture with it, for when the header that names
+    // them has been scrolled off the top. While that one is on the pane
+    // as well the picture would be the same face twice, so drop the
+    // marker cells of this one and leave the margin blank: the layout
+    // cannot decide it, having no idea where the pane is scrolled to.
+    let margin = Margin {
+        avatars: app.avatars_enabled(),
+    };
+    if let Some(layout) = &layout
+        && margin.avatars
+        && let Some(selected) = app.selected_message_index
+        && layout
+            .group_head
+            .get(selected)
+            .is_some_and(|&head| head != selected)
+        && let Some(head_row) = block_top_row(layout, pre_rows, layout.group_head[selected])
+        && let Some(selected_row) = block_top_row(layout, pre_rows, selected)
+        && head_row >= top
+        && let Some(down) = selected_row.checked_sub(top)
+        && down < inner.height as u32
+    {
+        // the avatar hangs off the header row and the one under it
+        let right = (inner.x + margin.width(RowKind::Header) as u16).min(inner.x + inner.width);
+        let y0 = inner.y + down as u16;
+        let buf = frame.buffer_mut();
+        for y in y0..y0.saturating_add(2).min(inner.y + inner.height) {
+            for x in inner.x..right {
+                if crate::app::media_marker(buf[(x, y)].style()).is_some() {
+                    buf[(x, y)]
+                        .set_style(Style::default().underline_color(ratatui::style::Color::Reset));
+                }
+            }
+        }
+    }
+}
+
+/// The pane row a message's block starts on.
+fn block_top_row(layout: &PaneLayout, pre_rows: u32, index: usize) -> Option<u32> {
+    let &(b0, _) = layout.line_ranges.get(index)?;
+    Some(pre_rows + layout.cum.get(b0).copied()?)
 }
 
 /// Draw custom emoji pictures over the marked placeholder cells the paragraph
@@ -2086,6 +2131,154 @@ mod bottom_tests {
                 assert_newest_at_bottom(&mut app, w, h, n);
             }
         }
+    }
+
+    /// Both ends of the selected message on the drawn pane: it must hold
+    /// the whole of a message that fits on it.
+    fn assert_selection_on_screen(app: &mut App, w: u16, h: u16, what: &str) {
+        let idx = app.selected_message_index.expect("a selection");
+        let id = app.active_messages()[idx].id.clone();
+        let rows = draw(app, w, h);
+        for token in [format!("m{id} "), format!("end{id}.")] {
+            assert!(
+                rows.iter().any(|r| r.contains(&token)),
+                "{w}x{h}: {what}: message {id} is selected, {token:?} is not on the pane:\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+
+    /// Walking the selection through the history keeps the selected
+    /// message on the screen. Selecting a message that is grouped under
+    /// the one before it adds a timestamp row, so the pane's content
+    /// changes height at the edge of every group; the anchor that keeps a
+    /// reader in place when a message arrives must not put the view back
+    /// and leave the selection off the pane.
+    #[test]
+    fn the_selection_stays_on_screen_while_walking_the_history() {
+        for (w, h) in [(100u16, 30u16), (80, 20), (60, 24)] {
+            let mut app = app_with(&["c1"]);
+            for n in 1..=60 {
+                app.upsert_message(msg(n, "c1"));
+            }
+            draw(&mut app, w, h);
+            // s: select the newest message
+            let count = app.active_messages().len();
+            app.selected_message_index = Some(count - 1);
+            app.clamp_scroll_to_selected_message();
+            assert_selection_on_screen(&mut app, w, h, "s");
+            for _ in 1..count {
+                app.move_selected_message(-1);
+                assert_selection_on_screen(&mut app, w, h, "up");
+            }
+            assert_eq!(app.selected_message_index, Some(0));
+            for _ in 1..count {
+                app.move_selected_message(1);
+                assert_selection_on_screen(&mut app, w, h, "down");
+            }
+            assert_eq!(app.selected_message_index, Some(count - 1));
+        }
+    }
+
+    /// Selecting a message that is off the pane brings it on, even when
+    /// it is grouped under the message before it and selecting it is
+    /// what changes the pane's height.
+    #[test]
+    fn selecting_a_message_off_the_pane_scrolls_to_it() {
+        let (w, h) = (100u16, 30u16);
+        let mut app = app_with(&["c1"]);
+        for n in 1..=60 {
+            app.upsert_message(msg(n, "c1"));
+        }
+        draw(&mut app, w, h);
+        // 32 follows 31 from the same author within five minutes
+        let index = app
+            .active_messages()
+            .iter()
+            .position(|m| m.id == "32")
+            .expect("message 32");
+        app.selected_message_index = Some(index);
+        app.clamp_scroll_to_selected_message();
+        assert_selection_on_screen(&mut app, w, h, "selected off the pane");
+    }
+
+    /// A message grouped under one from the same person carries no header
+    /// -- until it is the selected one. Then it names its author always,
+    /// and shows their picture only where the header that already names
+    /// them has gone off the top of the pane: one face, never two.
+    #[test]
+    fn the_selected_message_names_its_author_even_when_grouped() {
+        let (w, h) = (100u16, 30u16);
+        let mut app = app_with(&["c1"]);
+        // pictures drawn by our own renderer: avatars on
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        assert!(app.avatars_enabled());
+        for n in 1..=60 {
+            app.upsert_message(msg(n, "c1"));
+        }
+        draw(&mut app, w, h);
+        // 32 follows 31 from bob, within five minutes of it
+        let index = app
+            .active_messages()
+            .iter()
+            .position(|m| m.id == "32")
+            .expect("message 32");
+        app.selected_message_index = Some(index);
+        app.clamp_scroll_to_selected_message();
+
+        // selected from below, so it sits on the top row and the header
+        // naming bob is off the pane: this one needs the picture
+        let rows = draw(&mut app, w, h);
+        let marked = marked_rows(&mut app, w, h);
+        let body = |rows: &[String]| {
+            rows.iter()
+                .position(|r| r.contains("m32 "))
+                .expect("message 32 on the pane")
+        };
+        let at = body(&rows);
+        assert!(
+            !rows.iter().any(|r| r.contains("m31 ")),
+            "message 31 should be off the top of the pane:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows[at - 1].contains("bob#0001"),
+            "the row above the selected message does not name its author:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            marked[at - 1] && marked[at],
+            "no avatar block where the header naming the author is off the pane:\n{}",
+            rows.join("\n")
+        );
+
+        // scrolled back until that header is on the pane as well: it
+        // carries bob's picture, and the selected message must not
+        // repeat it
+        app.scroll_messages_up(6);
+        let rows = draw(&mut app, w, h);
+        let marked = marked_rows(&mut app, w, h);
+        let at = body(&rows);
+        let head = rows
+            .iter()
+            .position(|r| r.contains("m31 "))
+            .expect("message 31 on the pane");
+        assert!(
+            rows[at - 1].contains("bob#0001"),
+            "the selected message stops naming its author once scrolled:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            marked[head - 1],
+            "the header naming the author lost its picture:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            !marked[at - 1] && !marked[at],
+            "the author's picture is drawn twice:\n{}",
+            rows.join("\n")
+        );
     }
 
     /// A sticker on a message is named in the pane, and takes a block of

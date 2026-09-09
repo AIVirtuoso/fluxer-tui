@@ -4501,6 +4501,14 @@ impl App {
         self.clamp_scroll_to_selected_message();
     }
 
+    /// Scroll the pane so the selected message is on it. The pane's
+    /// layout depends on the selection -- a message grouped under the one
+    /// before it gains a timestamp row while it is selected -- so moving
+    /// the selection across the edge of a group changes the content's
+    /// height, which is what the reader anchor takes for a message
+    /// arriving and puts the view back for. Drop the anchor: the scroll
+    /// worked out here is the one to draw, and the next draw anchors on
+    /// it again.
     pub fn clamp_scroll_to_selected_message(&mut self) {
         let (w, h) = self.chafa_viewport;
         if w == 0 || h == 0 {
@@ -4513,6 +4521,7 @@ impl App {
             self.message_scroll_from_bottom,
         ) {
             self.message_scroll_from_bottom = s;
+            self.pane_anchor = None;
         }
     }
 
