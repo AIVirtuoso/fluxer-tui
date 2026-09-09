@@ -686,21 +686,12 @@ fn build_message_lines(
             ));
         } else if within_group && !is_selected_msg {
             // grouped under the previous message: no header
-        } else if within_group && is_selected_msg {
-            let timestamp = format_timestamp(&message.timestamp, clock_12h);
-            let mut hdr = vec![Span::styled(
-                format!("[{timestamp}] "),
-                crate::ui::theme::dim_style(),
-            )];
-            if message_was_edited(message) {
-                hdr.push(edited_span());
-            }
-            rows.push(BlockRow {
-                spans: hdr,
-                style: header_style,
-                kind: RowKind::Header,
-            });
         } else {
+            // The selected message carries a header of its own even when
+            // it is grouped under one from the same person, so the pane
+            // always names whoever wrote the message the reader is on:
+            // the one above it that would have named them may be off the
+            // top of the pane.
             rows.push(header_row(
                 message,
                 &author,
@@ -904,7 +895,9 @@ fn build_message_lines(
             rows.push(body_row(reaction_spans));
         }
 
-        let avatar_slot = if margin.avatars && !within_group {
+        // the header the avatar's two rows hang off: every message that
+        // has one, grouped or not
+        let avatar_slot = if margin.avatars && (!within_group || is_selected_msg) {
             Some(app.register_media_slot(app.avatar_slot(
                 gid.as_deref(),
                 &message.author,
@@ -2155,6 +2148,56 @@ mod bottom_tests {
         app.selected_message_index = Some(index);
         app.clamp_scroll_to_selected_message();
         assert_selection_on_screen(&mut app, w, h, "selected off the pane");
+    }
+
+    /// A message grouped under one from the same person carries no header
+    /// -- until it is the selected one. Then it names its author and shows
+    /// their picture like any other, because the header that would have
+    /// named them can be off the top of the pane.
+    #[test]
+    fn the_selected_message_names_its_author_even_when_grouped() {
+        let (w, h) = (100u16, 30u16);
+        let mut app = app_with(&["c1"]);
+        // pictures drawn by our own renderer: avatars on
+        app.pixel_mode = true;
+        app.cell_px = (10, 20);
+        assert!(app.avatars_enabled());
+        for n in 1..=6 {
+            app.upsert_message(msg(n, "c1"));
+        }
+        // bob wrote 1 and 2, then 4 and 5: one header each group
+        let naming_bob = |rows: &[String]| rows.iter().filter(|r| r.contains("bob#0001")).count();
+        assert_eq!(naming_bob(&draw(&mut app, w, h)), 2);
+
+        let index = app
+            .active_messages()
+            .iter()
+            .position(|m| m.id == "2")
+            .expect("message 2");
+        app.selected_message_index = Some(index);
+        app.clamp_scroll_to_selected_message();
+        let rows = draw(&mut app, w, h);
+        let marked = marked_rows(&mut app, w, h);
+        let body = rows
+            .iter()
+            .position(|r| r.contains("m2 "))
+            .expect("message 2 on the pane");
+        assert_eq!(
+            naming_bob(&rows),
+            3,
+            "the selected message has no header of its own:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows[body - 1].contains("bob#0001"),
+            "the row above the selected message does not name its author:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            marked[body - 1] && marked[body],
+            "no avatar block on the selected message's header:\n{}",
+            rows.join("\n")
+        );
     }
 
     /// A sticker on a message is named in the pane, and takes a block of
