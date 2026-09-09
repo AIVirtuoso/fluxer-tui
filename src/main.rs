@@ -327,11 +327,18 @@ async fn main() -> Result<()> {
         let probe = term_bg::probe(Duration::from_millis(TERM_BG_TIMEOUT_MS));
         let took = asked.elapsed();
         app.synchronized_output = probe.synchronized;
+        // The pane is scrolled by the terminal only where that cannot be
+        // seen happening: the scroll takes the servers and channels boxes
+        // with it and they are written back in the same frame.
+        terminal
+            .backend_mut()
+            .set_can_hold_frame(probe.synchronized);
         debug::log(
             "start",
             format!(
-                "terminal {} hold a frame back (DEC 2026)",
-                if probe.synchronized { "can" } else { "cannot" }
+                "terminal {} hold a frame back (DEC 2026), so the pane {} scrolled by the terminal",
+                if probe.synchronized { "can" } else { "cannot" },
+                if probe.synchronized { "is" } else { "is not" }
             ),
         );
         image_bg = match term_bg::setting(&config.ui.image_background) {
