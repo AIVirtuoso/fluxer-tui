@@ -393,6 +393,16 @@ that would be seen happening — both boxes flickering on every scroll step —
 so the pane is redrawn instead and the boxes are left alone. The cost is
 that a picture in view is sent again as it moves.
 
+The shift reaches further than the rows it is given: a terminal redraws
+every picture on the screen at the scrolled offset and cuts the result to
+the pane, so a thumbnail staged in the compose box, or a picture on an
+overlay, paints a slice of itself into the rows arriving at the pane's
+edge. Those rows are written back over whatever landed on them, which is
+why they go out even when they hold nothing at all. Without that, slices
+of the picture stayed wherever no text was laid over them — between the
+words of a message, and after the last one — and rode up the pane on
+every further scroll.
+
 ### xterm
 
 On the command line or in `~/.Xresources`; the first two matter, the

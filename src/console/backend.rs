@@ -80,9 +80,20 @@ impl Shadow {
     }
 
     /// The rows of `region`, across the whole width, moved up by `rows`
-    /// (down when negative); the rows that come into view are blank.
+    /// (down when negative); the rows that come into view hold nothing.
+    ///
+    /// Nothing, that is, of what the terminal was told to write there. A
+    /// terminal draws every picture on the screen shifted by the scrolled
+    /// rows and cut to the region, and leaves the pixels of the one it
+    /// copied wherever they fall outside it: so a picture below the region
+    /// paints into the rows arriving at the bottom, and one above it into
+    /// those arriving at the top, while the cells there read blank. What a
+    /// cell may have caught is what the cell `rows` away from it carried,
+    /// wherever that cell was, so the arriving rows take `covered` from
+    /// beyond the region's edge rather than nothing at all.
     fn scroll(&mut self, region: Rect, rows: i32) {
         let w = self.area.width as usize;
+        let height = self.area.height as usize;
         let top = region.y.min(self.area.height) as usize;
         let bottom = region.bottom().min(self.area.height) as usize;
         let h = bottom.saturating_sub(top);
@@ -90,13 +101,17 @@ impl Shadow {
         if w == 0 || h == 0 || n == 0 {
             return;
         }
-        let blank = |cells: &mut [Cell], covered: &mut [bool], y: usize| {
-            for x in 0..w {
-                cells[y * w + x] = Cell::default();
-                covered[y * w + x] = false;
+        // The row an arriving one reads its pixels from lies outside the
+        // region, which the shift below never writes, so it still says
+        // what it did before the scroll.
+        let source = |y: usize| {
+            if rows > 0 {
+                (y + n < height).then_some(y + n)
+            } else {
+                y.checked_sub(n)
             }
         };
-        if rows > 0 {
+        let arriving = if rows > 0 {
             for y in top..bottom - n {
                 let (from, to) = ((y + n) * w, y * w);
                 for x in 0..w {
@@ -104,9 +119,7 @@ impl Shadow {
                     self.covered[to + x] = self.covered[from + x];
                 }
             }
-            for y in bottom - n..bottom {
-                blank(&mut self.cells, &mut self.covered, y);
-            }
+            bottom - n..bottom
         } else {
             for y in (top + n..bottom).rev() {
                 let (from, to) = ((y - n) * w, y * w);
@@ -115,8 +128,24 @@ impl Shadow {
                     self.covered[to + x] = self.covered[from + x];
                 }
             }
-            for y in top..top + n {
-                blank(&mut self.cells, &mut self.covered, y);
+            top..top + n
+        };
+        for y in arriving {
+            let from = source(y).map(|s| s * w);
+            for x in 0..w {
+                self.cells[y * w + x] = Cell::default();
+                self.covered[y * w + x] = match from {
+                    // The cell a picture is printed at is left uncovered,
+                    // since covering it is what tells the next frame to
+                    // blank the picture away first; its pixels are on the
+                    // screen all the same, and they are dragged along with
+                    // the rest.
+                    Some(f) => {
+                        self.covered[f + x]
+                            || crate::app::is_picture_sentinel(self.cells[f + x].underline_color)
+                    }
+                    None => false,
+                };
             }
         }
     }
@@ -954,6 +983,74 @@ mod tests {
             "row 1 rewritten: {out:?}"
         );
         assert!(out.matches('.').count() >= 4, "the covered cells: {out:?}");
+    }
+
+    /// A terminal draws every picture on the screen shifted by the rows a
+    /// region scroll moved, cut to that region, and leaves the pixels of
+    /// the one it copied wherever they fall outside it (measured in foot,
+    /// whose sixels this is about). So a picture below the pane -- the
+    /// compose box's thumbnail -- paints into the row arriving at the
+    /// pane's bottom, and one above it into the row arriving at the top,
+    /// while the cells there say they are blank. Those rows are written
+    /// even when nothing about them changed, or a slice of the thumbnail
+    /// rides up the pane on every scroll and shows through wherever no
+    /// text is laid over it.
+    #[test]
+    fn the_rows_that_arrive_are_written_where_a_picture_lies_beyond_the_edge() {
+        let sentinel = crate::app::picture_sentinel_style(Style::default(), 7, 0);
+        let picture = |y: u16| PicturePrint {
+            data: Arc::from("\x1bPq#0;2;0;0;0#0~~$-\x1b\\"),
+            area: Rect::new(0, y, 6, 1),
+            transmit: None,
+        };
+        let with_picture = |rows: &[&str], y: u16| {
+            let mut buf = buffer_of(rows);
+            buf[(0, y)].set_style(sentinel);
+            for x in 1..6 {
+                buf[(x, y)].set_skip(true);
+            }
+            buf
+        };
+        let region = Rect::new(0, 1, 6, 4);
+
+        // a thumbnail in the compose box, under the pane
+        let mut r = rig();
+        r.pictures.borrow_mut().insert((0, 5), picture(5));
+        let rows = ["status", "aaaaaa", "bbbbbb", "cccccc", "dddddd", "......"];
+        r.draw_buf(with_picture(&rows, 5), None);
+        // the pane scrolls up by one; the row arriving at its bottom is
+        // blank, which is what the backend thinks is there already
+        let rows = ["status", "bbbbbb", "cccccc", "dddddd", "      ", "......"];
+        let out = r.draw_buf(
+            with_picture(&rows, 5),
+            Some(RegionScroll {
+                area: region,
+                rows: 1,
+            }),
+        );
+        assert!(
+            out.contains("\x1b[5;1H      "),
+            "the arriving row is written over the pixels dragged into it: {out:?}"
+        );
+
+        // and the same the other way: a picture above the pane paints into
+        // the row arriving at the top when the pane scrolls back down
+        let mut r = rig();
+        r.pictures.borrow_mut().insert((0, 0), picture(0));
+        let rows = ["......", "bbbbbb", "cccccc", "dddddd", "eeeeee", "input!"];
+        r.draw_buf(with_picture(&rows, 0), None);
+        let rows = ["......", "      ", "bbbbbb", "cccccc", "dddddd", "input!"];
+        let out = r.draw_buf(
+            with_picture(&rows, 0),
+            Some(RegionScroll {
+                area: region,
+                rows: -1,
+            }),
+        );
+        assert!(
+            out.contains("\x1b[2;1H      "),
+            "the row arriving at the top is written too: {out:?}"
+        );
     }
 
     #[test]
