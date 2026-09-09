@@ -305,6 +305,38 @@ fn sixel_percent(rgb: [u8; 3]) -> [u32; 3] {
     rgb.map(|c| (c as u32 * 100 + 127) / 255)
 }
 
+/// Every palette index a sixel defines as `want`. The quantiser can reach
+/// the same colour by more than one route and define it twice, and only
+/// blanking one of them leaves the other painting.
+fn indices_of_colour(data: &str, want: [u32; 3]) -> Vec<u32> {
+    let b = data.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'#' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut index = 0u32;
+        while j < b.len() && b[j].is_ascii_digit() {
+            index = index * 10 + u32::from(b[j] - b'0');
+            j += 1;
+        }
+        if j > i + 1 && b.get(j) == Some(&b';') {
+            let start = i;
+            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+                j += 1;
+            }
+            if defined_colour(&data[start..j]) == Some(want) && !found.contains(&index) {
+                found.push(index);
+            }
+        }
+        i = j.max(i + 1);
+    }
+    found
+}
+
 /// The colour a `#n;2;r;g;b` definition sets, in sixel's own hundredths.
 fn defined_colour(def: &str) -> Option<[u32; 3]> {
     let mut fields = def.trim_start_matches('#').split(';');
@@ -319,7 +351,7 @@ fn defined_colour(def: &str) -> Option<[u32; 3]> {
     Some(rgb)
 }
 
-/// Drop the pixels of one colour from a sixel and ask the terminal to
+/// Blank out the pixels of one colour in a sixel and ask the terminal to
 /// leave those positions alone (`P2 = 1`), so what is already on the
 /// screen shows through them.
 ///
@@ -338,57 +370,77 @@ pub fn sixel_drop_colour(data: &str, rgb: [u8; 3]) -> Option<String> {
         return None;
     }
     let b = data.as_bytes();
-    let want = sixel_percent(rgb);
+    let targets = indices_of_colour(data, sixel_percent(rgb));
+    if targets.is_empty() {
+        return None;
+    }
     let mut out = String::with_capacity(data.len());
     // P2 = 1: a position this data never sets keeps what the screen had
     out.push_str("\x1bP0;1;0q");
     let mut i = data.find('q')? + 1;
-    let mut target = None;
+    // The chosen colour carries on across "$" and "-", so whole bands are
+    // written with no "#n" in front of them at all; what is being drawn
+    // has to be tracked rather than read off the run itself.
+    let mut chosen = None;
     while i < b.len() {
-        if b[i] != b'#' {
-            let start = i;
-            while i < b.len() && b[i] != b'#' {
+        match b[i] {
+            b'#' => {
+                let mut j = i + 1;
+                let mut index = 0u32;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    index = index * 10 + u32::from(b[j] - b'0');
+                    j += 1;
+                }
+                if j == i + 1 {
+                    out.push('#');
+                    i += 1;
+                    continue;
+                }
+                if b.get(j) == Some(&b';') {
+                    // "#n;2;r;g;b" defines a colour rather than choosing
+                    // it; every definition is kept, so the indices the
+                    // rest of the data selects still mean the same
+                    while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+                        j += 1;
+                    }
+                } else {
+                    chosen = Some(index);
+                }
+                out.push_str(&data[i..j]);
+                i = j;
+            }
+            c if is_sixel_data(c) || c == b'!' => {
+                let start = i;
+                while i < b.len() && (is_sixel_data(b[i]) || b[i] == b'!' || b[i].is_ascii_digit())
+                {
+                    i += 1;
+                }
+                if chosen.is_some_and(|n| targets.contains(&n)) {
+                    // The run stays where it is: colours are written one
+                    // after another across a band, each carrying on from
+                    // where the last one stopped, so taking a run out
+                    // would pull everything after it leftwards. Only its
+                    // data is replaced, by the sixel that sets no pixel
+                    // and advances exactly as far.
+                    for &c in &b[start..i] {
+                        out.push(if is_sixel_data(c) { '?' } else { char::from(c) });
+                    }
+                } else {
+                    out.push_str(&data[start..i]);
+                }
+            }
+            c => {
+                out.push(char::from(c));
                 i += 1;
             }
-            out.push_str(&data[start..i]);
-            continue;
         }
-        let mut j = i + 1;
-        let mut index = 0u32;
-        while j < b.len() && b[j].is_ascii_digit() {
-            index = index * 10 + u32::from(b[j] - b'0');
-            j += 1;
-        }
-        if j == i + 1 {
-            out.push('#');
-            i += 1;
-            continue;
-        }
-        if b.get(j) == Some(&b';') {
-            // "#n;2;r;g;b" defines a colour; every definition is kept, so
-            // the indices the rest of the data selects still mean the same
-            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
-                j += 1;
-            }
-            if defined_colour(&data[i..j]) == Some(want) {
-                target = Some(index);
-            }
-            out.push_str(&data[i..j]);
-            i = j;
-            continue;
-        }
-        // "#n" selects a colour; its run ends at the next control
-        let mut end = j;
-        while end < b.len() && !matches!(b[end], b'#' | b'$' | b'-' | 0x1b) {
-            end += 1;
-        }
-        if target != Some(index) {
-            out.push_str(&data[i..end]);
-        }
-        i = end;
     }
-    target?;
     Some(out)
+}
+
+/// A byte that draws: one sixel is six pixels of a band, `?` none of them.
+fn is_sixel_data(c: u8) -> bool {
+    (0x3f..=0x7e).contains(&c)
 }
 
 /// Scale a picture to exactly `box_px`, ignoring its shape. Pictures in
@@ -488,7 +540,7 @@ mod sixel_alpha_tests {
     }
 
     #[test]
-    fn the_flattened_colour_is_dropped_and_the_rest_kept() {
+    fn the_flattened_colour_stops_drawing_and_the_rest_is_kept() {
         // #0 is the flattened-on colour, #1 the picture's own
         let data = "\x1bPq\"1;1;12;6#0;2;0;16;19#1;2;80;20;20#0!6~$#1!6~-#0~~~$#1~~~\x1b\\";
         let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
@@ -496,15 +548,61 @@ mod sixel_alpha_tests {
             out.starts_with("\x1bP0;1;0q"),
             "asks for transparency: {out:?}"
         );
-        assert!(!out.contains("#0!6~"), "the flattened run is gone: {out:?}");
+        assert!(
+            !out.contains("#0!6~"),
+            "the flattened run draws nothing: {out:?}"
+        );
         assert!(!out.contains("#0~~~"), "in every band: {out:?}");
+        assert!(out.contains("#0!6?"), "but still advances as far: {out:?}");
+        assert!(out.contains("#0???"), "in every band: {out:?}");
         assert!(out.contains("#1!6~"), "the picture is kept: {out:?}");
         assert!(out.contains("#1~~~"), "in every band: {out:?}");
+        assert_eq!(
+            out.len() - "\x1bP0;1;0q".len(),
+            data.len() - "\x1bPq".len(),
+            "nothing was taken out, so nothing after it shifted: {out:?}"
+        );
         assert!(
             out.contains("#0;2;0;16;19"),
             "definitions stay, so the indices still mean the same: {out:?}"
         );
         assert!(out.ends_with("\x1b\\"), "still terminated: {out:?}");
+    }
+
+    /// The chosen colour carries on across "$" and "-", so a band can draw
+    /// without naming a colour at all; those pixels are the flattened
+    /// colour just the same and have to stop drawing too. Real stickers
+    /// come out this way: a run of bands that is nothing but the flattened
+    /// colour is written once and then simply carried on.
+    #[test]
+    fn a_run_that_inherits_the_colour_is_blanked_too() {
+        let data = "\x1bPq\"1;1;6;24#0;2;0;16;19#1;2;80;20;20#0!6~-!6~-#1!6~-!6~\x1b\\";
+        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
+        assert!(out.contains("#0!6?"), "the run that names it: {out:?}");
+        assert!(
+            out.contains("-!6?-"),
+            "and the band that inherits it: {out:?}"
+        );
+        assert!(
+            out.contains("#1!6~"),
+            "the picture's own colour stays: {out:?}"
+        );
+        assert!(
+            out.ends_with("-!6~\x1b\\"),
+            "as does the band inheriting that: {out:?}"
+        );
+    }
+
+    /// A "$" returns to the left of the same band without choosing a
+    /// colour again, so the second pass draws in the first one's colour.
+    #[test]
+    fn a_second_pass_over_a_band_inherits_it_as_well() {
+        let data = "\x1bPq\"1;1;6;6#1;2;80;20;20#0;2;0;16;19#0!6~$!6~\x1b\\";
+        let out = sixel_drop_colour(data, [0x00, 0x28, 0x30]).expect("that colour is in it");
+        assert!(
+            out.contains("#0!6?$!6?"),
+            "both passes stop drawing: {out:?}"
+        );
     }
 
     #[test]
@@ -520,7 +618,8 @@ mod sixel_alpha_tests {
         let data = "\x1bPq\"1;1;6;6#1;2;20;20;20#12;2;16;16;16#1!6~$#12!6~\x1b\\";
         let out = sixel_drop_colour(data, [0x28, 0x28, 0x28]).expect("index 12 is in it");
         assert!(out.contains("#1!6~"), "index 1 is kept: {out:?}");
-        assert!(!out.contains("#12!6~"), "index 12 is dropped: {out:?}");
+        assert!(!out.contains("#12!6~"), "index 12 draws nothing: {out:?}");
+        assert!(out.contains("#12!6?"), "but still advances: {out:?}");
     }
 
     #[test]
