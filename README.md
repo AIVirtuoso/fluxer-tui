@@ -681,6 +681,14 @@ show_typing_indicators = true  # who else is typing, in the compose box
 send_typing = true             # tell the channel when you are typing
 ```
 
+Consecutive messages from one person are grouped under a single header,
+so the message the pane opens on often began above its top row - a long
+one you have scrolled into, or one grouped under a message that is now
+off the pane - and nothing on the pane would say who wrote it. The
+pane's title names them while that is so: `Messages ↑ someone`. It takes
+none of the rows, so nothing that was on the pane is pushed off it, and
+it goes again as soon as that message's own header comes into view.
+
 Messages that concern you are highlighted the way the web app does it: a
 message that mentions you (by name, through one of your roles, or with
 @everyone/@here, unless the community's notification settings suppress
