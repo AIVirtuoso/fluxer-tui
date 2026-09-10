@@ -121,6 +121,11 @@ act on them.
   somebody, takes somebody out or leaves it. Before this the client could
   read every conversation it already had and open none, because
   `POST /users/@me/channels` was never called (see "Conversations").
+
+- **Invites, and joining a community.** **Alt+C** takes an invite, makes a
+  community, browses the directory, lists a community's invites or leaves
+  it. The client had no invite handling of any kind, so whatever you were
+  already in was what you got (see "Communities and invites").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -829,6 +834,32 @@ it. Leaving a group is the same call and does take you out of it.
 People joining and leaving a group arrive over the gateway, so a change
 made in another client shows here without a reload.
 
+## Communities and invites
+
+**Alt+C** opens the menu. What it offers depends on where you are: the
+first three are always there, the last two only inside a community.
+
+| Row | What it does |
+| --- | ------------ |
+| **Join with an invite** | Takes a bare code or a pasted link — from this instance or any other, with or without a scheme, and with anything after the code (`?utm=…`, `#top`) ignored. |
+| **Make a community** | Asks for a name and makes it. You are its owner. |
+| **Browse the directory** | The instance's discovery listing. **/** searches it, **Enter** joins straight from the list without an invite. |
+| **Invites to this community** | Every invite you may see. **y** copies its link, **+** makes one to the channel now open, **x** revokes. |
+| **Leave this community** | Leaves it. A community you own cannot be left, and the client says so rather than sending a call the server would refuse. |
+
+### An invite is looked up before it is taken
+
+Typing a code does not join anything. The client fetches the invite first
+and shows what it leads to — the name, the description, how many are
+online of how many members, who made it, when it runs out, and whether
+the membership is temporary — and **Enter** on that takes it. That is one
+extra keystroke and it means nobody joins something whose name they have
+not seen.
+
+An invite made with **+** is a day long with no limit on uses, which is
+what the server itself defaults to, and its link goes on the clipboard as
+soon as it exists.
+
 ## Message formatting
 
 Messages are drawn with the markup Fluxer's own parser understands, so
@@ -1056,6 +1087,8 @@ close. The profile of a selected message's author is on **u** now.
 
 | **Alt+N**               | **Start a conversation** with somebody, or a group with several (see "Conversations").                                                                                                                                                                  |
 | **Alt+G**               | Look after the **group** now open: rename it, add somebody, take somebody out, leave it.                                                                                                                                                                |
+
+| **Alt+C**               | **Communities**: join with an invite, make one, browse the directory, list this community's invites, or leave it (see "Communities and invites").                                                                                                        |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

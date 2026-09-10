@@ -1447,6 +1447,77 @@ pub struct GuildMemberListUpdateEvent {
     pub ops: Vec<MemberListOp>,
 }
 
+/// What `GET /invites/{code}` says about an invite before it is taken.
+/// A group-conversation invite has no `guild`, which is how the two
+/// kinds are told apart.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct InviteResponse {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub guild: Option<GuildPartialResponse>,
+    #[serde(default)]
+    pub channel: Option<ChannelPartialResponse>,
+    #[serde(default)]
+    pub inviter: Option<UserPartialResponse>,
+    #[serde(default)]
+    pub member_count: u32,
+    #[serde(default)]
+    pub presence_count: u32,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub temporary: bool,
+    /// Only on an invite the client made or listed: how many times it
+    /// has been used and how many it may be.
+    #[serde(default)]
+    pub uses: u32,
+    #[serde(default)]
+    pub max_uses: u32,
+}
+
+impl InviteResponse {
+    /// What the invite leads to, for a line of text.
+    pub fn destination(&self) -> String {
+        match (&self.guild, &self.channel) {
+            (Some(guild), _) if !guild.name.is_empty() => guild.name.clone(),
+            (_, Some(channel)) if !channel.name.is_empty() => channel.name.clone(),
+            _ => "a conversation".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GuildPartialResponse {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ChannelPartialResponse {
+    #[serde(default)]
+    pub name: String,
+}
+
+/// One community in the discovery directory.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DiscoveryGuildResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub custom_tags: Vec<String>,
+    #[serde(default)]
+    pub member_count: u32,
+    #[serde(default)]
+    pub online_count: u32,
+}
+
 /// The four kinds of tie between two accounts.
 pub const RELATIONSHIP_FRIEND: i32 = 1;
 pub const RELATIONSHIP_BLOCKED: i32 = 2;
@@ -1600,6 +1671,15 @@ impl<'de> Deserialize<'de> for MessageSearchResponse {
         Ok(Self::Results(Box::new(results)))
     }
 }
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DiscoveryGuildListResponse {
+    #[serde(default)]
+    pub guilds: Vec<DiscoveryGuildResponse>,
+    #[serde(default)]
+    pub total: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

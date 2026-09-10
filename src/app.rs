@@ -22,6 +22,7 @@ use crate::api::types::{
     RELATIONSHIP_BLOCKED, RELATIONSHIP_FRIEND, RELATIONSHIP_INCOMING_REQUEST,
     RELATIONSHIP_OUTGOING_REQUEST, RelationshipResponse,
 };
+use crate::api::types::{DiscoveryGuildResponse, InviteResponse};
 use crate::config::UiSettings;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -939,6 +940,86 @@ impl FriendsInput {
     }
 }
 
+/// Joining, making and leaving communities: one overlay for the four
+/// things a client needs, each a list and a cursor.
+#[derive(Debug)]
+pub struct CommunityView {
+    pub mode: CommunityMode,
+    pub selected: usize,
+    /// Text being typed into the footer, when a row asked for some.
+    pub input: Option<CommunityInput>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CommunityMode {
+    /// The four things: join, make, browse, leave.
+    Menu,
+    /// Communities in the directory, with what was searched for.
+    Discover { query: String, state: DiscoverState },
+    /// A community's own invites, so one can be shared or revoked.
+    Invites {
+        guild_id: String,
+        state: InvitesState,
+    },
+    /// What an invite leads to, looked up before it is taken, so nobody
+    /// joins something they cannot see the name of.
+    Preview { code: String, state: PreviewState },
+}
+
+#[derive(Debug, Clone)]
+pub enum PreviewState {
+    Loading,
+    Ready(Box<InviteResponse>),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum DiscoverState {
+    Idle,
+    Running,
+    Ready(Vec<DiscoveryGuildResponse>),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum InvitesState {
+    Loading,
+    Ready(Vec<InviteResponse>),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum CommunityInput {
+    /// An invite code or link the reader is pasting or typing.
+    JoinCode(String),
+    /// The name of a community to make.
+    NewName(String),
+    /// What to search the directory for.
+    Search(String),
+}
+
+impl CommunityInput {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::JoinCode(t) | Self::NewName(t) | Self::Search(t) => t,
+        }
+    }
+
+    pub fn text_mut(&mut self) -> &mut String {
+        match self {
+            Self::JoinCode(t) | Self::NewName(t) | Self::Search(t) => t,
+        }
+    }
+
+    pub fn prompt(&self) -> &'static str {
+        match self {
+            Self::JoinCode(_) => "Invite code or link",
+            Self::NewName(_) => "Name it",
+            Self::Search(_) => "Look for",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FriendsTab {
     Friends,
@@ -1260,6 +1341,28 @@ impl GroupAction {
     }
 }
 
+/// One row of the community menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommunityAction {
+    Join,
+    Create,
+    Discover,
+    Invites,
+    Leave,
+}
+
+impl CommunityAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Join => "Join with an invite",
+            Self::Create => "Make a community",
+            Self::Discover => "Browse the directory",
+            Self::Invites => "Invites to this community",
+            Self::Leave => "Leave this community",
+        }
+    }
+}
+
 /// Somebody the reader could start talking to.
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -1267,7 +1370,6 @@ pub struct Candidate {
     /// Where the client knows them from, for the row's second column.
     pub note: String,
 }
-
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -1429,6 +1531,11 @@ pub struct App {
     /// Conversations the reader has pinned to the top of the list, from
     /// USER_PINNED_DMS_UPDATE.
     pub pinned_dms: HashSet<String>,
+    /// Joining, making and leaving communities, while that is open.
+    pub community: Option<CommunityView>,
+    /// How many the directory said matched the last search, which can be
+    /// more than the page it handed back.
+    pub discover_total: u32,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1648,6 +1755,8 @@ impl App {
             conversation: None,
             pending_group_add: None,
             pinned_dms: HashSet::new(),
+            community: None,
+            discover_total: 0,
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -5397,26 +5506,25 @@ impl App {
         true
     }
 
+    /// Shut every overlay, so opening one never leaves another under it.
+    /// Every `open_*` starts here.
     fn close_conversation_overlays(&mut self) {
-        self.show_settings = false;
-        self.show_server_notifications = false;
-        self.show_help = false;
-        self.dismiss_image_preview();
-        self.profile = None;
-        self.channel_picker = None;
-        self.pings = None;
-        self.friends = Some(FriendsView {
-            state: if self.relationships.is_empty() {
-                FriendsState::Loading
-            } else {
-                // what arrived at start is shown at once and refreshed
-                // behind it, so the list is never blank for no reason
-                FriendsState::Ready
-            },
+        self.close_overlays();
+    }
+
+    // Alt+C: joining, making and leaving communities
+
+    pub fn open_communities(&mut self) {
+        self.close_overlays();
+        self.community = Some(CommunityView {
+            mode: CommunityMode::Menu,
             selected: 0,
-            tab: FriendsTab::Friends,
             input: None,
         });
+    }
+
+    pub fn dismiss_communities(&mut self) {
+        self.community = None;
     }
 
     pub fn dismiss_friends(&mut self) {
@@ -5793,6 +5901,21 @@ impl App {
         out
     }
 
+    /// Which rows the menu offers. The two that act on a community are
+    /// only there when one is open.
+    pub fn community_actions(&self) -> Vec<CommunityAction> {
+        let mut out = vec![
+            CommunityAction::Join,
+            CommunityAction::Create,
+            CommunityAction::Discover,
+        ];
+        if self.active_guild_id().is_some() {
+            out.push(CommunityAction::Invites);
+            out.push(CommunityAction::Leave);
+        }
+        out
+    }
+
     pub fn open_message_actions(&mut self) -> bool {
         let Some(msg) = self.selected_message() else {
             return false;
@@ -5828,6 +5951,34 @@ impl App {
     pub fn message_actions_move(&mut self, delta: isize) {
         let count = self.message_actions_len();
         if let Some(view) = &mut self.message_actions {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
+    pub fn community_len(&self) -> usize {
+        match self.community.as_ref().map(|v| &v.mode) {
+            Some(CommunityMode::Menu) => self.community_actions().len(),
+            Some(CommunityMode::Discover {
+                state: DiscoverState::Ready(guilds),
+                ..
+            }) => guilds.len(),
+            Some(CommunityMode::Invites {
+                state: InvitesState::Ready(invites),
+                ..
+            }) => invites.len(),
+            // nothing to move through while it is still coming, and the
+            // preview is one thing rather than a list
+            _ => 0,
+        }
+    }
+
+    pub fn community_move(&mut self, delta: isize) {
+        let count = self.community_len();
+        if let Some(view) = &mut self.community {
             view.selected = if count == 0 {
                 0
             } else {
@@ -5901,6 +6052,14 @@ impl App {
             ConversationMode::Group { channel_id } => {
                 self.group_actions(channel_id).get(view.selected).copied()
             }
+            _ => None,
+        }
+    }
+
+    pub fn community_selected_action(&self) -> Option<CommunityAction> {
+        let view = self.community.as_ref()?;
+        match &view.mode {
+            CommunityMode::Menu => self.community_actions().get(view.selected).copied(),
             _ => None,
         }
     }
@@ -6102,7 +6261,12 @@ impl App {
             .cloned()
     }
 
-    /// Shut every overlay, so opening one does not leave another under it.
+    /// Shut every overlay, so opening one never leaves another under it.
+    ///
+    /// The draw chain and the key handler are both an if/else over these,
+    /// so a stale one would shadow whatever was just opened. Every
+    /// `open_*` calls this first, which is why the list has to name them
+    /// all.
     pub fn close_overlays(&mut self) {
         self.show_settings = false;
         self.show_server_notifications = false;
@@ -6115,6 +6279,11 @@ impl App {
         self.pins = None;
         self.saved = None;
         self.reaction_users = None;
+        self.friends = None;
+        self.conversation = None;
+        self.pending_group_add = None;
+        self.community = None;
+        self.search = None;
     }
 
     // Alt+P: the channel's pinned messages
@@ -6660,6 +6829,165 @@ impl App {
             if present {
                 channel.recipients.push(user);
             }
+        }
+    }
+    pub fn community_selected_guild(&self) -> Option<DiscoveryGuildResponse> {
+        let view = self.community.as_ref()?;
+        match &view.mode {
+            CommunityMode::Discover {
+                state: DiscoverState::Ready(guilds),
+                ..
+            } => guilds.get(view.selected).cloned(),
+            _ => None,
+        }
+    }
+
+    pub fn community_selected_invite(&self) -> Option<InviteResponse> {
+        let view = self.community.as_ref()?;
+        match &view.mode {
+            CommunityMode::Invites {
+                state: InvitesState::Ready(invites),
+                ..
+            } => invites.get(view.selected).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Step back out of a list the menu led to, or close it.
+    pub fn community_back(&mut self) {
+        let Some(view) = &mut self.community else {
+            return;
+        };
+        if view.input.is_some() {
+            view.input = None;
+            return;
+        }
+        if matches!(view.mode, CommunityMode::Menu) {
+            self.community = None;
+        } else {
+            view.mode = CommunityMode::Menu;
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_discover_running(&mut self, query: String) {
+        if let Some(view) = &mut self.community {
+            view.mode = CommunityMode::Discover {
+                query,
+                state: DiscoverState::Running,
+            };
+            view.selected = 0;
+            view.input = None;
+        }
+    }
+
+    /// How many the directory said there were in all, which can be more
+    /// than the page that came back.
+    pub fn discover_total(&self) -> u32 {
+        self.discover_total
+    }
+
+    pub fn set_discover_results(&mut self, guilds: Vec<DiscoveryGuildResponse>) {
+        if let Some(view) = &mut self.community
+            && let CommunityMode::Discover { state, .. } = &mut view.mode
+        {
+            *state = DiscoverState::Ready(guilds);
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_discover_failed(&mut self, message: String) {
+        if let Some(view) = &mut self.community
+            && let CommunityMode::Discover { state, .. } = &mut view.mode
+        {
+            *state = DiscoverState::Failed(message);
+        }
+    }
+
+    pub fn open_guild_invites(&mut self, guild_id: String) {
+        if let Some(view) = &mut self.community {
+            view.mode = CommunityMode::Invites {
+                guild_id,
+                state: InvitesState::Loading,
+            };
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_guild_invites(&mut self, for_guild: &str, invites: Vec<InviteResponse>) {
+        if let Some(view) = &mut self.community
+            && let CommunityMode::Invites { guild_id, state } = &mut view.mode
+            && guild_id == for_guild
+        {
+            *state = InvitesState::Ready(invites);
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_guild_invites_failed(&mut self, for_guild: &str, message: String) {
+        if let Some(view) = &mut self.community
+            && let CommunityMode::Invites { guild_id, state } = &mut view.mode
+            && guild_id == for_guild
+        {
+            *state = InvitesState::Failed(message);
+        }
+    }
+
+    pub fn open_invite_preview(&mut self, code: String) {
+        if let Some(view) = &mut self.community {
+            view.mode = CommunityMode::Preview {
+                code,
+                state: PreviewState::Loading,
+            };
+            view.selected = 0;
+            view.input = None;
+        }
+    }
+
+    pub fn set_invite_preview(&mut self, for_code: &str, invite: InviteResponse) {
+        if let Some(view) = &mut self.community
+            && let CommunityMode::Preview { code, state } = &mut view.mode
+            && code == for_code
+        {
+            *state = PreviewState::Ready(Box::new(invite));
+        }
+    }
+
+    pub fn set_invite_preview_failed(&mut self, for_code: &str, message: String) {
+        if let Some(view) = &mut self.community
+            && let CommunityMode::Preview { code, state } = &mut view.mode
+            && code == for_code
+        {
+            *state = PreviewState::Failed(message);
+        }
+    }
+
+    /// The invite the preview is showing, once it has arrived.
+    pub fn previewed_invite(&self) -> Option<InviteResponse> {
+        match self.community.as_ref().map(|v| &v.mode) {
+            Some(CommunityMode::Preview {
+                state: PreviewState::Ready(invite),
+                ..
+            }) => Some((**invite).clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether the community now open belongs to the reader, since an
+    /// owner cannot leave their own.
+    pub fn owns_active_guild(&self) -> bool {
+        self.active_guild_id()
+            .and_then(|id| self.guilds.iter().find(|g| g.id == id))
+            .is_some_and(|g| g.owner_id == self.me.id)
+    }
+
+    /// A whole invite link, for putting on the clipboard.
+    pub fn invite_link(&self, code: &str) -> String {
+        let base = self.discovery.endpoints.webapp.trim_end_matches('/');
+        if base.is_empty() {
+            code.to_string()
+        } else {
+            format!("{base}/invite/{code}")
         }
     }
     // r (as in reply)

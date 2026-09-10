@@ -1,12 +1,13 @@
 use crate::api::types::{
     ChannelPinsResponse, ChannelResponse, CompleteMultipartAttachmentUploadRequest,
-    CompleteMultipartUploadItem, CreateMessageAttachment, CreateMessageRequest, EditMessageRequest,
-    GatewayBotResponse, GuildResponse, HandoffInitiateResponse, HandoffStatusResponse,
-    MessageQuery, MessageResponse, MessageSearchRequest, MessageSearchResponse,
-    PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
-    PresignedAttachmentUploadResponse, RelationshipResponse, SavedMessageEntryResponse,
-    UserGuildSettingsPatch, UserGuildSettingsResponse, UserPartialResponse, UserPrivateResponse,
-    UserSettingsPatch, UserSettingsResponse, WellKnownFluxerResponse,
+    CompleteMultipartUploadItem, CreateMessageAttachment, CreateMessageRequest,
+    DiscoveryGuildListResponse, EditMessageRequest, GatewayBotResponse, GuildResponse,
+    HandoffInitiateResponse, HandoffStatusResponse, InviteResponse, MessageQuery, MessageResponse,
+    MessageSearchRequest, MessageSearchResponse, PresignedAttachmentUploadRequest,
+    PresignedAttachmentUploadRequestItem, PresignedAttachmentUploadResponse, RelationshipResponse,
+    SavedMessageEntryResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
+    UserPartialResponse, UserPrivateResponse, UserSettingsPatch, UserSettingsResponse,
+    WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
@@ -741,6 +742,18 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// What an invite leads to, without taking it.
+    pub async fn invite_info(&self, code: &str) -> Result<InviteResponse> {
+        self.send_json::<(), (), InviteResponse>(
+            Method::GET,
+            &format!("/invites/{code}"),
+            None::<&()>,
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
     /// Search messages. The answer is either a page of results or the
     /// server saying it is still indexing a channel in scope.
     pub async fn search_messages(
@@ -823,6 +836,18 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Take an invite: join the community, or the group conversation.
+    pub async fn accept_invite(&self, code: &str) -> Result<InviteResponse> {
+        self.send_json::<(), serde_json::Value, InviteResponse>(
+            Method::POST,
+            &format!("/invites/{code}"),
+            None::<&()>,
+            Some(&serde_json::json!({})),
+            false,
+        )
+        .await
+    }
+
     /// Accept an incoming request. The same route with a type blocks
     /// instead, which is what `block_user` sends.
     pub async fn accept_friend_request(&self, user_id: &str) -> Result<()> {
@@ -888,6 +913,29 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Make an invite to a channel. `max_age` is in seconds and
+    /// `max_uses` a count, both zero for "no limit".
+    pub async fn create_invite(
+        &self,
+        channel_id: &str,
+        max_age: u32,
+        max_uses: u32,
+    ) -> Result<InviteResponse> {
+        #[derive(Serialize)]
+        struct Body {
+            max_age: u32,
+            max_uses: u32,
+        }
+        self.send_json::<(), Body, InviteResponse>(
+            Method::POST,
+            &format!("/channels/{channel_id}/invites"),
+            None::<&()>,
+            Some(&Body { max_age, max_uses }),
+            false,
+        )
+        .await
+    }
+
     pub async fn add_group_recipient(&self, channel_id: &str, user_id: &str) -> Result<()> {
         self.send_empty::<()>(
             Method::PUT,
@@ -898,12 +946,35 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Every invite of a community that the reader may see. Needs Manage
+    /// Guild.
+    pub async fn guild_invites(&self, guild_id: &str) -> Result<Vec<InviteResponse>> {
+        self.send_json::<(), (), Vec<InviteResponse>>(
+            Method::GET,
+            &format!("/guilds/{guild_id}/invites"),
+            None::<&()>,
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
     pub async fn remove_group_recipient(&self, channel_id: &str, user_id: &str) -> Result<()> {
         self.send_empty::<()>(
             Method::DELETE,
             &format!("/channels/{channel_id}/recipients/{user_id}"),
             None,
             "take them out of the group",
+        )
+        .await
+    }
+
+    pub async fn delete_invite(&self, code: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/invites/{code}"),
+            None,
+            "revoke the invite",
         )
         .await
     }
@@ -929,6 +1000,21 @@ impl FluxerHttpClient {
         .await
     }
 
+    pub async fn create_guild(&self, name: &str) -> Result<GuildResponse> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            name: &'a str,
+        }
+        self.send_json::<(), Body, GuildResponse>(
+            Method::POST,
+            "/guilds",
+            None::<&()>,
+            Some(&Body { name }),
+            false,
+        )
+        .await
+    }
+
     /// Keep a conversation at the top of the list, or let it go.
     pub async fn set_dm_pinned(&self, channel_id: &str, pinned: bool) -> Result<()> {
         let method = if pinned { Method::PUT } else { Method::DELETE };
@@ -941,6 +1027,54 @@ impl FluxerHttpClient {
             } else {
                 "unpin the conversation"
             },
+        )
+        .await
+    }
+
+    /// Leave a community. The reader cannot leave one they own; the
+    /// server says so.
+    pub async fn leave_guild(&self, guild_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/users/@me/guilds/{guild_id}"),
+            None,
+            "leave the community",
+        )
+        .await
+    }
+
+    /// Search the discovery directory.
+    pub async fn discover_guilds(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<DiscoveryGuildListResponse> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "str::is_empty")]
+            query: &'a str,
+            limit: u32,
+        }
+        self.send_json::<Query, (), DiscoveryGuildListResponse>(
+            Method::GET,
+            "/discovery/guilds",
+            Some(&Query {
+                query,
+                limit: limit.clamp(1, 48),
+            }),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Join a community straight from the directory, without an invite.
+    pub async fn join_discoverable_guild(&self, guild_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::POST,
+            &format!("/discovery/guilds/{guild_id}/join"),
+            Some(&serde_json::json!({})),
+            "join the community",
         )
         .await
     }

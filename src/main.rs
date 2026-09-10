@@ -637,6 +637,10 @@ async fn main() -> Result<()> {
                 if let Some(channel_id) = effects.reload_pins {
                     spawn_pins_load(authed_client.clone(), event_tx.clone(), channel_id);
                 }
+                if let Some(guild_id) = effects.reload_invites {
+                    app.open_guild_invites(guild_id.clone());
+                    spawn_guild_invites(authed_client.clone(), event_tx.clone(), guild_id);
+                }
                 if let Some((title, bytes)) = effects.chafa_fallback {
                     let (cols, rows) = app.chafa_preview_cells;
                     spawn_image_chafa_fallback(event_tx.clone(), title, bytes, cols, rows);
@@ -1940,6 +1944,86 @@ fn handle_key_event(
         return;
     }
 
+    if app.community.is_some() {
+        // typing takes the keys while the footer is asking for text
+        if let Some(input) = app.community.as_ref().and_then(|v| v.input.clone()) {
+            match key.code {
+                KeyCode::Esc => app.community_back(),
+                KeyCode::Enter => run_community_input(app, client, event_tx, input),
+                KeyCode::Backspace => {
+                    if let Some(view) = app.community.as_mut()
+                        && let Some(input) = view.input.as_mut()
+                    {
+                        input.text_mut().pop();
+                    }
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(view) = app.community.as_mut()
+                        && let Some(input) = view.input.as_mut()
+                        && input.text().chars().count() < 200
+                    {
+                        input.text_mut().push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.community_back(),
+            KeyCode::Up | KeyCode::Char('k') => app.community_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.community_move(1),
+            KeyCode::PageUp => app.community_move(-8),
+            KeyCode::PageDown => app.community_move(8),
+            KeyCode::Home => app.community_move(isize::MIN / 2),
+            KeyCode::End => app.community_move(isize::MAX / 2),
+            KeyCode::Enter => run_community_action(app, client, event_tx),
+            KeyCode::Char('/') => {
+                if let Some(view) = app.community.as_mut()
+                    && matches!(view.mode, crate::app::CommunityMode::Discover { .. })
+                {
+                    view.input = Some(crate::app::CommunityInput::Search(String::new()));
+                }
+            }
+            KeyCode::Char('+') => {
+                // a new invite is always to the channel now open, which
+                // is the only one the reader has said anything about
+                if let Some(view) = app.community.as_ref()
+                    && matches!(view.mode, crate::app::CommunityMode::Invites { .. })
+                {
+                    match app.active_channel_id() {
+                        Some(channel_id) => {
+                            app.set_status("Making an invite…");
+                            spawn_create_invite(client.clone(), event_tx.clone(), channel_id);
+                        }
+                        None => app.set_status("Open the channel to invite people to first."),
+                    }
+                }
+            }
+            KeyCode::Char('y') => {
+                if let Some(invite) = app.community_selected_invite() {
+                    let link = app.invite_link(&invite.code);
+                    let clipboard = crate::compose::copy_to_system_clipboard(&link);
+                    app.cut_buffer = link;
+                    app.set_status(if clipboard {
+                        "Copied the invite link."
+                    } else {
+                        "Copied the invite link: no clipboard program, Alt+V pastes it."
+                    });
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if let Some(invite) = app.community_selected_invite() {
+                    let guild_id = app.active_guild_id();
+                    app.set_status("Revoking…");
+                    spawn_delete_invite(client.clone(), event_tx.clone(), invite.code, guild_id);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.conversation.is_some() {
         let mode = app.conversation.as_ref().map(|v| v.mode.clone());
         // a rename takes the keys while it is being typed
@@ -2985,6 +3069,21 @@ fn handle_key_event(
                 None => app.set_status("Open a community's channel first."),
             }
         }
+        // Alt+C = join, make, browse or leave a community
+        KeyCode::Char('c') | KeyCode::Char('C')
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            match app.toggle_member_list() {
+                Some((guild_id, channel_id)) => {
+                    send_member_list_subscription(gateway_cmd_tx, guild_id, channel_id);
+                }
+                None => app.set_status("Open a community's channel first."),
+            }
+        }
         // Alt+F = friends, requests and blocked accounts
         KeyCode::Char('f') | KeyCode::Char('F')
             if key.modifiers.contains(KeyModifiers::ALT)
@@ -3178,6 +3277,7 @@ fn handle_key_event(
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
             app.open_search();
+            app.open_communities();
         }
         KeyCode::Char('[') if app.focus == Focus::Messages => {
             try_load_older_messages(app, client, event_tx);
@@ -3502,6 +3602,144 @@ fn spawn_search(
     });
 }
 
+/// Enter on a row of the community menu, or on a list it led to.
+fn run_community_action(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+) {
+    // the invite preview: Enter takes it
+    if let Some(invite) = app.previewed_invite() {
+        let where_ = invite.destination();
+        app.dismiss_communities();
+        app.set_status(format!("Joining {where_}…"));
+        spawn_accept_invite(client.clone(), event_tx.clone(), invite.code);
+        return;
+    }
+    // a community in the directory: Enter joins it
+    if let Some(guild) = app.community_selected_guild() {
+        app.dismiss_communities();
+        app.set_status(format!("Joining {}…", guild.name));
+        spawn_join_discoverable(client.clone(), event_tx.clone(), guild.id);
+        return;
+    }
+    let Some(action) = app.community_selected_action() else {
+        return;
+    };
+    match action {
+        crate::app::CommunityAction::Join => {
+            if let Some(view) = app.community.as_mut() {
+                view.input = Some(crate::app::CommunityInput::JoinCode(String::new()));
+            }
+        }
+        crate::app::CommunityAction::Create => {
+            if let Some(view) = app.community.as_mut() {
+                view.input = Some(crate::app::CommunityInput::NewName(String::new()));
+            }
+        }
+        crate::app::CommunityAction::Discover => {
+            if let Some(view) = app.community.as_mut() {
+                view.mode = crate::app::CommunityMode::Discover {
+                    query: String::new(),
+                    state: crate::app::DiscoverState::Idle,
+                };
+                view.selected = 0;
+            }
+            // an empty search shows what the directory offers at all
+            app.set_discover_running(String::new());
+            spawn_discover(client.clone(), event_tx.clone(), String::new());
+        }
+        crate::app::CommunityAction::Invites => {
+            let Some(guild_id) = app.active_guild_id() else {
+                return;
+            };
+            app.open_guild_invites(guild_id.clone());
+            spawn_guild_invites(client.clone(), event_tx.clone(), guild_id);
+        }
+        crate::app::CommunityAction::Leave => {
+            let Some(guild_id) = app.active_guild_id() else {
+                return;
+            };
+            if app.owns_active_guild() {
+                app.set_status("You own this community; a client cannot leave its own.");
+                return;
+            }
+            app.dismiss_communities();
+            app.set_status("Leaving…");
+            spawn_leave_guild(client.clone(), event_tx.clone(), guild_id);
+        }
+    }
+}
+
+/// Enter on the footer's text: what it does depends on what was asked
+/// for.
+fn run_community_input(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+    input: crate::app::CommunityInput,
+) {
+    match input {
+        crate::app::CommunityInput::JoinCode(text) => {
+            let code = invite_code_from(&text);
+            if code.is_empty() {
+                app.set_status("That does not look like an invite.");
+                return;
+            }
+            // look it up before taking it, so nobody joins something
+            // whose name they have not seen
+            app.open_invite_preview(code.clone());
+            spawn_invite_preview(client.clone(), event_tx.clone(), code);
+        }
+        crate::app::CommunityInput::NewName(text) => {
+            let name = text.trim().to_string();
+            if name.is_empty() {
+                app.set_status("Give it a name.");
+                return;
+            }
+            app.dismiss_communities();
+            app.set_status(format!("Making {name}…"));
+            spawn_create_guild(client.clone(), event_tx.clone(), name);
+        }
+        crate::app::CommunityInput::Search(text) => {
+            let query = text.trim().to_string();
+            app.set_discover_running(query.clone());
+            spawn_discover(client.clone(), event_tx.clone(), query);
+        }
+    }
+}
+
+/// The code out of whatever was pasted: a bare code, or the tail of an
+/// invite link from this instance or any other.
+fn invite_code_from(text: &str) -> String {
+    let trimmed = text.trim().trim_end_matches('/');
+    let tail = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    tail.split(['?', '#']).next().unwrap_or(tail).to_string()
+}
+
+fn spawn_invite_preview(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    code: String,
+) {
+    tokio::spawn(async move {
+        match client.invite_info(&code).await {
+            Ok(invite) => {
+                let _ = event_tx.send(AppEvent::InvitePreview {
+                    code,
+                    invite: Box::new(invite),
+                });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::InvitePreviewFailed {
+                    code,
+                    message: format!("That invite is no good: {err}"),
+                });
+            }
+        }
+    });
+}
+
 /// Enter in the conversation overlay: whichever of its three modes is
 /// showing decides what that means.
 fn run_conversation_action(
@@ -3635,6 +3873,28 @@ fn spawn_create_dm(
     });
 }
 
+fn spawn_accept_invite(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    code: String,
+) {
+    tokio::spawn(async move {
+        match client.accept_invite(&code).await {
+            Ok(invite) => {
+                let _ = event_tx.send(AppEvent::SetStatus(format!(
+                    "You are in {} now.",
+                    invite.destination()
+                )));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!(
+                    "That invite did not work: {err}"
+                )));
+            }
+        }
+    });
+}
+
 fn spawn_close_channel(
     client: FluxerHttpClient,
     event_tx: UnboundedSender<AppEvent>,
@@ -3647,6 +3907,19 @@ fn spawn_close_channel(
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::ApiError(format!("Failed to close it: {err}")));
+            }
+        }
+    });
+}
+
+fn spawn_create_guild(client: FluxerHttpClient, event_tx: UnboundedSender<AppEvent>, name: String) {
+    tokio::spawn(async move {
+        match client.create_guild(&name).await {
+            Ok(guild) => {
+                let _ = event_tx.send(AppEvent::SetStatus(format!("{} is yours.", guild.name)));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("Failed to make it: {err}")));
             }
         }
     });
@@ -3673,6 +3946,23 @@ fn spawn_group_recipient(
             }
             Err(err) => {
                 let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
+            }
+        }
+    });
+}
+
+fn spawn_leave_guild(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    guild_id: String,
+) {
+    tokio::spawn(async move {
+        match client.leave_guild(&guild_id).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus("Left.".to_string()));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("Failed to leave: {err}")));
             }
         }
     });
@@ -3728,6 +4018,98 @@ fn spawn_set_dm_pinned(
     });
 }
 
+fn spawn_discover(client: FluxerHttpClient, event_tx: UnboundedSender<AppEvent>, query: String) {
+    tokio::spawn(async move {
+        match client.discover_guilds(&query, 24).await {
+            Ok(list) => {
+                let _ = event_tx.send(AppEvent::DiscoverResults {
+                    guilds: list.guilds,
+                    total: list.total,
+                });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::DiscoverFailed {
+                    message: format!("The directory did not answer: {err}"),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_join_discoverable(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    guild_id: String,
+) {
+    tokio::spawn(async move {
+        match client.join_discoverable_guild(&guild_id).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus("Joined.".to_string()));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("Failed to join: {err}")));
+            }
+        }
+    });
+}
+
+fn spawn_guild_invites(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    guild_id: String,
+) {
+    tokio::spawn(async move {
+        match client.guild_invites(&guild_id).await {
+            Ok(invites) => {
+                let _ = event_tx.send(AppEvent::GuildInvitesLoaded { guild_id, invites });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::GuildInvitesFailed {
+                    guild_id,
+                    message: format!("Failed to list the invites: {err}"),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_create_invite(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+) {
+    tokio::spawn(async move {
+        // the server's own defaults: a day, and no limit on uses
+        match client.create_invite(&channel_id, 86_400, 0).await {
+            Ok(invite) => {
+                let _ = event_tx.send(AppEvent::InviteCreated { code: invite.code });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!(
+                    "Failed to make an invite: {err}"
+                )));
+            }
+        }
+    });
+}
+
+fn spawn_delete_invite(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    code: String,
+    guild_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        match client.delete_invite(&code).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::InviteRevoked { guild_id });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("Failed to revoke it: {err}")));
+            }
+        }
+    });
+}
 fn spawn_mentions_load(client: FluxerHttpClient, event_tx: UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         let started = Instant::now();
@@ -5079,6 +5461,47 @@ mod redraw_tests {
         assert!(draw_now(true, true, Duration::ZERO));
         assert!(!draw_now(true, false, Duration::from_millis(50)));
         assert!(draw_now(true, false, PERF_FRAME_GAP));
+    }
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use super::invite_code_from;
+
+    #[test]
+    fn a_bare_code_is_the_code() {
+        assert_eq!(invite_code_from("  abc123 "), "abc123");
+    }
+
+    #[test]
+    fn a_link_from_any_instance_gives_up_its_tail() {
+        assert_eq!(
+            invite_code_from("https://fluxer.app/invite/abc123"),
+            "abc123"
+        );
+        assert_eq!(
+            invite_code_from("https://example.test/invite/abc123/"),
+            "abc123"
+        );
+        // and one without a scheme, the way a link is often pasted
+        assert_eq!(invite_code_from("fluxer.app/invite/abc123"), "abc123");
+    }
+
+    #[test]
+    fn what_follows_the_code_in_a_link_is_not_part_of_it() {
+        assert_eq!(
+            invite_code_from("https://fluxer.app/invite/abc123?utm=x"),
+            "abc123"
+        );
+        assert_eq!(
+            invite_code_from("https://fluxer.app/invite/abc123#top"),
+            "abc123"
+        );
+    }
+
+    #[test]
+    fn nothing_at_all_is_not_a_code() {
+        assert!(invite_code_from("   ").is_empty());
     }
 }
 

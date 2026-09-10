@@ -40,6 +40,10 @@ Focus & navigation
            Space picks several for a group, Enter opens it (or makes the group)
   Alt+G - the group conversation now open: rename it, add somebody, take
            somebody out, leave it
+  Alt+C - communities: join with an invite (a code or a pasted link; what it
+           leads to is shown before you take it), make one, browse the
+           directory, list this community's invites (y copies a link, + makes
+           one to the open channel, x revokes) or leave it
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -147,6 +151,7 @@ Alt
   Alt+S - sticker picker (see Input)      Alt+F - friends and blocked accounts
   Alt+P - pinned messages of the open channel     Alt+B - your bookmarks
   Alt+N - start a conversation      Alt+G - look after the open group
+  Alt+C - join, make, browse or leave a community
 
 Other
   Who is about: a filled circle in front of a name, green online, amber idle,
