@@ -8,13 +8,14 @@ use std::cell::RefCell;
 
 use crate::api::types::{
     CHANNEL_DM, CHANNEL_DM_PERSONAL_NOTES, CHANNEL_GROUP_DM, CHANNEL_GUILD_CATEGORY,
-    CHANNEL_GUILD_LINK, CHANNEL_GUILD_TEXT, CHANNEL_GUILD_VOICE, ChannelResponse,
-    GuildMemberResponse, GuildResponse, MESSAGE_NOTIFICATIONS_ALL_MESSAGES,
-    MESSAGE_NOTIFICATIONS_INHERIT, MESSAGE_NOTIFICATIONS_NO_MESSAGES,
-    MESSAGE_NOTIFICATIONS_ONLY_MENTIONS, MessageResponse, ReadStateResponse, Snowflake,
-    UserGuildChannelOverride, UserGuildMuteConfig, UserGuildSettingsPatch,
-    UserGuildSettingsResponse, UserPartialResponse, UserPrivateResponse, UserSettingsResponse,
-    VoiceStateResponse, WellKnownFluxerResponse, merge_user_cache, snowflake_sort_key,
+    CHANNEL_GUILD_LINK, CHANNEL_GUILD_TEXT, CHANNEL_GUILD_VOICE, ChannelPinResponse,
+    ChannelResponse, GuildMemberResponse, GuildResponse, MESSAGE_FLAG_SUPPRESS_EMBEDS,
+    MESSAGE_NOTIFICATIONS_ALL_MESSAGES, MESSAGE_NOTIFICATIONS_INHERIT,
+    MESSAGE_NOTIFICATIONS_NO_MESSAGES, MESSAGE_NOTIFICATIONS_ONLY_MENTIONS, MessageResponse,
+    ReadStateResponse, SavedMessageEntryResponse, Snowflake, UserGuildChannelOverride,
+    UserGuildMuteConfig, UserGuildSettingsPatch, UserGuildSettingsResponse, UserPartialResponse,
+    UserPrivateResponse, UserSettingsResponse, VoiceStateResponse, WellKnownFluxerResponse,
+    merge_user_cache, snowflake_sort_key,
 };
 use crate::api::types::{
     CustomStatusPayload, GuildMemberListUpdateEvent, PresenceRecord, PresenceStatus,
@@ -985,6 +986,198 @@ pub enum FriendsState {
     Failed(String),
 }
 
+/// One row of the message actions menu: the keyboard stand-in for the
+/// web client's right-click menu on a message. Which rows are offered is
+/// decided per message in `App::message_actions_for`, by what the message
+/// is and what the channel's permissions allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageAction {
+    React,
+    ViewReactions,
+    ClearReactions,
+    Reply,
+    Forward,
+    Edit,
+    Pin,
+    Unpin,
+    ViewPins,
+    Bookmark,
+    Unbookmark,
+    ViewSaved,
+    MarkUnread,
+    MarkChannelRead,
+    MarkGuildRead,
+    SuppressEmbeds,
+    ShowEmbeds,
+    CopyText,
+    CopyLink,
+    CopyId,
+    RemoveAttachment,
+    Delete,
+    DeleteMarked,
+    Report,
+}
+
+impl MessageAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::React => "Add a reaction",
+            Self::ViewReactions => "Who reacted",
+            Self::ClearReactions => "Clear every reaction",
+            Self::Reply => "Reply",
+            Self::Forward => "Forward",
+            Self::Edit => "Edit",
+            Self::Pin => "Pin to the channel",
+            Self::Unpin => "Unpin from the channel",
+            Self::ViewPins => "Pinned messages",
+            Self::Bookmark => "Bookmark",
+            Self::Unbookmark => "Remove the bookmark",
+            Self::ViewSaved => "Bookmarked messages",
+            Self::MarkUnread => "Mark unread from here",
+            Self::MarkChannelRead => "Mark the channel read",
+            Self::MarkGuildRead => "Mark the community read",
+            Self::SuppressEmbeds => "Hide the link previews",
+            Self::ShowEmbeds => "Show the link previews",
+            Self::CopyText => "Copy the text",
+            Self::CopyLink => "Copy a link to it",
+            Self::CopyId => "Copy the message id",
+            Self::RemoveAttachment => "Remove a file from it",
+            Self::Delete => "Delete",
+            Self::DeleteMarked => "Delete the marked messages",
+            Self::Report => "Report to the moderators",
+        }
+    }
+
+    /// The key that does the same thing without the menu, where there is
+    /// one; shown on the right of the row.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::React => "e",
+            Self::ViewReactions => "v",
+            Self::Reply => "r",
+            Self::Forward => "f",
+            Self::Edit => "Ctrl+E",
+            Self::Pin | Self::Unpin => "P",
+            Self::ViewPins => "Alt+P",
+            Self::Bookmark | Self::Unbookmark => "b",
+            Self::ViewSaved => "Alt+B",
+            Self::CopyText => "y",
+            Self::CopyLink => "Y",
+            Self::Delete => "Ctrl+D",
+            _ => "",
+        }
+    }
+
+    /// Whether choosing it asks for a second press first.
+    pub fn needs_confirm(self) -> bool {
+        matches!(self, Self::ClearReactions | Self::DeleteMarked)
+    }
+}
+
+/// What the actions overlay is showing: the actions themselves, or one of
+/// the lists an action leads to. Keeping them in one overlay saves three
+/// more of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageActionsMode {
+    Actions,
+    /// Which file to take off the message: (attachment id, filename).
+    Attachments(Vec<(String, String)>),
+    ReportCategories,
+    /// A destructive action waiting for a second press.
+    Confirm(MessageAction),
+}
+
+/// What choosing a row of the actions menu comes to. The menu itself
+/// only decides; `main` does the work, since that is where the HTTP
+/// client and the task channel live.
+#[derive(Debug, Clone)]
+pub enum MessageActionOutcome {
+    Run {
+        action: MessageAction,
+        channel_id: String,
+        message_id: String,
+        /// The report category, or the attachment id, where the action
+        /// needed one picked first.
+        argument: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub struct MessageActionsView {
+    pub channel_id: String,
+    pub message_id: String,
+    pub mode: MessageActionsMode,
+    pub actions: Vec<MessageAction>,
+    pub selected: usize,
+}
+
+/// The categories `POST /reports/message` takes, with the wording the web
+/// client puts on them.
+pub const REPORT_CATEGORIES: [(&str, &str); 12] = [
+    ("harassment", "Harassment or bullying"),
+    ("hate_speech", "Hate speech"),
+    ("violent_content", "Violence"),
+    ("spam", "Spam"),
+    ("nsfw_violation", "Adult content in the wrong place"),
+    ("illegal_activity", "Illegal activity"),
+    ("doxxing", "Private information about somebody"),
+    ("self_harm", "Self-harm or suicide"),
+    ("child_safety", "Danger to a minor"),
+    ("malicious_links", "Malware or phishing links"),
+    ("impersonation", "Pretending to be somebody else"),
+    ("other", "Something else"),
+];
+
+#[derive(Debug)]
+pub struct PinsView {
+    pub channel_id: String,
+    pub state: PinsState,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum PinsState {
+    Loading,
+    Ready(Vec<ChannelPinResponse>),
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub struct SavedView {
+    pub state: SavedState,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum SavedState {
+    Loading,
+    Ready(Vec<SavedMessageEntryResponse>),
+    Failed(String),
+}
+
+/// Who reacted to one message with one emoji. `emoji_api` is the form the
+/// reaction routes take (the character, or `name:id` for a custom emoji);
+/// `emoji_label` is what to put on the screen.
+#[derive(Debug)]
+pub struct ReactionUsersView {
+    pub channel_id: String,
+    pub message_id: String,
+    pub emoji_api: String,
+    pub emoji_label: String,
+    /// Which of the message's reactions is being shown, so Left and Right
+    /// can walk them without closing.
+    pub reaction_index: usize,
+    pub state: ReactionUsersState,
+    pub scroll: u16,
+}
+
+#[derive(Debug, Clone)]
+pub enum ReactionUsersState {
+    Loading,
+    Ready(Vec<UserPartialResponse>),
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -1115,6 +1308,23 @@ pub struct App {
     /// messages, so the message pane's cached layout has to be dropped
     /// when a block goes on or comes off.
     pub relationships_version: u64,
+    /// The message actions menu while it is open.
+    pub message_actions: Option<MessageActionsView>,
+    /// The pinned-messages overlay while it is open.
+    pub pins: Option<PinsView>,
+    /// The bookmarked-messages overlay while it is open.
+    pub saved: Option<SavedView>,
+    /// The who-reacted overlay while it is open.
+    pub reaction_users: Option<ReactionUsersView>,
+    /// Messages the user has bookmarked, so a message can be shown as
+    /// bookmarked without asking the server. Filled by the saved list and
+    /// kept up by the SAVED_MESSAGE_CREATE and _DELETE events.
+    pub saved_message_ids: HashSet<String>,
+    /// Messages marked with `m` for a bulk delete, per channel.
+    pub marked_messages: HashMap<String, HashSet<String>>,
+    /// Channels whose pins have changed since they were last looked at,
+    /// from CHANNEL_PINS_UPDATE.
+    pub channels_with_new_pins: HashSet<String>,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1322,6 +1532,13 @@ impl App {
             friends: None,
             relationships: HashMap::new(),
             relationships_version: 0,
+            message_actions: None,
+            pins: None,
+            saved: None,
+            reaction_users: None,
+            saved_message_ids: HashSet::new(),
+            marked_messages: HashMap::new(),
+            channels_with_new_pins: HashSet::new(),
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -2423,7 +2640,7 @@ impl App {
         )
     }
 
-    fn channel_by_id(&self, channel_id: &str) -> Option<&ChannelResponse> {
+    pub fn channel_by_id(&self, channel_id: &str) -> Option<&ChannelResponse> {
         self.private_channels
             .iter()
             .find(|c| c.id == channel_id)
@@ -3158,6 +3375,10 @@ impl App {
 
     /// How many pings are asked for; the server allows up to 100.
     pub const PINGS_LIMIT: u32 = 50;
+    /// A channel's pins: the server caps a page at 50.
+    pub const PINS_LIMIT: u32 = 50;
+    pub const SAVED_LIMIT: u32 = 100;
+    pub const REACTION_USERS_LIMIT: u32 = 100;
 
     /// Open the pings overlay, empty until the list arrives.
     pub fn open_pings(&mut self) {
@@ -3222,17 +3443,24 @@ impl App {
 
     /// Where a ping came from: the community, if any, and the channel.
     pub fn ping_location(&self, message: &MessageResponse) -> (Option<String>, String) {
-        let channel = self.channel_by_id(&message.channel_id);
+        self.channel_location(&message.channel_id)
+    }
+
+    /// Where a channel is: its community's name, where it has one, and
+    /// the channel's own. A channel the client does not know is named by
+    /// the tail of its id rather than left blank.
+    pub fn channel_location(&self, channel_id: &str) -> (Option<String>, String) {
+        let channel = self.channel_by_id(channel_id);
         let guild = channel
             .and_then(|c| c.guild_id.clone())
-            .or_else(|| self.guild_id_for_channel(&message.channel_id))
+            .or_else(|| self.guild_id_for_channel(channel_id))
             .and_then(|gid| self.guilds.iter().find(|g| g.id == gid))
             .map(|g| g.name.clone());
         let name = match channel {
             Some(c) => crate::ui::sidebar::channel_name(self, c),
             None => format!(
                 "unknown-{}",
-                &message.channel_id[message.channel_id.len().saturating_sub(4)..]
+                &channel_id[channel_id.len().saturating_sub(4)..]
             ),
         };
         (guild, name)
@@ -5167,6 +5395,199 @@ impl App {
         }
     }
 
+    /// Whether the user may take other people's things off a message in
+    /// this channel: clearing reactions, pinning, deleting in bulk.
+    pub fn can_manage_messages(&self) -> bool {
+        self.active_channel_permissions() & crate::permissions::MANAGE_MESSAGES != 0
+    }
+
+    pub fn is_bookmarked(&self, message_id: &str) -> bool {
+        self.saved_message_ids.contains(message_id)
+    }
+
+    /// The messages marked with `m` in the channel now open.
+    pub fn marked_in_active_channel(&self) -> Vec<String> {
+        self.active_channel_id()
+            .and_then(|id| self.marked_messages.get(&id).cloned())
+            .map(|set| {
+                let mut ids: Vec<String> = set.into_iter().collect();
+                ids.sort_by_key(|id| snowflake_sort_key(id));
+                ids
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn is_marked(&self, channel_id: &str, message_id: &str) -> bool {
+        self.marked_messages
+            .get(channel_id)
+            .is_some_and(|set| set.contains(message_id))
+    }
+
+    /// `m` on a selected message: mark it, or take the mark off. Marks
+    /// are what a bulk delete works on and are kept per channel.
+    pub fn toggle_mark_selected(&mut self) -> Option<(bool, usize)> {
+        let msg = self.selected_message()?;
+        let set = self
+            .marked_messages
+            .entry(msg.channel_id.clone())
+            .or_default();
+        let marked = if set.remove(&msg.id) {
+            false
+        } else {
+            set.insert(msg.id.clone());
+            true
+        };
+        let count = set.len();
+        if count == 0 {
+            self.marked_messages.remove(&msg.channel_id);
+        }
+        Some((marked, count))
+    }
+
+    pub fn clear_marks_for_channel(&mut self, channel_id: &str) {
+        self.marked_messages.remove(channel_id);
+    }
+
+    /// A link to a message, the shape the web client copies: the web
+    /// app's own address, the community (or `@me` in a direct message),
+    /// the channel and the message.
+    pub fn message_link(&self, channel_id: &str, message_id: &str) -> Option<String> {
+        let base = self.discovery.endpoints.webapp.trim_end_matches('/');
+        if base.is_empty() {
+            return None;
+        }
+        let guild = self
+            .guild_id_for_channel(channel_id)
+            .unwrap_or_else(|| "@me".to_string());
+        Some(format!("{base}/channels/{guild}/{channel_id}/{message_id}"))
+    }
+
+    /// Put text on the system clipboard and always in the cut buffer, the
+    /// way `copy_selected_message` does; the bool says whether a
+    /// clipboard program took it.
+    pub fn copy_text_out(&mut self, text: String) -> bool {
+        let to_clipboard = crate::compose::copy_to_system_clipboard(&text);
+        self.cut_buffer = text;
+        to_clipboard
+    }
+
+    // a (as in actions): the message actions menu
+
+    /// Which rows the menu offers for a message. Order follows the web
+    /// client's menu: reactions, then the things that write a message,
+    /// then the ones that only move it about, then the destructive ones.
+    pub fn message_actions_for(&self, msg: &MessageResponse) -> Vec<MessageAction> {
+        let mut out = Vec::new();
+        let text_channel = self.active_channel_is_text();
+        let can_send = self.can_send_in_active_channel();
+        let manage = self.can_manage_messages();
+        let mine = msg.author.id == self.me.id;
+
+        if text_channel && can_send {
+            out.push(MessageAction::React);
+        }
+        if !msg.reactions.is_empty() {
+            out.push(MessageAction::ViewReactions);
+            if manage {
+                out.push(MessageAction::ClearReactions);
+            }
+        }
+        if text_channel && can_send {
+            out.push(MessageAction::Reply);
+            out.push(MessageAction::Forward);
+        }
+        if mine && text_channel && can_send {
+            out.push(MessageAction::Edit);
+            if msg.embeds.is_empty() && msg.flags & MESSAGE_FLAG_SUPPRESS_EMBEDS != 0 {
+                out.push(MessageAction::ShowEmbeds);
+            } else if !msg.embeds.is_empty() {
+                out.push(MessageAction::SuppressEmbeds);
+            }
+            if !msg.attachments.is_empty() {
+                out.push(MessageAction::RemoveAttachment);
+            }
+        }
+        if manage || (mine && text_channel) {
+            out.push(if msg.pinned {
+                MessageAction::Unpin
+            } else {
+                MessageAction::Pin
+            });
+        }
+        out.push(MessageAction::ViewPins);
+        out.push(if self.is_bookmarked(&msg.id) {
+            MessageAction::Unbookmark
+        } else {
+            MessageAction::Bookmark
+        });
+        out.push(MessageAction::ViewSaved);
+        out.push(MessageAction::MarkUnread);
+        out.push(MessageAction::MarkChannelRead);
+        if self.active_guild_id().is_some() {
+            out.push(MessageAction::MarkGuildRead);
+        }
+        if !message_copy_text(msg).is_empty() {
+            out.push(MessageAction::CopyText);
+        }
+        if self.message_link(&msg.channel_id, &msg.id).is_some() {
+            out.push(MessageAction::CopyLink);
+        }
+        out.push(MessageAction::CopyId);
+        if self.can_delete_message(msg) {
+            out.push(MessageAction::Delete);
+        }
+        if manage && self.marked_in_active_channel().len() >= 2 {
+            out.push(MessageAction::DeleteMarked);
+        }
+        if !mine {
+            out.push(MessageAction::Report);
+        }
+        out
+    }
+
+    pub fn open_message_actions(&mut self) -> bool {
+        let Some(msg) = self.selected_message() else {
+            return false;
+        };
+        let actions = self.message_actions_for(&msg);
+        if actions.is_empty() {
+            return false;
+        }
+        self.close_overlays();
+        self.message_actions = Some(MessageActionsView {
+            channel_id: msg.channel_id.clone(),
+            message_id: msg.id.clone(),
+            mode: MessageActionsMode::Actions,
+            actions,
+            selected: 0,
+        });
+        true
+    }
+
+    /// How many rows the menu is showing, whichever mode it is in.
+    pub fn message_actions_len(&self) -> usize {
+        match self.message_actions.as_ref() {
+            None => 0,
+            Some(view) => match &view.mode {
+                MessageActionsMode::Actions => view.actions.len(),
+                MessageActionsMode::Attachments(items) => items.len(),
+                MessageActionsMode::ReportCategories => REPORT_CATEGORIES.len(),
+                MessageActionsMode::Confirm(_) => 2,
+            },
+        }
+    }
+
+    pub fn message_actions_move(&mut self, delta: isize) {
+        let count = self.message_actions_len();
+        if let Some(view) = &mut self.message_actions {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
     pub fn friends_switch_tab(&mut self, forward: bool) {
         if let Some(view) = &mut self.friends {
             view.tab = if forward {
@@ -5174,6 +5595,20 @@ impl App {
             } else {
                 view.tab.previous()
             };
+            view.selected = 0;
+        }
+    }
+
+    /// Step back out of a list the menu led to, or close it when the
+    /// actions themselves are showing.
+    pub fn message_actions_back(&mut self) {
+        let Some(view) = &mut self.message_actions else {
+            return;
+        };
+        if matches!(view.mode, MessageActionsMode::Actions) {
+            self.message_actions = None;
+        } else {
+            view.mode = MessageActionsMode::Actions;
             view.selected = 0;
         }
     }
@@ -5188,8 +5623,6 @@ impl App {
         }
     }
 
-    /// Open a one-to-one conversation with somebody the reader already
-    /// has one with. None when there is none to open yet.
     /// Open a channel the client already knows, the way the channel
     /// picker does.
     pub fn jump_to_channel(&mut self, channel_id: &str) -> bool {
@@ -5206,6 +5639,366 @@ impl App {
         true
     }
 
+    /// Turn the row under the cursor into something to do. The menu is
+    /// left open where the row leads to a list, and closed where it does
+    /// not; the caller runs what comes back.
+    pub fn message_actions_confirm(&mut self) -> Option<MessageActionOutcome> {
+        let view = self.message_actions.as_ref()?;
+        let channel_id = view.channel_id.clone();
+        let message_id = view.message_id.clone();
+        match &view.mode {
+            MessageActionsMode::Confirm(action) => {
+                let action = *action;
+                let go = view.selected == 0;
+                self.message_actions = None;
+                if go {
+                    Some(MessageActionOutcome::Run {
+                        action,
+                        channel_id,
+                        message_id,
+                        argument: None,
+                    })
+                } else {
+                    None
+                }
+            }
+            MessageActionsMode::ReportCategories => {
+                let category = REPORT_CATEGORIES.get(view.selected)?.0.to_string();
+                self.message_actions = None;
+                Some(MessageActionOutcome::Run {
+                    action: MessageAction::Report,
+                    channel_id,
+                    message_id,
+                    argument: Some(category),
+                })
+            }
+            MessageActionsMode::Attachments(items) => {
+                let attachment_id = items.get(view.selected)?.0.clone();
+                self.message_actions = None;
+                Some(MessageActionOutcome::Run {
+                    action: MessageAction::RemoveAttachment,
+                    channel_id,
+                    message_id,
+                    argument: Some(attachment_id),
+                })
+            }
+            MessageActionsMode::Actions => {
+                let action = *view.actions.get(view.selected)?;
+                if action.needs_confirm() {
+                    if let Some(view) = &mut self.message_actions {
+                        view.mode = MessageActionsMode::Confirm(action);
+                        view.selected = 1;
+                    }
+                    return None;
+                }
+                if action == MessageAction::Report {
+                    if let Some(view) = &mut self.message_actions {
+                        view.mode = MessageActionsMode::ReportCategories;
+                        view.selected = 0;
+                    }
+                    return None;
+                }
+                if action == MessageAction::RemoveAttachment {
+                    let msg = self.message_by_id(&channel_id, &message_id)?;
+                    let items: Vec<(String, String)> = msg
+                        .attachments
+                        .iter()
+                        .map(|a| {
+                            (
+                                a.id.clone(),
+                                if a.filename.is_empty() {
+                                    a.id.clone()
+                                } else {
+                                    a.filename.clone()
+                                },
+                            )
+                        })
+                        .collect();
+                    if items.len() == 1 {
+                        let attachment_id = items[0].0.clone();
+                        self.message_actions = None;
+                        return Some(MessageActionOutcome::Run {
+                            action,
+                            channel_id,
+                            message_id,
+                            argument: Some(attachment_id),
+                        });
+                    }
+                    if let Some(view) = &mut self.message_actions {
+                        view.mode = MessageActionsMode::Attachments(items);
+                        view.selected = 0;
+                    }
+                    return None;
+                }
+                self.message_actions = None;
+                Some(MessageActionOutcome::Run {
+                    action,
+                    channel_id,
+                    message_id,
+                    argument: None,
+                })
+            }
+        }
+    }
+
+    /// One message of a channel that is loaded, by id.
+    pub fn message_by_id(&self, channel_id: &str, message_id: &str) -> Option<MessageResponse> {
+        self.messages
+            .get(channel_id)?
+            .iter()
+            .find(|m| m.id == message_id)
+            .cloned()
+    }
+
+    /// Shut every overlay, so opening one does not leave another under it.
+    pub fn close_overlays(&mut self) {
+        self.show_settings = false;
+        self.show_server_notifications = false;
+        self.show_help = false;
+        self.dismiss_image_preview();
+        self.profile = None;
+        self.channel_picker = None;
+        self.pings = None;
+        self.message_actions = None;
+        self.pins = None;
+        self.saved = None;
+        self.reaction_users = None;
+    }
+
+    // Alt+P: the channel's pinned messages
+
+    pub fn open_pins(&mut self, channel_id: String) {
+        self.close_overlays();
+        self.channels_with_new_pins.remove(&channel_id);
+        self.pins = Some(PinsView {
+            channel_id,
+            state: PinsState::Loading,
+            selected: 0,
+        });
+    }
+
+    pub fn dismiss_pins(&mut self) {
+        self.pins = None;
+    }
+
+    pub fn set_pins_loaded(&mut self, channel_id: &str, items: Vec<ChannelPinResponse>) {
+        for pin in &items {
+            self.merge_message_embedded_members(&pin.message);
+            merge_user_cache(&mut self.user_cache, [pin.message.author.clone()]);
+        }
+        if let Some(view) = &mut self.pins
+            && view.channel_id == channel_id
+        {
+            view.state = PinsState::Ready(items);
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_pins_failed(&mut self, channel_id: &str, message: String) {
+        if let Some(view) = &mut self.pins
+            && view.channel_id == channel_id
+        {
+            view.state = PinsState::Failed(message);
+        }
+    }
+
+    pub fn pins_items(&self) -> Vec<ChannelPinResponse> {
+        match self.pins.as_ref().map(|v| &v.state) {
+            Some(PinsState::Ready(items)) => items.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn pins_move(&mut self, delta: isize) {
+        let count = self.pins_items().len();
+        if let Some(view) = &mut self.pins {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
+    pub fn pins_selected(&self) -> Option<MessageResponse> {
+        let view = self.pins.as_ref()?;
+        let PinsState::Ready(items) = &view.state else {
+            return None;
+        };
+        items.get(view.selected).map(|p| p.message.clone())
+    }
+
+    // Alt+B: the messages bookmarked from anywhere
+
+    pub fn open_saved(&mut self) {
+        self.close_overlays();
+        self.saved = Some(SavedView {
+            state: SavedState::Loading,
+            selected: 0,
+        });
+    }
+
+    pub fn dismiss_saved(&mut self) {
+        self.saved = None;
+    }
+
+    pub fn set_saved_loaded(&mut self, entries: Vec<SavedMessageEntryResponse>) {
+        self.saved_message_ids = entries.iter().map(|e| e.message_id.clone()).collect();
+        for entry in &entries {
+            if let Some(message) = &entry.message {
+                self.merge_message_embedded_members(message);
+                merge_user_cache(&mut self.user_cache, [message.author.clone()]);
+            }
+        }
+        if let Some(view) = &mut self.saved {
+            view.state = SavedState::Ready(entries);
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_saved_failed(&mut self, message: String) {
+        if let Some(view) = &mut self.saved {
+            view.state = SavedState::Failed(message);
+        }
+    }
+
+    pub fn saved_entries(&self) -> Vec<SavedMessageEntryResponse> {
+        match self.saved.as_ref().map(|v| &v.state) {
+            Some(SavedState::Ready(entries)) => entries.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn saved_move(&mut self, delta: isize) {
+        let count = self.saved_entries().len();
+        if let Some(view) = &mut self.saved {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
+    pub fn saved_selected(&self) -> Option<SavedMessageEntryResponse> {
+        let view = self.saved.as_ref()?;
+        let SavedState::Ready(entries) = &view.state else {
+            return None;
+        };
+        entries.get(view.selected).cloned()
+    }
+
+    /// Take an entry out of the open list once the server has dropped it,
+    /// so the list does not have to be fetched again.
+    pub fn forget_saved_message(&mut self, message_id: &str) {
+        self.saved_message_ids.remove(message_id);
+        if let Some(view) = &mut self.saved
+            && let SavedState::Ready(entries) = &mut view.state
+        {
+            entries.retain(|e| e.message_id != message_id);
+            if view.selected >= entries.len() {
+                view.selected = entries.len().saturating_sub(1);
+            }
+        }
+    }
+
+    pub fn remember_saved_message(&mut self, message_id: String) {
+        self.saved_message_ids.insert(message_id);
+    }
+
+    // v: who reacted
+
+    /// Open the who-reacted list on one of a message's reactions. The
+    /// index walks the message's own reaction order.
+    pub fn open_reaction_users(
+        &mut self,
+        message_id: &str,
+        reaction_index: usize,
+    ) -> Option<(String, String)> {
+        let channel_id = self.active_channel_id()?;
+        let msg = self.message_by_id(&channel_id, message_id)?;
+        let reaction = msg.reactions.get(reaction_index)?;
+        let (api, label) = reaction_emoji_forms(reaction);
+        self.close_overlays();
+        self.reaction_users = Some(ReactionUsersView {
+            channel_id: channel_id.clone(),
+            message_id: message_id.to_string(),
+            emoji_api: api.clone(),
+            emoji_label: label,
+            reaction_index,
+            state: ReactionUsersState::Loading,
+            scroll: 0,
+        });
+        Some((channel_id, api))
+    }
+
+    /// Left and Right in the who-reacted list: the message's next or
+    /// previous reaction, wrapping, with the fetch to make for it.
+    pub fn reaction_users_step(&mut self, delta: isize) -> Option<(String, String, String)> {
+        let view = self.reaction_users.as_ref()?;
+        let channel_id = view.channel_id.clone();
+        let message_id = view.message_id.clone();
+        let msg = self.message_by_id(&channel_id, &message_id)?;
+        let count = msg.reactions.len();
+        if count < 2 {
+            return None;
+        }
+        let index = view.reaction_index as isize + delta;
+        let index = index.rem_euclid(count as isize) as usize;
+        let reaction = msg.reactions.get(index)?;
+        let (api, label) = reaction_emoji_forms(reaction);
+        let view = self.reaction_users.as_mut()?;
+        view.reaction_index = index;
+        view.emoji_api = api.clone();
+        view.emoji_label = label;
+        view.state = ReactionUsersState::Loading;
+        view.scroll = 0;
+        Some((channel_id, message_id, api))
+    }
+
+    pub fn dismiss_reaction_users(&mut self) {
+        self.reaction_users = None;
+    }
+
+    pub fn set_reaction_users_loaded(&mut self, emoji: &str, users: Vec<UserPartialResponse>) {
+        merge_user_cache(&mut self.user_cache, users.iter().cloned());
+        if let Some(view) = &mut self.reaction_users
+            && view.emoji_api == emoji
+        {
+            view.state = ReactionUsersState::Ready(users);
+        }
+    }
+
+    pub fn set_reaction_users_failed(&mut self, emoji: &str, message: String) {
+        if let Some(view) = &mut self.reaction_users
+            && view.emoji_api == emoji
+        {
+            view.state = ReactionUsersState::Failed(message);
+        }
+    }
+
+    /// Jump the message pane to a message that is in a channel the client
+    /// knows, the way the pings list does. False when the channel is gone.
+    pub fn jump_to_message(&mut self, channel_id: &str, message_id: &str) -> bool {
+        let Some(server) = self.server_for_channel(channel_id) else {
+            self.set_status("That channel is not on your list any more.");
+            return false;
+        };
+        self.close_overlays();
+        self.selected_server = server;
+        self.selected_channel_id = Some(channel_id.to_string());
+        self.message_scroll_from_bottom = 0;
+        self.selected_message_index = None;
+        self.normalize_selection();
+        self.focus = Focus::Messages;
+        self.pending_jump = Some((channel_id.to_string(), message_id.to_string()));
+        self.pending_jump_pages = 0;
+        self.apply_pending_jump(channel_id);
+        true
+    }
+
+    /// Open a one-to-one conversation with somebody the reader already
+    /// has one with. None when there is none to open yet.
     pub fn dm_channel_with(&self, user_id: &str) -> Option<String> {
         self.private_channels
             .iter()
@@ -5213,6 +6006,33 @@ impl App {
                 c.channel_type() == CHANNEL_DM && c.recipients.iter().any(|u| u.id == user_id)
             })
             .map(|c| c.id.clone())
+    }
+    /// Set or clear a message's suppress-embeds flag in the loaded copy,
+    /// so the pane follows before the gateway says so.
+    pub fn set_local_message_flags(&mut self, channel_id: &str, message_id: &str, flags: u64) {
+        if let Some(messages) = self.messages.get_mut(channel_id)
+            && let Some(msg) = std::rc::Rc::make_mut(messages)
+                .iter_mut()
+                .find(|m| m.id == message_id)
+        {
+            msg.flags = flags;
+            if flags & MESSAGE_FLAG_SUPPRESS_EMBEDS != 0 {
+                msg.embeds.clear();
+            }
+        }
+        self.messages_version = self.messages_version.wrapping_add(1);
+    }
+
+    /// Set or clear a message's pinned mark in the loaded copy.
+    pub fn set_local_message_pinned(&mut self, channel_id: &str, message_id: &str, pinned: bool) {
+        if let Some(messages) = self.messages.get_mut(channel_id)
+            && let Some(msg) = std::rc::Rc::make_mut(messages)
+                .iter_mut()
+                .find(|m| m.id == message_id)
+        {
+            msg.pinned = pinned;
+        }
+        self.messages_version = self.messages_version.wrapping_add(1);
     }
     // r (as in reply)
 
@@ -5229,6 +6049,86 @@ impl App {
             self.forward_mode = false;
             self.focus = Focus::Input;
         }
+    }
+
+    /// `e`: aim the emoji picker at a message, so the next emoji chosen
+    /// in the compose box becomes a reaction on it.
+    pub fn start_reaction_picker(&mut self, channel_id: String, message_id: String) {
+        if !self.can_react_in_active_channel() {
+            self.set_status("No permission to add reactions here.");
+            return;
+        }
+        self.reaction_target = Some((channel_id, message_id));
+        self.focus = Focus::Input;
+        self.set_input(":");
+        self.start_emoji_autocomplete();
+        self.set_status("Pick an emoji, Enter to react (Esc to cancel)");
+    }
+
+    /// `f`: carry a message to another channel; the compose box takes an
+    /// optional note and Ctrl+K picks where it goes.
+    pub fn start_forward(&mut self) {
+        let Some(msg) = self.selected_message() else {
+            return;
+        };
+        self.edit_target = None;
+        self.forward_mode = true;
+        let src_guild = self.guild_id_for_channel(&msg.channel_id);
+        self.reply_to = Some(ReplyState {
+            channel_id: msg.channel_id.clone(),
+            message_id: msg.id.clone(),
+            author_name: self.shown_name_for_user(src_guild.as_deref(), &msg.author),
+            source_guild_id: src_guild,
+        });
+        self.set_status("Forward: pick channel (Ctrl+K), type optional note, Enter to send");
+    }
+
+    /// The message just above one in a channel's loaded history. Marking
+    /// unread acknowledges up to there, so the message picked is the
+    /// first thing left unread.
+    pub fn message_before(&self, channel_id: &str, message_id: &str) -> Option<String> {
+        let messages = self.messages.get(channel_id)?;
+        let index = messages.iter().position(|m| m.id == message_id)?;
+        messages.get(index.checked_sub(1)?).map(|m| m.id.clone())
+    }
+
+    /// How many of the loaded messages from `message_id` onwards mention
+    /// the user; the ack carries it so the unread badge is right at once.
+    pub fn mention_count_from(&self, channel_id: &str, message_id: &str) -> u32 {
+        let Some(messages) = self.messages.get(channel_id) else {
+            return 0;
+        };
+        let Some(index) = messages.iter().position(|m| m.id == message_id) else {
+            return 0;
+        };
+        messages[index..]
+            .iter()
+            .filter(|m| self.message_mentions_me(m))
+            .count() as u32
+    }
+
+    pub fn newest_message_id(&self, channel_id: &str) -> Option<String> {
+        self.messages.get(channel_id)?.last().map(|m| m.id.clone())
+    }
+
+    /// Every unread channel of the community now open, with the newest
+    /// message the client knows for each: what a "mark the community
+    /// read" call takes. Channels with no loaded history are skipped,
+    /// since there is no message to acknowledge up to.
+    pub fn unread_channels_with_newest(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for channel in self.all_channels_for_server(&self.selected_server) {
+            if channel.channel_type() == CHANNEL_GUILD_CATEGORY {
+                continue;
+            }
+            if !self.channel_is_unread(&channel.id) {
+                continue;
+            }
+            if let Some(newest) = self.newest_message_id(&channel.id) {
+                out.push((channel.id.clone(), newest));
+            }
+        }
+        out
     }
 
     pub fn cancel_reply(&mut self) {
@@ -5903,6 +6803,21 @@ fn picker_channel_line(ch: &ChannelResponse) -> String {
                 ch.name.clone()
             }
         }
+    }
+}
+
+/// The two spellings of a reaction's emoji: what the reaction routes
+/// take (the character, or `name:id` for a custom one) and what to put on
+/// the screen (the character, or `:name:`).
+pub fn reaction_emoji_forms(
+    reaction: &crate::api::types::MessageReactionResponse,
+) -> (String, String) {
+    match reaction.emoji.id.as_deref() {
+        Some(id) if !id.is_empty() => (
+            format!("{}:{}", reaction.emoji.name, id),
+            format!(":{}:", reaction.emoji.name),
+        ),
+        _ => (reaction.emoji.name.clone(), reaction.emoji.name.clone()),
     }
 }
 

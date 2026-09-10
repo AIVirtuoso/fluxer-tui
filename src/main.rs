@@ -16,11 +16,12 @@ mod ui;
 
 use crate::api::client::{ApiError, FluxerHttpClient};
 use crate::api::gateway::{GatewayCommand, run_gateway};
+use crate::api::types::MESSAGE_FLAG_SUPPRESS_EMBEDS;
 use crate::api::types::{CreateMessageRequest, MessageQuery, MessageReferenceRequest};
 use crate::api::types::{CustomStatusPayload, UserSettingsPatch};
 use crate::app::{
-    App, Focus, FriendsInput, GatewayStatus, ImagePreviewState, ServerSelection, display_name,
-    me_as_partial,
+    App, Focus, FriendsInput, GatewayStatus, ImagePreviewState, MessageAction,
+    MessageActionOutcome, ServerSelection, display_name, me_as_partial,
 };
 use crate::auth::ensure_auth;
 use crate::config::{
@@ -631,6 +632,9 @@ async fn main() -> Result<()> {
                         authed_client.clone(),
                         event_tx.clone(),
                     );
+                }
+                if let Some(channel_id) = effects.reload_pins {
+                    spawn_pins_load(authed_client.clone(), event_tx.clone(), channel_id);
                 }
                 if let Some((title, bytes)) = effects.chafa_fallback {
                     let (cols, rows) = app.chafa_preview_cells;
@@ -1935,6 +1939,198 @@ fn handle_key_event(
         return;
     }
 
+    if app.message_actions.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.message_actions_back(),
+            KeyCode::Up | KeyCode::Char('k') => app.message_actions_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.message_actions_move(1),
+            KeyCode::PageUp => app.message_actions_move(-8),
+            KeyCode::PageDown => app.message_actions_move(8),
+            KeyCode::Home => app.message_actions_move(isize::MIN / 2),
+            KeyCode::End => app.message_actions_move(isize::MAX / 2),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(MessageActionOutcome::Run {
+                    action,
+                    channel_id,
+                    message_id,
+                    argument,
+                }) = app.message_actions_confirm()
+                {
+                    run_message_action(
+                        app, client, event_tx, action, channel_id, message_id, argument,
+                    );
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => app.message_actions_back(),
+            _ => {}
+        }
+        return;
+    }
+
+    if app.pins.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.dismiss_pins(),
+            KeyCode::Up | KeyCode::Char('k') => app.pins_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.pins_move(1),
+            KeyCode::PageUp => app.pins_move(-8),
+            KeyCode::PageDown => app.pins_move(8),
+            KeyCode::Home => app.pins_move(isize::MIN / 2),
+            KeyCode::End => app.pins_move(isize::MAX / 2),
+            KeyCode::Enter => {
+                if let Some(msg) = app.pins_selected() {
+                    app.jump_to_message(&msg.channel_id, &msg.id);
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if let Some(msg) = app.pins_selected() {
+                    app.set_local_message_pinned(&msg.channel_id, &msg.id, false);
+                    spawn_set_pinned(
+                        client.clone(),
+                        event_tx.clone(),
+                        msg.channel_id.clone(),
+                        msg.id.clone(),
+                        false,
+                    );
+                    // the list is asked for again rather than edited in
+                    // place, so a refusal shows as the pin still there
+                    spawn_pins_load(client.clone(), event_tx.clone(), msg.channel_id);
+                }
+            }
+            KeyCode::Char('R') => {
+                if let Some(view) = app.pins.as_ref() {
+                    let channel_id = view.channel_id.clone();
+                    app.open_pins(channel_id.clone());
+                    spawn_pins_load(client.clone(), event_tx.clone(), channel_id);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    if app.saved.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.dismiss_saved(),
+            KeyCode::Up | KeyCode::Char('k') => app.saved_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.saved_move(1),
+            KeyCode::PageUp => app.saved_move(-8),
+            KeyCode::PageDown => app.saved_move(8),
+            KeyCode::Home => app.saved_move(isize::MIN / 2),
+            KeyCode::End => app.saved_move(isize::MAX / 2),
+            KeyCode::Enter => {
+                if let Some(entry) = app.saved_selected() {
+                    if entry.message.is_some() {
+                        app.jump_to_message(&entry.channel_id, &entry.message_id);
+                    } else {
+                        app.set_status("That message is not there any more.");
+                    }
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if let Some(entry) = app.saved_selected() {
+                    app.forget_saved_message(&entry.message_id);
+                    spawn_set_bookmark(
+                        client.clone(),
+                        event_tx.clone(),
+                        entry.channel_id,
+                        entry.message_id,
+                        false,
+                    );
+                }
+            }
+            KeyCode::Char('R') => {
+                app.open_saved();
+                spawn_saved_load(client.clone(), event_tx.clone());
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    if app.reaction_users.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.dismiss_reaction_users(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(view) = app.reaction_users.as_mut() {
+                    view.scroll = view.scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(view) = app.reaction_users.as_mut() {
+                    view.scroll = view.scroll.saturating_add(1);
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(view) = app.reaction_users.as_mut() {
+                    view.scroll = view.scroll.saturating_sub(8);
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(view) = app.reaction_users.as_mut() {
+                    view.scroll = view.scroll.saturating_add(8);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some((channel_id, message_id, emoji)) = app.reaction_users_step(1) {
+                    spawn_reaction_users_load(
+                        client.clone(),
+                        event_tx.clone(),
+                        channel_id,
+                        message_id,
+                        emoji,
+                    );
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Some((channel_id, message_id, emoji)) = app.reaction_users_step(-1) {
+                    spawn_reaction_users_load(
+                        client.clone(),
+                        event_tx.clone(),
+                        channel_id,
+                        message_id,
+                        emoji,
+                    );
+                }
+            }
+            // x clears everybody's reaction with this emoji, which needs
+            // Manage Messages; without it the server refuses and says so
+            KeyCode::Char('x') => {
+                if app.can_manage_messages() {
+                    if let Some(view) = app.reaction_users.as_ref() {
+                        let (channel_id, message_id, emoji) = (
+                            view.channel_id.clone(),
+                            view.message_id.clone(),
+                            view.emoji_api.clone(),
+                        );
+                        app.dismiss_reaction_users();
+                        let client = client.clone();
+                        let event_tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            match client
+                                .remove_emoji_reactions(&channel_id, &message_id, &emoji)
+                                .await
+                            {
+                                Ok(()) => {
+                                    let _ = event_tx
+                                        .send(AppEvent::SetStatus("Reaction cleared.".to_string()));
+                                }
+                                Err(err) => {
+                                    let _ = event_tx.send(AppEvent::ApiError(format!(
+                                        "Failed to clear the reaction: {err}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                } else {
+                    app.set_status("No permission to clear other people's reactions here.");
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.pings.is_some() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.dismiss_pings(),
@@ -2397,6 +2593,8 @@ fn handle_key_event(
         return;
     }
 
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
     match key.code {
         // Ctrl+C with a message selected copies it instead of quitting:
         // that is the key the compose box uses for its own selection,
@@ -2591,34 +2789,27 @@ fn handle_key_event(
         KeyCode::Char('e')
             if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
         {
-            if app.can_react_in_active_channel() {
-                if let (Some(msg), Some(ch_id)) = (app.selected_message(), app.active_channel_id())
-                {
-                    app.reaction_target = Some((ch_id, msg.id.clone()));
-                }
-                app.focus = Focus::Input;
-                app.set_input(":");
-                app.start_emoji_autocomplete();
-                app.set_status("Pick an emoji, Enter to react (Esc to cancel)");
-            } else {
-                app.set_status("No permission to add reactions here.");
+            if let (Some(msg), Some(ch_id)) = (app.selected_message(), app.active_channel_id()) {
+                app.start_reaction_picker(ch_id, msg.id);
             }
         }
         // f = forward (but is not working properly yet)
         KeyCode::Char('f')
             if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
         {
-            if let Some(msg) = app.selected_message() {
-                app.edit_target = None;
-                app.forward_mode = true;
-                let src_guild = app.guild_id_for_channel(&msg.channel_id);
-                app.reply_to = Some(crate::app::ReplyState {
-                    channel_id: msg.channel_id.clone(),
-                    message_id: msg.id.clone(),
-                    author_name: app.shown_name_for_user(src_guild.as_deref(), &msg.author),
-                    source_guild_id: src_guild,
-                });
-                app.set_status("Forward: pick channel (Ctrl+K), type optional note, Enter to send");
+            app.start_forward();
+        }
+        // a = the message actions menu: everything the web client's
+        // right-click offers, in one list
+        KeyCode::Char('a')
+            if app.focus == Focus::Messages
+                && app.selected_message_index.is_some()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            if !app.open_message_actions() {
+                app.set_status("Nothing can be done with that message here.");
             }
         }
         // Alt+M = the member list beside the messages
@@ -2646,6 +2837,135 @@ fn handle_key_event(
         {
             app.open_friends();
             spawn_relationships_load(client.clone(), event_tx.clone());
+        }
+        // P = pin or unpin, the direct key for the menu's first pin row
+        KeyCode::Char('P')
+            if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
+        {
+            if let Some(msg) = app.selected_message() {
+                if !app.can_manage_messages() && msg.author.id != app.me.id {
+                    app.set_status("No permission to pin here.");
+                } else {
+                    let action = if msg.pinned {
+                        MessageAction::Unpin
+                    } else {
+                        MessageAction::Pin
+                    };
+                    run_message_action(
+                        app,
+                        client,
+                        event_tx,
+                        action,
+                        msg.channel_id.clone(),
+                        msg.id,
+                        None,
+                    );
+                }
+            }
+        }
+        // b = bookmark or unbookmark
+        KeyCode::Char('b')
+            if app.focus == Focus::Messages
+                && app.selected_message_index.is_some()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            if let Some(msg) = app.selected_message() {
+                let action = if app.is_bookmarked(&msg.id) {
+                    MessageAction::Unbookmark
+                } else {
+                    MessageAction::Bookmark
+                };
+                run_message_action(
+                    app,
+                    client,
+                    event_tx,
+                    action,
+                    msg.channel_id.clone(),
+                    msg.id,
+                    None,
+                );
+            }
+        }
+        // Y = a link to the message, y's sibling
+        KeyCode::Char('Y')
+            if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
+        {
+            if let Some(msg) = app.selected_message() {
+                run_message_action(
+                    app,
+                    client,
+                    event_tx,
+                    MessageAction::CopyLink,
+                    msg.channel_id.clone(),
+                    msg.id,
+                    None,
+                );
+            }
+        }
+        // v = who reacted
+        KeyCode::Char('v')
+            if app.focus == Focus::Messages && app.selected_message_index.is_some() =>
+        {
+            match app.selected_message() {
+                Some(msg) if !msg.reactions.is_empty() => run_message_action(
+                    app,
+                    client,
+                    event_tx,
+                    MessageAction::ViewReactions,
+                    msg.channel_id.clone(),
+                    msg.id,
+                    None,
+                ),
+                _ => app.set_status("That message has no reactions."),
+            }
+        }
+        // m = mark the message for a bulk delete
+        KeyCode::Char('m')
+            if app.focus == Focus::Messages
+                && app.selected_message_index.is_some()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            match app.toggle_mark_selected() {
+                Some((true, count)) => {
+                    app.set_status(format!("Marked ({count} marked; a → delete the marked)."))
+                }
+                Some((false, 0)) => app.set_status("Unmarked."),
+                Some((false, count)) => app.set_status(format!("Unmarked ({count} still marked).")),
+                None => {}
+            }
+        }
+        // Alt+P = the channel's pinned messages
+        KeyCode::Char('p') | KeyCode::Char('P')
+            if alt
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            app.open_friends();
+            spawn_relationships_load(client.clone(), event_tx.clone());
+            match app.active_channel_id() {
+                Some(channel_id) => {
+                    app.open_pins(channel_id.clone());
+                    spawn_pins_load(client.clone(), event_tx.clone(), channel_id);
+                }
+                None => app.set_status("Open a channel first."),
+            }
+        }
+        // Alt+B = the messages bookmarked anywhere
+        KeyCode::Char('b') | KeyCode::Char('B')
+            if alt
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            app.open_saved();
+            spawn_saved_load(client.clone(), event_tx.clone());
         }
         KeyCode::Char('[') if app.focus == Focus::Messages => {
             try_load_older_messages(app, client, event_tx);
@@ -2937,6 +3257,424 @@ fn spawn_mentions_load(client: FluxerHttpClient, event_tx: UnboundedSender<AppEv
                 debug::log("pings", format!("mentions failed: {err:#}"));
                 let _ = event_tx.send(AppEvent::MentionsFailed {
                     message: format!("Failed to load pings: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Do what a row of the message actions menu came to. Everything that
+/// talks to the server goes through here, so the menu, the direct keys
+/// and the two list overlays all take the same path.
+fn run_message_action(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+    action: MessageAction,
+    channel_id: String,
+    message_id: String,
+    argument: Option<String>,
+) {
+    match action {
+        MessageAction::React => {
+            app.start_reaction_picker(channel_id, message_id);
+        }
+        MessageAction::ViewReactions => {
+            if let Some((channel_id, emoji)) = app.open_reaction_users(&message_id, 0) {
+                spawn_reaction_users_load(
+                    client.clone(),
+                    event_tx.clone(),
+                    channel_id,
+                    message_id,
+                    emoji,
+                );
+            }
+        }
+        MessageAction::ClearReactions => {
+            let client = client.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                match client.remove_all_reactions(&channel_id, &message_id).await {
+                    Ok(()) => {
+                        let _ =
+                            event_tx.send(AppEvent::SetStatus("Reactions cleared.".to_string()));
+                    }
+                    Err(err) => {
+                        let _ = event_tx.send(AppEvent::ApiError(format!(
+                            "Failed to clear the reactions: {err}"
+                        )));
+                    }
+                }
+            });
+        }
+        MessageAction::Reply => app.start_reply(),
+        MessageAction::Forward => app.start_forward(),
+        MessageAction::Edit => {
+            if let Some(msg) = app.message_by_id(&channel_id, &message_id) {
+                app.start_edit_message(msg);
+            }
+        }
+        MessageAction::Pin | MessageAction::Unpin => {
+            let pinned = action == MessageAction::Pin;
+            app.set_local_message_pinned(&channel_id, &message_id, pinned);
+            spawn_set_pinned(
+                client.clone(),
+                event_tx.clone(),
+                channel_id,
+                message_id,
+                pinned,
+            );
+        }
+        MessageAction::ViewPins => {
+            app.open_pins(channel_id.clone());
+            spawn_pins_load(client.clone(), event_tx.clone(), channel_id);
+        }
+        MessageAction::Bookmark | MessageAction::Unbookmark => {
+            let save = action == MessageAction::Bookmark;
+            if save {
+                app.remember_saved_message(message_id.clone());
+            } else {
+                app.forget_saved_message(&message_id);
+            }
+            spawn_set_bookmark(
+                client.clone(),
+                event_tx.clone(),
+                channel_id,
+                message_id,
+                save,
+            );
+        }
+        MessageAction::ViewSaved => {
+            app.open_saved();
+            spawn_saved_load(client.clone(), event_tx.clone());
+        }
+        MessageAction::MarkUnread => {
+            // the ack names the message before the one picked, so the
+            // picked one is the first thing still unread
+            let Some(before) = app.message_before(&channel_id, &message_id) else {
+                app.set_status("Nothing above that message to mark unread from.");
+                return;
+            };
+            let mentions = app.mention_count_from(&channel_id, &message_id);
+            app.set_status("Marked unread from that message.");
+            let client = client.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                if let Err(err) = client.manual_ack(&channel_id, &before, mentions).await {
+                    let _ =
+                        event_tx.send(AppEvent::ApiError(format!("Failed to mark unread: {err}")));
+                }
+            });
+        }
+        MessageAction::MarkChannelRead => {
+            let Some(newest) = app.newest_message_id(&channel_id) else {
+                app.set_status("Nothing to mark read here.");
+                return;
+            };
+            app.set_status("Channel marked read.");
+            spawn_ack_bulk(
+                client.clone(),
+                event_tx.clone(),
+                vec![(channel_id, newest)],
+                "Channel marked read.",
+            );
+        }
+        MessageAction::MarkGuildRead => {
+            let states = app.unread_channels_with_newest();
+            if states.is_empty() {
+                app.set_status("Nothing unread in this community.");
+                return;
+            }
+            let count = states.len();
+            spawn_ack_bulk(
+                client.clone(),
+                event_tx.clone(),
+                states,
+                &format!("Marked {count} channels read."),
+            );
+        }
+        MessageAction::SuppressEmbeds | MessageAction::ShowEmbeds => {
+            let suppress = action == MessageAction::SuppressEmbeds;
+            let flags = match app.message_by_id(&channel_id, &message_id) {
+                Some(msg) if suppress => msg.flags | MESSAGE_FLAG_SUPPRESS_EMBEDS,
+                Some(msg) => msg.flags & !MESSAGE_FLAG_SUPPRESS_EMBEDS,
+                None => return,
+            };
+            app.set_local_message_flags(&channel_id, &message_id, flags);
+            app.set_status(if suppress {
+                "Link previews hidden."
+            } else {
+                "Link previews shown again."
+            });
+            let client = client.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                match client
+                    .set_message_flags(&channel_id, &message_id, flags)
+                    .await
+                {
+                    Ok(message) => {
+                        let channel_id = message.channel_id.clone();
+                        let _ = event_tx.send(AppEvent::MessageSent {
+                            channel_id,
+                            message: Box::new(message),
+                        });
+                    }
+                    Err(err) => {
+                        let _ = event_tx.send(AppEvent::ApiError(format!(
+                            "Failed to change the link previews: {err}"
+                        )));
+                    }
+                }
+            });
+        }
+        MessageAction::CopyText => copy_selected_message(app),
+        MessageAction::CopyLink => {
+            match app.message_link(&channel_id, &message_id) {
+                Some(link) => {
+                    let clipboard = app.copy_text_out(link);
+                    app.set_status(if clipboard {
+                        "Copied a link to the message."
+                    } else {
+                        "Copied a link: no clipboard program, Alt+V pastes it in the input."
+                    });
+                }
+                None => app.set_status("This instance did not say where its web app is."),
+            };
+        }
+        MessageAction::CopyId => {
+            let clipboard = app.copy_text_out(message_id);
+            app.set_status(if clipboard {
+                "Copied the message id."
+            } else {
+                "Copied the message id: no clipboard program, Alt+V pastes it in the input."
+            });
+        }
+        MessageAction::RemoveAttachment => {
+            let Some(attachment_id) = argument else {
+                return;
+            };
+            let client = client.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                match client
+                    .delete_attachment(&channel_id, &message_id, &attachment_id)
+                    .await
+                {
+                    Ok(()) => {
+                        let _ = event_tx.send(AppEvent::SetStatus("File removed.".to_string()));
+                    }
+                    Err(err) => {
+                        let _ = event_tx.send(AppEvent::ApiError(format!(
+                            "Failed to remove the file: {err}"
+                        )));
+                    }
+                }
+            });
+        }
+        MessageAction::Delete => {
+            spawn_delete_message(client.clone(), event_tx.clone(), channel_id, message_id);
+        }
+        MessageAction::DeleteMarked => {
+            let ids = app.marked_in_active_channel();
+            if ids.len() < 2 {
+                app.set_status("Mark at least two messages with m first.");
+                return;
+            }
+            let count = ids.len();
+            app.clear_marks_for_channel(&channel_id);
+            app.set_status(format!("Deleting {count} messages…"));
+            let client = client.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                match client.bulk_delete_messages(&channel_id, &ids).await {
+                    Ok(()) => {
+                        let _ = event_tx
+                            .send(AppEvent::SetStatus(format!("Deleted {count} messages.")));
+                    }
+                    Err(err) => {
+                        let _ = event_tx.send(AppEvent::ApiError(format!(
+                            "Failed to delete the messages: {err}"
+                        )));
+                    }
+                }
+            });
+        }
+        MessageAction::Report => {
+            let Some(category) = argument else {
+                return;
+            };
+            app.set_status("Report sent to the moderators.");
+            let client = client.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                if let Err(err) = client
+                    .report_message(&channel_id, &message_id, &category)
+                    .await
+                {
+                    let _ = event_tx.send(AppEvent::ApiError(format!(
+                        "Failed to send the report: {err}"
+                    )));
+                }
+            });
+        }
+    }
+}
+
+fn spawn_ack_bulk(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    read_states: Vec<(String, String)>,
+    done: &str,
+) {
+    let done = done.to_string();
+    tokio::spawn(async move {
+        match client.ack_bulk(&read_states).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(done));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("Failed to mark read: {err}")));
+            }
+        }
+    });
+}
+
+fn spawn_pins_load(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+) {
+    tokio::spawn(async move {
+        // looking at the list is what marks the channel's pins seen; a
+        // failure here is not worth telling the reader about
+        let _ = client.ack_pins(&channel_id).await;
+        match client.channel_pins(&channel_id, App::PINS_LIMIT).await {
+            Ok(response) => {
+                debug::log("pins", format!("{} pinned", response.items.len()));
+                let _ = event_tx.send(AppEvent::PinsLoaded {
+                    channel_id,
+                    items: response.items,
+                });
+            }
+            Err(err) => {
+                debug::log("pins", format!("pins failed: {err:#}"));
+                let _ = event_tx.send(AppEvent::PinsFailed {
+                    channel_id,
+                    message: format!("Failed to load the pins: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Pin or unpin, then say so. The loaded copy of the message is set
+/// before the call so the pane follows at once; a failure puts it back.
+fn spawn_set_pinned(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    message_id: String,
+    pinned: bool,
+) {
+    tokio::spawn(async move {
+        let result = if pinned {
+            client.pin_message(&channel_id, &message_id).await
+        } else {
+            client.unpin_message(&channel_id, &message_id).await
+        };
+        match result {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(
+                    if pinned { "Pinned." } else { "Unpinned." }.to_string(),
+                ));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::MessagePinFailed {
+                    channel_id,
+                    message_id,
+                    pinned: !pinned,
+                    message: format!(
+                        "Failed to {} the message: {err}",
+                        if pinned { "pin" } else { "unpin" }
+                    ),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_saved_load(client: FluxerHttpClient, event_tx: UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        match client.saved_messages(App::SAVED_LIMIT).await {
+            Ok(entries) => {
+                debug::log("saved", format!("{} bookmarked", entries.len()));
+                let _ = event_tx.send(AppEvent::SavedLoaded { entries });
+            }
+            Err(err) => {
+                debug::log("saved", format!("saved failed: {err:#}"));
+                let _ = event_tx.send(AppEvent::SavedFailed {
+                    message: format!("Failed to load the bookmarks: {err}"),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_set_bookmark(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    message_id: String,
+    save: bool,
+) {
+    tokio::spawn(async move {
+        let result = if save {
+            client.save_message(&channel_id, &message_id).await
+        } else {
+            client.unsave_message(&message_id).await
+        };
+        match result {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(
+                    if save {
+                        "Bookmarked (Alt+B lists them)."
+                    } else {
+                        "Bookmark removed."
+                    }
+                    .to_string(),
+                ));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::BookmarkFailed {
+                    message_id,
+                    saved: !save,
+                    message: format!("Failed to change the bookmark: {err}"),
+                });
+            }
+        }
+    });
+}
+
+fn spawn_reaction_users_load(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    message_id: String,
+    emoji: String,
+) {
+    tokio::spawn(async move {
+        match client
+            .reaction_users(&channel_id, &message_id, &emoji, App::REACTION_USERS_LIMIT)
+            .await
+        {
+            Ok(users) => {
+                let _ = event_tx.send(AppEvent::ReactionUsersLoaded { emoji, users });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ReactionUsersFailed {
+                    emoji,
+                    message: format!("Failed to load who reacted: {err}"),
                 });
             }
         }

@@ -1,10 +1,11 @@
 use crate::api::types::{
-    ChannelResponse, CompleteMultipartAttachmentUploadRequest, CompleteMultipartUploadItem,
-    CreateMessageAttachment, CreateMessageRequest, EditMessageRequest, GatewayBotResponse,
-    GuildResponse, HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
-    PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
-    PresignedAttachmentUploadResponse, RelationshipResponse, UserGuildSettingsPatch,
-    UserGuildSettingsResponse, UserPrivateResponse, UserSettingsPatch, UserSettingsResponse,
+    ChannelPinsResponse, ChannelResponse, CompleteMultipartAttachmentUploadRequest,
+    CompleteMultipartUploadItem, CreateMessageAttachment, CreateMessageRequest, EditMessageRequest,
+    GatewayBotResponse, GuildResponse, HandoffInitiateResponse, HandoffStatusResponse,
+    MessageQuery, MessageResponse, PresignedAttachmentUploadRequest,
+    PresignedAttachmentUploadRequestItem, PresignedAttachmentUploadResponse, RelationshipResponse,
+    SavedMessageEntryResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
+    UserPartialResponse, UserPrivateResponse, UserSettingsPatch, UserSettingsResponse,
     WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
@@ -825,6 +826,8 @@ impl FluxerHttpClient {
     }
 
     /// A call whose answer is either 204 or nothing worth reading.
+    /// A call whose answer is either 204 or nothing worth reading. The
+    /// older methods above each spell this out; new ones go through here.
     async fn send_empty<B>(
         &self,
         method: Method,
@@ -860,6 +863,318 @@ impl FluxerHttpClient {
         Ok(())
     }
 
+    pub async fn pin_message(&self, channel_id: &str, message_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::PUT,
+            &format!("/channels/{channel_id}/pins/{message_id}"),
+            None,
+            "pin message",
+        )
+        .await
+    }
+
+    pub async fn unpin_message(&self, channel_id: &str, message_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/channels/{channel_id}/pins/{message_id}"),
+            None,
+            "unpin message",
+        )
+        .await
+    }
+
+    /// The pinned messages of a channel, newest pin first. `limit` is
+    /// capped at 50 by the server.
+    pub async fn channel_pins(&self, channel_id: &str, limit: u32) -> Result<ChannelPinsResponse> {
+        #[derive(Serialize)]
+        struct Query {
+            limit: u32,
+        }
+        self.send_json::<Query, (), ChannelPinsResponse>(
+            Method::GET,
+            &format!("/channels/{channel_id}/messages/pins"),
+            Some(&Query {
+                limit: limit.clamp(1, 50),
+            }),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Tell the server the pin notification for this channel has been
+    /// seen, so the channel stops counting as having unread pins.
+    pub async fn ack_pins(&self, channel_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::POST,
+            &format!("/channels/{channel_id}/pins/ack"),
+            None,
+            "acknowledge pins",
+        )
+        .await
+    }
+
+    pub async fn save_message(&self, channel_id: &str, message_id: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            channel_id: &'a str,
+            message_id: &'a str,
+        }
+        self.send_empty(
+            Method::POST,
+            "/users/@me/saved-messages",
+            Some(&Body {
+                channel_id,
+                message_id,
+            }),
+            "save message",
+        )
+        .await
+    }
+
+    pub async fn unsave_message(&self, message_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/users/@me/saved-messages/{message_id}"),
+            None,
+            "unsave message",
+        )
+        .await
+    }
+
+    /// The user's saved messages, newest first. An entry whose message
+    /// has since gone carries `message: null` and says so in `status`.
+    pub async fn saved_messages(&self, limit: u32) -> Result<Vec<SavedMessageEntryResponse>> {
+        #[derive(Serialize)]
+        struct Query {
+            limit: u32,
+        }
+        self.send_json::<Query, (), Vec<SavedMessageEntryResponse>>(
+            Method::GET,
+            "/users/@me/saved-messages",
+            Some(&Query {
+                limit: limit.clamp(1, 100),
+            }),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Who reacted to a message with one emoji. `emoji` is already in the
+    /// form the reaction routes take: the character for a unicode emoji,
+    /// `name:id` for a custom one.
+    pub async fn reaction_users(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        emoji: &str,
+        limit: u32,
+    ) -> Result<Vec<UserPartialResponse>> {
+        #[derive(Serialize)]
+        struct Query {
+            limit: u32,
+        }
+        let encoded = urlencoding::encode(emoji);
+        self.send_json::<Query, (), Vec<UserPartialResponse>>(
+            Method::GET,
+            &format!("/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/users"),
+            Some(&Query {
+                limit: limit.clamp(1, 100),
+            }),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Take every reaction off a message. Needs Manage Messages.
+    pub async fn remove_all_reactions(&self, channel_id: &str, message_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/channels/{channel_id}/messages/{message_id}/reactions"),
+            None,
+            "clear reactions",
+        )
+        .await
+    }
+
+    /// Take everybody's reactions with one emoji off a message. Needs
+    /// Manage Messages.
+    pub async fn remove_emoji_reactions(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> Result<()> {
+        let encoded = urlencoding::encode(emoji);
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/channels/{channel_id}/messages/{message_id}/reactions/{encoded}"),
+            None,
+            "clear reactions for emoji",
+        )
+        .await
+    }
+
+    /// Set a message's flags. The client uses it for one bit,
+    /// `SUPPRESS_EMBEDS`; the route is the ordinary message edit, which
+    /// leaves the content alone when it is not sent.
+    pub async fn set_message_flags(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        flags: u64,
+    ) -> Result<MessageResponse> {
+        #[derive(Serialize)]
+        struct Body {
+            flags: u64,
+        }
+        self.send_json::<(), Body, MessageResponse>(
+            Method::PATCH,
+            &format!("/channels/{channel_id}/messages/{message_id}"),
+            None::<&()>,
+            Some(&Body { flags }),
+            false,
+        )
+        .await
+    }
+
+    /// Mark a channel read as far as `message_id` and no further, the way
+    /// the web client's "mark unread" does it: the same ack route with
+    /// `manual` set, which stops the server treating it as the reader
+    /// catching up.
+    pub async fn manual_ack(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        mention_count: u32,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            channel_id: &'a str,
+            message_id: &'a str,
+            mention_count: u32,
+            manual: bool,
+        }
+        #[derive(Serialize)]
+        struct Body<'a> {
+            read_states: Vec<Entry<'a>>,
+        }
+        self.send_empty(
+            Method::POST,
+            "/read-states/ack",
+            Some(&Body {
+                read_states: vec![Entry {
+                    channel_id,
+                    message_id,
+                    mention_count,
+                    manual: true,
+                }],
+            }),
+            "mark unread",
+        )
+        .await
+    }
+
+    /// Mark channels read up to a message each, in one call. The server
+    /// takes up to 100 per request.
+    pub async fn ack_bulk(&self, read_states: &[(String, String)]) -> Result<()> {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            channel_id: &'a str,
+            message_id: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Body<'a> {
+            read_states: Vec<Entry<'a>>,
+        }
+        for chunk in read_states.chunks(100) {
+            self.send_empty(
+                Method::POST,
+                "/read-states/ack-bulk",
+                Some(&Body {
+                    read_states: chunk
+                        .iter()
+                        .map(|(channel_id, message_id)| Entry {
+                            channel_id,
+                            message_id,
+                        })
+                        .collect(),
+                }),
+                "mark channels read",
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Report a message to the instance's moderators. `category` is one
+    /// of the server's fixed set, see `REPORT_CATEGORIES`.
+    pub async fn report_message(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        category: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            channel_id: &'a str,
+            message_id: &'a str,
+            category: &'a str,
+        }
+        self.send_empty(
+            Method::POST,
+            "/reports/message",
+            Some(&Body {
+                channel_id,
+                message_id,
+                category,
+            }),
+            "report message",
+        )
+        .await
+    }
+
+    /// Take one file off a message without deleting the message.
+    pub async fn delete_attachment(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/channels/{channel_id}/messages/{message_id}/attachments/{attachment_id}"),
+            None,
+            "delete attachment",
+        )
+        .await
+    }
+
+    /// Delete several messages of a channel at once. Needs Manage
+    /// Messages; the server takes 2 to 100 ids and refuses messages that
+    /// are more than two weeks old.
+    pub async fn bulk_delete_messages(
+        &self,
+        channel_id: &str,
+        message_ids: &[String],
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            messages: &'a [String],
+        }
+        for chunk in message_ids.chunks(100) {
+            self.send_empty(
+                Method::POST,
+                &format!("/channels/{channel_id}/messages/bulk-delete"),
+                Some(&Body { messages: chunk }),
+                "delete messages",
+            )
+            .await?;
+        }
+        Ok(())
+    }
     pub async fn handoff_initiate(&self) -> Result<HandoffInitiateResponse> {
         self.send_json::<(), (), HandoffInitiateResponse>(
             Method::POST,

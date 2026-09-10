@@ -98,6 +98,17 @@ act on them.
   about, the way the web client's member sidebar is. Members, joins,
   leaves and nickname changes arrive live; upstream fetched members only
   to complete an `@` and never showed them (see "The member list").
+
+- **Everything the web client's right-click offers, on a key.** **a** on a
+  selected message opens a menu of every action that message allows, and
+  each has a direct key of its own: pin to the channel and read the
+  channel's pins (**P**, **Alt+P**), bookmark and read your bookmarks
+  (**b**, **Alt+B**), see who reacted and clear reactions (**v**), mark
+  unread from a message, mark the channel or the whole community read,
+  hide or show a message's link previews, copy a link to it or its id
+  (**Y**), take one file off it, delete several at once (**m** marks
+  them), and report it to the moderators. Upstream has none of these; the
+  web client reaches them all through a pointer (see "Message actions").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -684,6 +695,44 @@ everything; there is no `/status offline`, because that is not a thing
 you choose. `/customstatus` takes up to 128 characters; setting an emoji
 on it is not wired up here, but one set elsewhere is shown.
 
+## Message actions
+
+The web client puts a message's actions behind a right-click. This client
+is keyboard-only, so **a** on a selected message opens the same list and
+walks it with **↑** / **↓**; **Enter** chooses, **Esc** steps back out of
+a list the menu led to and closes it from the top. Only the rows that
+apply are offered, so somebody else's message shows no Edit and a channel
+without **Manage Messages** shows no Clear reactions.
+
+The frequent ones also have a key of their own, shown on the right of each
+row, and those work straight from the message pane without the menu.
+
+| Action | Key | What it does |
+| ------ | --- | ------------ |
+| Add a reaction | **e** | The emoji picker, aimed at that message. |
+| Who reacted | **v** | The names behind one reaction. **←** / **→** walk the message's other reactions, **x** clears everybody's reaction with the one shown (needs **Manage Messages**). |
+| Clear every reaction | | Takes them all off. Asks a second time first, and needs **Manage Messages**. |
+| Reply, Forward, Edit | **r**, **f**, **Ctrl+E** | As before. |
+| Pin / Unpin | **P** | Pins the message to the channel. Yours anywhere you can post, anybody's with **Manage Messages**. |
+| Pinned messages | **Alt+P** | The channel's pins, newest first; **Enter** jumps to one, **x** unpins. Opening it marks the channel's pins seen, so the channel stops counting as having new ones. |
+| Bookmark | **b** | Saves the message to a private list of your own. Nobody else sees it, and it is not the same thing as a pin. |
+| Bookmarked messages | **Alt+B** | Your bookmarks from everywhere. An entry whose message has since been deleted says so rather than disappearing, so you can still drop it with **x**. |
+| Mark unread from here | | Acknowledges the channel up to the message *above* the one picked, so that one is the first thing still unread. |
+| Mark the channel read | | Acknowledges up to the newest message the client has. |
+| Mark the community read | | The same for every unread channel of the community at once. |
+| Hide / show the link previews | | Sets or clears the message's `SUPPRESS_EMBEDS` flag. Your own messages only. |
+| Copy the text | **y** | As before. |
+| Copy a link to it | **Y** | The web app address of the message, the thing you paste to point somebody at it. |
+| Copy the message id | | The raw snowflake. |
+| Remove a file from it | | Takes one attachment off without deleting the message. With several files it asks which. Your own messages only. |
+| Delete | **Ctrl+D** | As before. |
+| Delete the marked messages | | **m** marks a message (a red cross appears in its margin); this deletes every marked message of the channel in one call. Asks a second time first. Needs **Manage Messages** and at least two marks, and the server refuses messages more than two weeks old. |
+| Report to the moderators | | Asks which of the server's twelve categories, then sends it. Other people's messages only. |
+
+Pins, bookmarks, bulk deletes and cleared reactions arrive over the
+gateway as well, so a change made in another client shows here without a
+reload.
+
 ## Message formatting
 
 Messages are drawn with the markup Fluxer's own parser understands, so
@@ -903,6 +952,9 @@ close. The profile of a selected message's author is on **u** now.
 | **Alt+M**               | **Member list** of the open channel, in a column beside the messages (see "The member list"). **Alt+J** / **Alt+K** scroll it. Closes itself in a direct message; not drawn below 80 columns.                                                            |
 
 | **Alt+F**               | **Friends**: friends, the requests both ways, and the accounts you have blocked (see "Friends and blocking"). **←** / **→** switch group, **+** adds by tag, **Esc** closes.                                                                             |
+
+| **Alt+P**               | **Pinned messages** of the open channel, newest pin first. **↑** / **↓** move, **Enter** jumps to one, **x** unpins it, **R** reloads, **Esc** / **q** close. Opening the list marks the channel's pins seen.                                            |
+| **Alt+B**               | **Bookmarks**: the messages you have saved, from every community and direct message. **↑** / **↓** move, **Enter** jumps to one, **x** takes the bookmark off, **R** reloads, **Esc** / **q** close.                                                     |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |
@@ -942,6 +994,12 @@ Changing channels marks read state for the new channel when applicable.
 | **f**              | **Forward**: optional note, switch target channel (**Ctrl+K** or list), **Enter** to send (reference type forward).                                                                                                                                                                                                                                                                                                                                          |
 | **Ctrl+E**         | **Edit** the selected message (your messages only; **Enter** in input to save, **Esc** to cancel).                                                                                                                                                                                                                                                                                                                                                           |
 | **Ctrl+D**         | **Delete** the selected message (yours, or with **Manage Messages**).                                                                                                                                                                                                                                                                                                                                                                                        |
+| **a**              | **Message actions**: every action the selected message allows, in one menu (see "Message actions"). **↑** / **↓** move, **Enter** chooses, **Esc** steps back out of a list the menu led to, or closes it.                                                                                                                                                                                                                                                    |
+| **Y**              | **Copy a link** to the selected message - the address the web app opens it at. Needs the instance to have said where its web app is (it comes with the login).                                                                                                                                                                                                                                                                                                |
+| **P**              | **Pin** the selected message to the channel, or **unpin** it. Your own message anywhere you can post; anybody's with **Manage Messages**.                                                                                                                                                                                                                                                                                                                     |
+| **b**              | **Bookmark** the selected message, or take the bookmark off. **Alt+B** lists them.                                                                                                                                                                                                                                                                                                                                                                            |
+| **v**              | **Who reacted** to the selected message. **←** / **→** walk its other reactions without closing, **↑** / **↓** scroll, **x** clears everybody's reaction with the one shown (**Manage Messages**), **Esc** / **q** close.                                                                                                                                                                                                                                     |
+| **m**              | **Mark** the selected message; marked messages carry a red cross in the margin. The menu's "Delete the marked messages" then deletes every marked message of the channel in one call. Needs **Manage Messages**, at least two marks, and the server refuses messages more than two weeks old.                                                                                                                                                                 |
 | **[**              | Load **older messages** (prepends history; repeat until exhausted).                                                                                                                                                                                                                                                                                                                                                                                          |
 
 Edited messages show **(edited)** in dim italics after the timestamp when the API supplies `edited_timestamp` (including live **MESSAGE_UPDATE** from the gateway).

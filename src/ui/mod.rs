@@ -11,11 +11,15 @@ pub mod input_bar;
 pub(crate) mod input_word_wrap;
 pub mod member_pane;
 pub mod mention_popup;
+pub mod message_actions;
 pub mod message_markdown;
 pub mod message_pane;
 pub mod pings_overlay;
+pub mod pins_overlay;
 pub mod presence;
 pub mod profile_overlay;
+pub mod reaction_users_overlay;
+pub mod saved_overlay;
 pub mod server_notifications_overlay;
 pub mod settings_overlay;
 pub mod sidebar;
@@ -127,6 +131,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pings_overlay::render(frame, area, app);
     } else if app.friends.is_some() {
         friends_overlay::render(frame, area, app);
+    } else if app.pins.is_some() {
+        pins_overlay::render(frame, area, app);
+    } else if app.saved.is_some() {
+        saved_overlay::render(frame, area, app);
+    } else if app.reaction_users.is_some() {
+        reaction_users_overlay::render(frame, area, app);
+    } else if app.message_actions.is_some() {
+        message_actions::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {
