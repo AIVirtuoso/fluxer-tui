@@ -8,6 +8,7 @@ mod inline;
 mod local;
 mod open_external;
 mod prepare;
+pub mod voice;
 
 pub use attachments::{
     ClipboardContent, StagedAttachment, content_type_for_extension, from_clipboard, from_path,

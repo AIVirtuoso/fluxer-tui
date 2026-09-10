@@ -21,6 +21,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     {
         status_mid = format!(" | \u{266A} {}", player.label);
     }
+    // a call, or one ringing, outranks the rest: it is the thing the
+    // reader most needs to know is happening
+    if let Some(voice) = app.voice_status_line()
+        && app.status_message.is_empty()
+    {
+        status_mid = format!(" | \u{1F50A} {voice}");
+    }
 
     let hints = match app.focus {
         Focus::Servers => " · j/k servers · n notifications · Tab/h/l · l open channels",

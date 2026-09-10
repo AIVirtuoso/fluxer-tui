@@ -44,6 +44,11 @@ Focus & navigation
            leads to is shown before you take it), make one, browse the
            directory, list this community's invites (y copies a link, + makes
            one to the open channel, x revokes) or leave it
+  Alt+V - voice: join the open voice channel, ring a conversation, answer or turn
+           down a call, mute, deafen, leave. The client joins and keeps the
+           bookkeeping; the sound itself is carried by the program named in
+           [media] voice_command, and the menu says plainly when there is none
+           (see README, "Voice").
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -144,14 +149,16 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
   Ctrl+E / Ctrl+D - edit / delete selected message (messages focus + selection)
   Ctrl+O - full-size picture when a message is selected (see Messages)
 
-Alt
+Alt (outside the compose box, where these letters edit the text instead)
   Alt+A - next channel with unread or mention (hotlist; wraps)
   Alt+S - sticker picker (see Input)
-  Alt+M - member list      Alt+J / Alt+K - scroll it
-  Alt+S - sticker picker (see Input)      Alt+F - friends and blocked accounts
-  Alt+P - pinned messages of the open channel     Alt+B - your bookmarks
-  Alt+N - start a conversation      Alt+G - look after the open group
+  Alt+M - member list                 Alt+J / Alt+K - scroll it
+  Alt+F - friends and blocked people  Alt+B - your bookmarks
+  Alt+P - the channel's pinned messages
+  Alt+N - start a conversation        Alt+G - look after the open group
   Alt+C - join, make, browse or leave a community
+  Alt+V - voice: join, answer, mute, leave
+  /     - search messages
 
 Other
   Who is about: a filled circle in front of a name, green online, amber idle,

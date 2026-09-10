@@ -1680,6 +1680,39 @@ pub struct DiscoveryGuildListResponse {
     pub total: u32,
 }
 
+/// VOICE_SERVER_UPDATE: the grant this session presents to the media
+/// server. Fluxer carries voice over LiveKit — there is no second voice
+/// websocket and no voice opcode set — so a client opens a LiveKit
+/// connection to `endpoint` and presents `token` there.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VoiceServerUpdateEvent {
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub connection_id: String,
+    #[serde(default)]
+    pub channel_id: String,
+    /// There for a community's voice channel and absent for a call, so
+    /// this is how the scope is read.
+    #[serde(default)]
+    pub guild_id: Option<String>,
+    /// There only when the channel is end-to-end encrypted.
+    #[serde(default)]
+    pub e2ee_key: Option<String>,
+}
+
+/// VOICE_STATE_ACK: what the server made of an opcode 4, echoing back
+/// the `mutation_id` the client sent.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VoiceStateAckEvent {
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

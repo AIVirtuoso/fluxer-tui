@@ -162,6 +162,24 @@ pub struct MediaSettings {
     /// The command audio attachments are piped to (whitespace-separated);
     /// empty picks the first of mpv, ffplay, pw-play, paplay, aplay on PATH.
     pub audio_player: String,
+    /// The program that carries a voice call's audio.
+    ///
+    /// Fluxer's voice media is LiveKit, and this client does not speak
+    /// WebRTC itself: it joins, leaves, mutes and keeps the bookkeeping,
+    /// and hands the grant to this program, the same way audio and
+    /// notifications are handed to one. Empty means no program, and the
+    /// client stays in the channel without carrying any sound.
+    ///
+    /// The command is whitespace-separated and takes three placeholders:
+    /// `{url}` the LiveKit address, `{token}` the grant, and `{key}` the
+    /// end-to-end key where the channel has one. For example:
+    ///
+    /// ```toml
+    /// [media]
+    /// voice_command = "livekit-cli join-room --url {url} --api-key '' --token {token} --publish-microphone"
+    /// ```
+    #[serde(default)]
+    pub voice_command: String,
 }
 
 impl Default for MediaSettings {
@@ -170,6 +188,7 @@ impl Default for MediaSettings {
             disk_cache_mb: 64,
             memory_cache_mb: 64,
             audio_player: String::new(),
+            voice_command: String::new(),
         }
     }
 }

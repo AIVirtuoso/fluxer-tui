@@ -126,6 +126,14 @@ act on them.
   community, browses the directory, lists a community's invites or leaves
   it. The client had no invite handling of any kind, so whatever you were
   already in was what you got (see "Communities and invites").
+
+- **Voice, as far as a terminal should take it.** **Alt+V** joins a voice
+  channel, rings a conversation, answers or turns down a call, mutes,
+  deafens and leaves; an incoming call rings in the sidebar and raises a
+  notification. The audio itself is handed to a program on PATH rather
+  than carried in the client. Before this the client showed who was in a
+  voice channel and could do nothing else, and threw every call event
+  away unread (see "Voice").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -501,6 +509,60 @@ Backspace, so both delete one character; the word before the cursor goes
 on **Ctrl+W** or **Alt+Backspace**. `XTerm*backarrowKey: false` makes the
 key send DEL like elsewhere. Outside the input Ctrl+H still opens the
 keybindings overlay, so Backspace there opens it too.
+
+## Voice
+
+**Alt+V** opens the voice menu. What it offers depends on where you are
+and what is going on:
+
+| Row | When |
+| --- | ---- |
+| **Join this voice channel** | A community's voice channel is open |
+| **Ring this conversation** | A one-to-one or a group is open |
+| **Answer the call** / **Turn the call down** | Something is ringing for you |
+| **Mute** / **Deafen** and their undos | You are in a call |
+| **Leave** | You are in a call |
+| **Copy the connection details** | You are in a call and the grant has arrived |
+
+A conversation that is ringing says so beside its name in the list, and
+raises a notification like a mention. Turning a call down stops it
+ringing for you alone; it goes on ringing for everybody else.
+
+### The client does not carry the sound
+
+Fluxer's voice media is **LiveKit**. The gateway hands a session a
+signalling URL and a token, and everything after that is WebRTC — ICE,
+DTLS-SRTP, an Opus codec. This client does not speak any of it, on
+purpose: bringing it in would mean libwebrtc, a C++ toolchain in the
+build, and a great deal of code that has nothing to do with drawing a
+terminal.
+
+So voice follows the same division as the audio player and the
+notification sender, which is the rule the rest of this client is built
+on: **the client decides and a program on PATH does it.** fluxter joins,
+leaves, mutes, deafens, answers, rings and keeps the bookkeeping, and
+hands the URL and token to whatever `[media] voice_command` names.
+
+```toml
+[media]
+voice_command = "livekit-cli join-room --url {url} --api-key '' --token {token} --publish-microphone"
+```
+
+Three placeholders are filled in: `{url}`, `{token}`, and `{key}` for the
+end-to-end key where the channel has one. **The command is split into
+arguments before the values go in**, so nothing the server sends can add
+an argument of its own however it is punctuated.
+
+**With no `voice_command` set you still join** — you appear in the
+channel, others see you there, and you can mute and leave — but no sound
+goes either way. That is a real state rather than a failure, so the menu
+says `no sound is being carried` in red and names the setting, and the
+status bar shows the call either way.
+
+The grant is a credential. The debug log records its shape and never its
+content, and **Copy the connection details** says so when it puts it on
+the clipboard: it is there for setting a player up by hand, not for
+pasting into a bug report.
 
 ## Audio
 
@@ -1089,6 +1151,8 @@ close. The profile of a selected message's author is on **u** now.
 | **Alt+G**               | Look after the **group** now open: rename it, add somebody, take somebody out, leave it.                                                                                                                                                                |
 
 | **Alt+C**               | **Communities**: join with an invite, make one, browse the directory, list this community's invites, or leave it (see "Communities and invites").                                                                                                        |
+
+| **Alt+V**               | **Voice**: join the open voice channel, ring a conversation, answer or turn down a call, mute, deafen, leave (see "Voice").                                                                                                                             |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

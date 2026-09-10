@@ -819,6 +819,17 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Ring the people in a conversation, which is how a call starts.
+    pub async fn ring_call(&self, channel_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::POST,
+            &format!("/channels/{channel_id}/call/ring"),
+            Some(&serde_json::json!({})),
+            "ring them",
+        )
+        .await
+    }
+
     /// Make a group conversation with several people. The server takes
     /// the other recipients only; the reader is not one of them.
     pub async fn create_group_dm(&self, recipients: &[String]) -> Result<ChannelResponse> {
@@ -1075,6 +1086,24 @@ impl FluxerHttpClient {
             &format!("/discovery/guilds/{guild_id}/join"),
             Some(&serde_json::json!({})),
             "join the community",
+        )
+        .await
+    }
+
+    /// Stop a conversation ringing. With `recipients` holding only the
+    /// reader it turns the call down for them alone and leaves it
+    /// ringing for everybody else, which is what declining means.
+    pub async fn stop_ringing(&self, channel_id: &str, recipients: &[String]) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            #[serde(skip_serializing_if = "<[String]>::is_empty")]
+            recipients: &'a [String],
+        }
+        self.send_empty(
+            Method::POST,
+            &format!("/channels/{channel_id}/call/stop-ringing"),
+            Some(&Body { recipients }),
+            "stop the ringing",
         )
         .await
     }

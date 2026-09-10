@@ -294,6 +294,9 @@ pub struct EventEffects {
     /// A community whose invite list has to be fetched again, after one
     /// was made or revoked.
     pub reload_invites: Option<String>,
+    /// A voice grant arrived, so the program that carries the sound can
+    /// be started.
+    pub start_voice_media: bool,
 }
 
 /// A gateway payload read into its type; when it cannot be, the debug
@@ -967,10 +970,64 @@ pub fn apply_event(
                 }
             }
             "CALL_CREATE" | "CALL_UPDATE" => {
-                let _ = serde_json::from_value::<CallEvent>(payload);
+                if let Some(event) = read::<CallEvent>(&kind, payload) {
+                    let was_ringing = app
+                        .incoming_calls
+                        .get(&event.channel_id)
+                        .is_some_and(|c| c.ringing.contains(&app.me.id));
+                    let now_ringing = event.ringing.contains(&app.me.id);
+                    app.upsert_incoming_call(event.channel_id.clone(), event.ringing);
+                    // a call that starts ringing is worth saying out loud,
+                    // the same as a mention
+                    if now_ringing && !was_ringing {
+                        let (_, name) = app.channel_location(&event.channel_id);
+                        effects.notify.push(crate::notify::Notification {
+                            title: format!("{name} is calling"),
+                            body: "Alt+V answers.".to_string(),
+                            place: name,
+                        });
+                    }
+                }
             }
             "CALL_DELETE" => {
-                let _ = serde_json::from_value::<CallDeleteEvent>(payload);
+                if let Some(event) = read::<CallDeleteEvent>(&kind, payload) {
+                    app.clear_incoming_call(&event.channel_id);
+                }
+            }
+            "VOICE_STATE_ACK" => {
+                if let Some(event) = read::<crate::api::types::VoiceStateAckEvent>(&kind, payload) {
+                    // the server naming a connection is what lets the
+                    // client change or leave it later
+                    if let Some(connection) = &mut app.voice
+                        && let Some(connection_id) = event.connection_id
+                    {
+                        connection.connection_id = Some(connection_id);
+                    }
+                    // an ack with no channel is the server confirming a
+                    // leave, whoever asked for it
+                    if event.channel_id.is_none() {
+                        app.clear_voice();
+                    }
+                }
+            }
+            "VOICE_SERVER_UPDATE" => {
+                if let Some(event) =
+                    read::<crate::api::types::VoiceServerUpdateEvent>(&kind, payload)
+                {
+                    // the token is a credential: the log gets the shape
+                    // of the grant and never the grant itself
+                    crate::debug::log(
+                        "voice",
+                        format!(
+                            "grant for {} ({} bytes of token, e2ee {})",
+                            event.channel_id,
+                            event.token.len(),
+                            event.e2ee_key.is_some()
+                        ),
+                    );
+                    app.set_voice_grant(event);
+                    effects.start_voice_media = true;
+                }
             }
             "GUILD_EMOJIS_UPDATE" => {
                 #[derive(serde::Deserialize)]
