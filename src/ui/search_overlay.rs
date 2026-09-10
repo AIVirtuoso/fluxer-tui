@@ -187,16 +187,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     let footer = if view.editing {
-        "Enter search  ·  \u{2190}/\u{2192} scope  ·  \u{2193} results  ·  Esc close"
+        "type it  ·  Enter search  ·  \u{2190}/\u{2192} scope  ·  \u{2193} results  ·  Esc close"
     } else if pages > 1 {
         "\u{2191}/\u{2193} move  ·  Enter go to it  ·  n/p page  ·  / edit  ·  Esc close"
     } else {
         "\u{2191}/\u{2193} move  ·  Enter go to it  ·  / edit the query  ·  Esc close"
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, muted))).alignment(Alignment::Center),
-        body[2],
-    );
+    crate::ui::footer::render(frame, body[2], app, footer);
 }
 
 #[cfg(test)]

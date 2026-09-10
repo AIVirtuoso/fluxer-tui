@@ -809,6 +809,11 @@ async fn main() -> Result<()> {
 }
 
 fn ensure_lazy_guild_subscription(app: &mut App, gateway_cmd_tx: &UnboundedSender<GatewayCommand>) {
+    // noticing the reader moved is done here rather than at each of the
+    // dozen call sites that move them: the history, the last community
+    // and the "new messages" line all hang off it
+    app.note_active_channel();
+    app.clear_unread_anchor_if_caught_up();
     if app.gateway_status != GatewayStatus::Connected {
         return;
     }
@@ -1900,7 +1905,7 @@ fn handle_key_event(
                     spawn_relationship_action(
                         client.clone(),
                         event_tx.clone(),
-                        RelationshipAction::Accept,
+                        crate::app::RelationshipAction::Accept,
                         relationship.user.id,
                         &format!("{name} is a friend now."),
                     );
@@ -1914,7 +1919,7 @@ fn handle_key_event(
                     spawn_relationship_action(
                         client.clone(),
                         event_tx.clone(),
-                        RelationshipAction::Block,
+                        crate::app::RelationshipAction::Block,
                         relationship.user.id,
                         &format!("{name} is blocked."),
                     );
@@ -1936,7 +1941,7 @@ fn handle_key_event(
                     spawn_relationship_action(
                         client.clone(),
                         event_tx.clone(),
-                        RelationshipAction::Remove,
+                        crate::app::RelationshipAction::Remove,
                         relationship.user.id,
                         &done,
                     );
@@ -2450,66 +2455,48 @@ fn handle_key_event(
             },
             KeyCode::Up | KeyCode::Char('k') => app.profile_scroll(-1),
             KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
-            // + ask them to be friends, B block, x undo whichever tie
-            // there is: the three the web client's profile card offers
-            KeyCode::Char('+') => {
-                if let Some(view) = app.profile.as_ref()
-                    && view.user_id != app.me.id
-                {
-                    let user_id = view.user_id.clone();
-                    let name = app
-                        .user_cache
-                        .get(&user_id)
-                        .map(display_name)
-                        .unwrap_or_else(|| "them".to_string());
-                    spawn_relationship_action(
-                        client.clone(),
-                        event_tx.clone(),
-                        RelationshipAction::Add,
-                        user_id,
-                        &format!("Asked {name} to be friends."),
-                    );
-                }
-            }
-            KeyCode::Char('B') => {
-                if let Some(view) = app.profile.as_ref()
-                    && view.user_id != app.me.id
-                {
-                    let user_id = view.user_id.clone();
-                    let name = app
-                        .user_cache
-                        .get(&user_id)
-                        .map(display_name)
-                        .unwrap_or_else(|| "them".to_string());
-                    app.dismiss_profile();
-                    spawn_relationship_action(
-                        client.clone(),
-                        event_tx.clone(),
-                        RelationshipAction::Block,
-                        user_id,
-                        &format!("{name} is blocked."),
-                    );
-                }
-            }
-            KeyCode::Char('x') => {
-                if let Some(view) = app.profile.as_ref()
-                    && view.user_id != app.me.id
-                {
-                    let user_id = view.user_id.clone();
-                    match app.relationship_with(&user_id) {
-                        Some(_) => spawn_relationship_action(
-                            client.clone(),
-                            event_tx.clone(),
-                            RelationshipAction::Remove,
-                            user_id,
-                            "Done.",
-                        ),
-                        None => app.set_status("Nothing to undo: they are nothing to you yet."),
+            // +, B and x: what each does depends on how the reader
+            // stands with them, and `App::relationship_keys_for` is the
+            // one place that decides — the footer reads the same thing,
+            // so a hint can never offer what the key will not do
+            KeyCode::Char('+') | KeyCode::Char('B') | KeyCode::Char('x') => {
+                let Some(user_id) = app.profile.as_ref().map(|v| v.user_id.clone()) else {
+                    return;
+                };
+                let keys = app.relationship_keys_for(&user_id);
+                let chosen = match key.code {
+                    KeyCode::Char('+') => keys.plus,
+                    KeyCode::Char('B') => keys.block,
+                    _ => keys.undo,
+                };
+                let Some((action, label)) = chosen else {
+                    app.set_transient_status("Nothing that key can do here.", App::NOTICE_LIFETIME);
+                    return;
+                };
+                let name = app
+                    .user_cache
+                    .get(&user_id)
+                    .map(display_name)
+                    .unwrap_or_else(|| "them".to_string());
+                let done = match action {
+                    crate::app::RelationshipAction::Add => {
+                        format!("Friend request sent to {name}.")
                     }
+                    crate::app::RelationshipAction::Accept => {
+                        format!("{name} is a friend now.")
+                    }
+                    crate::app::RelationshipAction::Block => format!("{name} is blocked."),
+                    crate::app::RelationshipAction::Remove => {
+                        format!("Done: {label} {name}.")
+                    }
+                };
+                // blocking hides their messages, so the profile goes with
+                // it rather than sitting over a pane that just changed
+                if action == crate::app::RelationshipAction::Block {
+                    app.dismiss_profile();
                 }
+                spawn_relationship_action(client.clone(), event_tx.clone(), action, user_id, &done);
             }
-            KeyCode::PageUp => app.profile_scroll(-12),
-            KeyCode::PageDown => app.profile_scroll(12),
             _ => {}
         }
         return;
@@ -2875,8 +2862,11 @@ fn handle_key_event(
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::BackTab => app.focus = app.focus.previous(),
-        KeyCode::Left | KeyCode::Char('h') => app.focus = app.focus.previous(),
-        KeyCode::Right | KeyCode::Char('l') => app.focus = app.focus.next(),
+        // these carry no modifier, so they would swallow every Alt key
+        // that shares a letter with them; the guard is what keeps
+        // Alt+Left, Alt+Right and Alt+L reachable further down
+        KeyCode::Left | KeyCode::Char('h') if !alt => app.focus = app.focus.previous(),
+        KeyCode::Right | KeyCode::Char('l') if !alt => app.focus = app.focus.next(),
         KeyCode::Char('i') => {
             if app.active_channel_is_text() && app.can_send_in_active_channel() {
                 app.focus = Focus::Input;
@@ -2907,15 +2897,55 @@ fn handle_key_event(
         // Alt+J / Alt+K scroll the member column, which has no focus of
         // its own: it is a list to read beside the messages, not a place
         // the Tab cycle stops at
-        KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Down
+        KeyCode::Char('j') | KeyCode::Char('J')
             if key.modifiers.contains(KeyModifiers::ALT) && app.member_list.is_some() =>
         {
             app.member_list_scroll(1);
         }
-        KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Up
+        KeyCode::Char('k') | KeyCode::Char('K')
             if key.modifiers.contains(KeyModifiers::ALT) && app.member_list.is_some() =>
         {
             app.member_list_scroll(-1);
+        }
+        // Alt+Up / Alt+Down step the server column from anywhere, so the
+        // reader does not have to put the focus on it first
+        KeyCode::Up if alt => app.step_server(-1),
+        KeyCode::Down if alt => app.step_server(1),
+        // Alt+Left / Alt+Right walk the channels visited, the way a
+        // browser's back and forward do
+        KeyCode::Left if alt => {
+            if !app.step_channel_history(true) {
+                app.set_transient_status("Nothing further back.", App::NOTICE_LIFETIME);
+            }
+        }
+        KeyCode::Right if alt => {
+            if !app.step_channel_history(false) {
+                app.set_transient_status("Nothing further forward.", App::NOTICE_LIFETIME);
+            }
+        }
+        // Alt+1 to Alt+9: the conversation list, then the communities in
+        // order, the way the web client numbers them
+        KeyCode::Char(c @ '1'..='9') if alt => {
+            let slot = c.to_digit(10).unwrap_or(0) as usize;
+            if !app.go_to_server_slot(slot) {
+                app.set_transient_status(format!("There is no slot {slot}."), App::NOTICE_LIFETIME);
+            }
+        }
+        // Alt+L: back and forth between the last community and the
+        // conversation list
+        KeyCode::Char('l') | KeyCode::Char('L') if alt => {
+            app.toggle_guild_and_dms();
+        }
+        // U: the "new messages" line
+        KeyCode::Char('U')
+            if matches!(
+                app.focus,
+                Focus::Servers | Focus::Channels | Focus::Messages
+            ) =>
+        {
+            if !app.jump_to_first_unread() {
+                app.set_transient_status("Nothing new to jump to here.", App::NOTICE_LIFETIME);
+            }
         }
         KeyCode::Up | KeyCode::Char('k') => match app.focus {
             Focus::Servers => {
@@ -5421,30 +5451,20 @@ fn spawn_relationships_load(client: FluxerHttpClient, event_tx: UnboundedSender<
     });
 }
 
-/// What to do to a relationship. The gateway tells the client what came
-/// of it, so nothing here writes to the list itself.
-#[derive(Debug, Clone, Copy)]
-enum RelationshipAction {
-    Add,
-    Accept,
-    Block,
-    Remove,
-}
-
 fn spawn_relationship_action(
     client: FluxerHttpClient,
     event_tx: UnboundedSender<AppEvent>,
-    action: RelationshipAction,
+    action: crate::app::RelationshipAction,
     user_id: String,
     done: &str,
 ) {
     let done = done.to_string();
     tokio::spawn(async move {
         let result = match action {
-            RelationshipAction::Add => client.friend_request(&user_id).await,
-            RelationshipAction::Accept => client.accept_friend_request(&user_id).await,
-            RelationshipAction::Block => client.block_user(&user_id).await,
-            RelationshipAction::Remove => client.remove_relationship(&user_id).await,
+            crate::app::RelationshipAction::Add => client.friend_request(&user_id).await,
+            crate::app::RelationshipAction::Accept => client.accept_friend_request(&user_id).await,
+            crate::app::RelationshipAction::Block => client.block_user(&user_id).await,
+            crate::app::RelationshipAction::Remove => client.remove_relationship(&user_id).await,
         };
         match result {
             Ok(()) => {
@@ -5472,7 +5492,7 @@ fn spawn_friend_request_by_tag(
         {
             Ok(()) => {
                 let _ = event_tx.send(AppEvent::SetStatus(format!(
-                    "Asked {username}#{discriminator} to be friends."
+                    "Friend request sent to {username}#{discriminator}."
                 )));
             }
             Err(err) => {

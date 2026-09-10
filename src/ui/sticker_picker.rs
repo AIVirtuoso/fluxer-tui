@@ -5,7 +5,7 @@
 
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
@@ -211,16 +211,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let hint = Paragraph::new(Line::from(Span::styled(
+    crate::ui::footer::render(
+        frame,
+        foot,
+        app,
         if picker.searching {
-            "type to filter \u{00B7} Enter keeps it \u{00B7} Esc cancels the search \u{00B7} Backspace edits"
+            "type to filter · Enter keeps it · Esc cancels the search · Backspace edits"
         } else {
-            "j/k \u{2191}\u{2193} move \u{00B7} g/G top/bottom \u{00B7} / search \u{00B7} Enter stage it \u{00B7} q close"
+            "j/k move · g/G top/bottom · Ctrl+D/U by ten · / search · Enter stage it · q close"
         },
-        muted,
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, foot);
+    );
 }
 
 /// `s` cut to `width` cells, with an ellipsis when something was cut.

@@ -16,6 +16,15 @@ const HELP: &str = r#"Global (almost any screen)
 Focus & navigation
   Tab / Shift+Tab - cycle: servers → channels → messages → input
   h / l / Left / Right - same as Tab (previous / next focus)
+  Alt+1 … Alt+9 - go straight to a place in the left column: Alt+1 is the
+           conversation list, Alt+2 the first community, and so on to Alt+9
+  Alt+Up / Alt+Down - previous / next entry in that column, from any focus,
+           wrapping; no need to put the focus on it first
+  Alt+Left / Alt+Right - back and forward through the channels you have
+           visited, the way a browser's do. The bar says which way is open.
+  Alt+L - back and forth between the community you were last in and the
+           conversation list
+  U - jump to the "new messages" line (see Other)
   Esc - messages focus; clears message selection; closes overlays
   i - jump to input (text channel with send permission)
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
@@ -88,8 +97,11 @@ Messages
            marked message of the channel in one call (needs Manage Messages, and
            the server refuses messages older than two weeks)
   r - reply to selected message
-  u - profile of the selected message's author (p there: picture full size; Esc closes;
-           + asks them to be friends, B blocks them, x undoes whichever tie there is)
+  u - profile of the selected message's author. p shows the picture full size,
+           Esc closes, and + / x / B act on how you stand with them: + asks or
+           accepts, x unfriends, turns down, takes back or unblocks, B blocks.
+           The line at the bottom of the profile names whichever of the three
+           apply, so there is no guessing which.
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
   e - react: opens emoji picker on selected message (Enter to send reaction, Esc cancels)
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)
@@ -151,6 +163,9 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 
 Alt (outside the compose box, where these letters edit the text instead)
   Alt+A - next channel with unread or mention (hotlist; wraps)
+  Alt+1-9 - a place in the left column   Alt+Up/Down - step through it
+  Alt+Left/Right - back / forward through the channels you have visited
+  Alt+L - the last community, or the conversation list
   Alt+S - sticker picker (see Input)
   Alt+M - member list                 Alt+J / Alt+K - scroll it
   Alt+F - friends and blocked people  Alt+B - your bookmarks
@@ -161,6 +176,21 @@ Alt (outside the compose box, where these letters edit the text instead)
   /     - search messages
 
 Other
+  The "new messages" line: an amber rule across the pane above the first
+           message that arrived since you last opened the channel. U jumps to
+           it. It stays where it was while you read, rather than sliding down
+           as the client marks things read, and goes once you are at the
+           bottom with nothing unread. A channel you have never opened gets
+           no line, since a rule above the whole history says nothing.
+  What you can press: the bar under the title says it for wherever the
+           focus is, and every overlay — profile, friends, pins, pickers, the
+           settings, this one — says it on its own bottom line, naming only
+           what would actually do something where you are. The : @ and /
+           popups have no row to spare, so their keys are on their title;
+           the compose box says how to finish and how to leave whichever
+           mode it is in. When something happens (a request sent, a message
+           pinned) the words take that line for a few seconds and then the
+           keys come back.
   Who is about: a filled circle in front of a name, green online, amber idle,
            red do not disturb; nothing at all where the server has said
            nothing. A one-to-one conversation shows the other person's in
@@ -243,10 +273,5 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         " Esc / Enter / q - close "
     };
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        footer,
-        crate::ui::theme::muted_style(),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, body[1]);
+    crate::ui::footer::render(frame, body[1], app, footer);
 }

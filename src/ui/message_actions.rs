@@ -20,7 +20,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .fg(crate::ui::theme::accent())
         .add_modifier(Modifier::BOLD);
     let text = Style::default().fg(crate::ui::theme::text());
-    let muted = crate::ui::theme::muted_style();
     let dim = crate::ui::theme::dim_style();
 
     let (title, rows, footer): (&str, Vec<(String, String, bool)>, &str) = match &view.mode {
@@ -135,10 +134,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         content,
     );
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, muted))).alignment(Alignment::Center),
-        body[1],
-    );
+    crate::ui::footer::render(frame, body[1], app, footer);
 }
 
 /// "Clear every reaction" reads badly after "Yes, "; lower the first

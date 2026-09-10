@@ -4,7 +4,7 @@
 
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
@@ -203,12 +203,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        "↑↓ move \u{00B7} Enter open/attach \u{00B7} \u{2190} up \u{00B7} type to filter \u{00B7} Esc close",
-        muted,
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, foot);
+    crate::ui::footer::render(
+        frame,
+        foot,
+        app,
+        "↑↓ move · Enter open/attach · ← up a folder · type to filter · Esc close",
+    );
 }
 
 fn shorten_home(path: &std::path::Path) -> String {

@@ -190,16 +190,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) -> Option<(u16, u16)> {
     let no_perms = app.active_channel_is_text() && !app.can_send_in_active_channel();
     let voice_only = app.active_channel_is_voice();
 
+    // a mode says how to finish it and how to get out of it: the box
+    // named the mode and left the reader to guess at Esc
     let title = if voice_only {
         "Input (voice not supported)"
     } else if no_perms {
         "Input (no permission)"
     } else if app.edit_target.is_some() {
-        "Edit message"
+        "Edit message \u{00B7} Enter saves \u{00B7} Esc cancels"
     } else if app.forward_mode {
-        "Forward (select channel, Enter to send)"
+        "Forward \u{00B7} Ctrl+K picks the channel \u{00B7} Enter sends \u{00B7} Esc cancels"
     } else if app.reply_to.is_some() {
-        "Reply"
+        "Reply \u{00B7} Enter sends \u{00B7} Esc drops it"
     } else if can_type {
         "Input"
     } else {

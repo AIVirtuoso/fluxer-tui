@@ -299,16 +299,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let footer = match &view.input {
         Some(input) => format!(
-            "{}: {}\u{2588}  ·  Enter go  ·  Esc cancel",
+            "{}: {}\u{2588}  ·  type it  ·  Backspace edits  ·  Enter go  ·  Esc cancel",
             input.prompt(),
             input.text()
         ),
         None => footer,
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, muted))).alignment(Alignment::Center),
-        body[1],
-    );
+    crate::ui::footer::render(frame, body[1], app, &footer);
 }
 
 #[cfg(test)]

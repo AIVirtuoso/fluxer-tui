@@ -1,9 +1,9 @@
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let Some(picker) = &app.channel_picker else {
@@ -97,16 +97,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     );
     frame.render_widget(list, popup);
 
-    let foot = Paragraph::new(Line::from(Span::styled(
-        "↑↓ Enter - open   Esc - cancel   Backspace - edit filter",
-        crate::ui::theme::muted_style(),
-    )))
-    .alignment(Alignment::Center);
     let foot_area = Rect {
         x: popup.x,
         y: popup.y + popup.height.saturating_sub(1),
         width: popup.width,
         height: 1,
     };
-    frame.render_widget(foot, foot_area);
+    crate::ui::footer::render(
+        frame,
+        foot_area,
+        app,
+        "type to filter · ↑/↓ move · Enter jump · Backspace edit · Esc close",
+    );
 }

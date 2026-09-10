@@ -895,6 +895,50 @@ pub struct PresenceEntry {
     pub custom_status: Option<CustomStatusPayload>,
 }
 
+/// What to do to a relationship. The gateway tells the client what came
+/// of it, so nothing here writes to the list itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipAction {
+    Add,
+    Accept,
+    Block,
+    Remove,
+}
+
+/// What `+`, `B` and `x` do for one person, given how the reader stands
+/// with them.
+///
+/// The profile's key handler and its footer both read this, so a hint can
+/// never offer something the key does not do — which is how `+` came to
+/// send a fresh friend request at somebody who had already asked, where
+/// the server wants an accept.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RelationshipKeys {
+    /// `+`
+    pub plus: Option<(RelationshipAction, &'static str)>,
+    /// `B`
+    pub block: Option<(RelationshipAction, &'static str)>,
+    /// `x`
+    pub undo: Option<(RelationshipAction, &'static str)>,
+}
+
+impl RelationshipKeys {
+    /// The three of them as hint text, in the order the keys are pressed.
+    pub fn hints(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some((_, label)) = self.plus {
+            out.push(format!("+ {label}"));
+        }
+        if let Some((_, label)) = self.undo {
+            out.push(format!("x {label}"));
+        }
+        if let Some((_, label)) = self.block {
+            out.push(format!("B {label}"));
+        }
+        out
+    }
+}
+
 /// The friends overlay: everybody the reader has a tie to, in the four
 /// groups the server sorts them into.
 #[derive(Debug)]
@@ -1552,6 +1596,25 @@ pub struct App {
     pub own_typing: OwnTyping,
     /// The pings overlay while it is open.
     pub pings: Option<PingsView>,
+    /// The channels the reader has been in, oldest first, for Alt+Left
+    /// and Alt+Right. Capped; see [`App::CHANNEL_HISTORY_MAX`].
+    pub channel_history: Vec<(ServerSelection, String)>,
+    /// Where in that list the reader is. Walking it does not add to it.
+    pub channel_history_pos: usize,
+    /// Set while a history step is being applied, so the step is not
+    /// recorded as a new visit.
+    pub walking_history: bool,
+    /// The last community the reader was in, so Alt+L can go back to it
+    /// from the conversation list.
+    pub last_guild: Option<String>,
+    /// Which channel was active last time the client looked, so a change
+    /// can be noticed in one place rather than at every call site that
+    /// moves the reader.
+    pub last_active_channel: Option<String>,
+    /// Where the "new messages" line sits in a channel: the id of the
+    /// last message that was read when the channel was opened. Kept while
+    /// the reader stays, so the line does not slide away under them.
+    pub unread_anchor: HashMap<String, String>,
     /// The member list pane while it is open, and what has arrived for it.
     pub member_list: Option<MemberList>,
     /// Who is online, by user id, from READY and PRESENCE_UPDATE. An
@@ -1816,6 +1879,12 @@ impl App {
             typing_users: HashMap::new(),
             own_typing: OwnTyping::default(),
             pings: None,
+            channel_history: Vec::new(),
+            channel_history_pos: 0,
+            walking_history: false,
+            last_guild: None,
+            last_active_channel: None,
+            unread_anchor: HashMap::new(),
             member_list: None,
             presences: HashMap::new(),
             presence_version: 0,
@@ -5695,6 +5764,50 @@ impl App {
         self.normalize_selection();
     }
 
+    /// What the three relationship keys do for somebody, and what to call
+    /// each on the hint line. Nothing at all for the reader themselves.
+    pub fn relationship_keys_for(&self, user_id: &str) -> RelationshipKeys {
+        if user_id == self.me.id {
+            return RelationshipKeys::default();
+        }
+        let block = Some((RelationshipAction::Block, "block"));
+        match self.relationships.get(user_id).map(|r| r.relationship_type) {
+            None => RelationshipKeys {
+                plus: Some((RelationshipAction::Add, "add friend")),
+                block,
+                undo: None,
+            },
+            Some(RELATIONSHIP_FRIEND) => RelationshipKeys {
+                plus: None,
+                block,
+                undo: Some((RelationshipAction::Remove, "unfriend")),
+            },
+            // they asked first, so `+` accepts rather than asking back:
+            // the server takes a different call for each
+            Some(RELATIONSHIP_INCOMING_REQUEST) => RelationshipKeys {
+                plus: Some((RelationshipAction::Accept, "accept")),
+                block,
+                undo: Some((RelationshipAction::Remove, "turn down")),
+            },
+            Some(RELATIONSHIP_OUTGOING_REQUEST) => RelationshipKeys {
+                plus: None,
+                block,
+                undo: Some((RelationshipAction::Remove, "take it back")),
+            },
+            Some(RELATIONSHIP_BLOCKED) => RelationshipKeys {
+                plus: None,
+                // blocking somebody already blocked is nothing to offer
+                block: None,
+                undo: Some((RelationshipAction::Remove, "unblock")),
+            },
+            Some(_) => RelationshipKeys {
+                plus: None,
+                block,
+                undo: Some((RelationshipAction::Remove, "undo")),
+            },
+        }
+    }
+
     pub fn relationship_with(&self, user_id: &str) -> Option<&RelationshipResponse> {
         self.relationships.get(user_id)
     }
@@ -7275,6 +7388,252 @@ impl App {
         }
         Some(format!("in {name}{what}"))
     }
+    // Getting about: slots, history, the last community
+
+    /// How many channels back Alt+Left can walk.
+    pub const CHANNEL_HISTORY_MAX: usize = 50;
+
+    /// How long a one-off notice — "sent", "joined", "pinned" — stays
+    /// before the key hints come back.
+    pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
+
+    /// Notice that the reader has moved, and keep the three things that
+    /// depend on it: the visited-channel history, the last community,
+    /// and where the "new messages" line goes.
+    ///
+    /// Called once a frame rather than at every place that moves the
+    /// reader, of which there are a dozen and counting.
+    pub fn note_active_channel(&mut self) {
+        let now = self.active_channel_id();
+        // the flag is consumed here whatever happens next: a step that
+        // landed where the reader already was is still a step, and
+        // leaving it set would stop the next real visit being recorded
+        let walking = std::mem::take(&mut self.walking_history);
+        if now == self.last_active_channel {
+            return;
+        }
+        self.last_active_channel = now.clone();
+        if let ServerSelection::Guild(guild_id) = &self.selected_server {
+            self.last_guild = Some(guild_id.clone());
+        }
+        let Some(channel_id) = now else {
+            return;
+        };
+        self.set_unread_anchor(&channel_id);
+        if walking {
+            // a step through the history is not a new place to go back to
+            return;
+        }
+        let entry = (self.selected_server.clone(), channel_id);
+        // going somewhere new throws away whatever was ahead
+        self.channel_history.truncate(self.channel_history_pos);
+        if self.channel_history.last() == Some(&entry) {
+            return;
+        }
+        self.channel_history.push(entry);
+        if self.channel_history.len() > Self::CHANNEL_HISTORY_MAX {
+            let drop = self.channel_history.len() - Self::CHANNEL_HISTORY_MAX;
+            self.channel_history.drain(0..drop);
+        }
+        self.channel_history_pos = self.channel_history.len();
+    }
+
+    /// Alt+Left and Alt+Right. `back` walks towards the older entries.
+    /// False when there is nowhere to go that way.
+    pub fn step_channel_history(&mut self, back: bool) -> bool {
+        let target = if back {
+            if self.channel_history_pos <= 1 {
+                return false;
+            }
+            self.channel_history_pos - 2
+        } else {
+            if self.channel_history_pos >= self.channel_history.len() {
+                return false;
+            }
+            self.channel_history_pos
+        };
+        let Some((server, channel_id)) = self.channel_history.get(target).cloned() else {
+            return false;
+        };
+        // a channel that has gone since it was visited is skipped rather
+        // than moved to; the entry stays, in case it comes back
+        if self.server_for_channel(&channel_id).is_none() {
+            self.set_status("That channel is not there any more.");
+            return false;
+        }
+        self.walking_history = true;
+        self.channel_history_pos = target + 1;
+        self.selected_server = server;
+        self.selected_channel_id = Some(channel_id);
+        self.message_scroll_from_bottom = 0;
+        self.selected_message_index = None;
+        self.normalize_selection();
+        self.focus = Focus::Messages;
+        true
+    }
+
+    pub fn can_step_history(&self, back: bool) -> bool {
+        if back {
+            self.channel_history_pos > 1
+        } else {
+            self.channel_history_pos < self.channel_history.len()
+        }
+    }
+
+    /// Alt+1 to Alt+9: slot 1 is the conversation list and slots 2 to 9
+    /// are the first eight communities, the way the web client numbers
+    /// them.
+    pub fn go_to_server_slot(&mut self, slot: usize) -> bool {
+        let entries = self.server_entries();
+        let Some(server) = slot.checked_sub(1).and_then(|i| entries.get(i)).cloned() else {
+            return false;
+        };
+        self.select_server(server);
+        true
+    }
+
+    /// Alt+L: back and forth between the community last read and the
+    /// conversation list.
+    pub fn toggle_guild_and_dms(&mut self) -> bool {
+        match &self.selected_server {
+            ServerSelection::DirectMessages => {
+                let Some(guild_id) = self.last_guild.clone() else {
+                    self.set_status("No community to go back to yet.");
+                    return false;
+                };
+                if !self.guilds.iter().any(|g| g.id == guild_id) {
+                    self.last_guild = None;
+                    self.set_status("That community is not on your list any more.");
+                    return false;
+                }
+                self.select_server(ServerSelection::Guild(guild_id));
+                true
+            }
+            ServerSelection::Guild(_) => {
+                self.select_server(ServerSelection::DirectMessages);
+                true
+            }
+        }
+    }
+
+    /// Move to a community, or to the conversation list, and open
+    /// whatever channel was last read there.
+    pub fn select_server(&mut self, server: ServerSelection) {
+        if self.selected_server == server {
+            return;
+        }
+        self.selected_server = server;
+        self.selected_channel_id = None;
+        self.message_scroll_from_bottom = 0;
+        self.selected_message_index = None;
+        self.normalize_selection();
+        self.focus = Focus::Messages;
+    }
+
+    /// Step through the server column from anywhere, so the reader does
+    /// not have to put the focus on it first.
+    pub fn step_server(&mut self, delta: isize) {
+        let entries = self.server_entries();
+        if entries.len() < 2 {
+            return;
+        }
+        let here = entries
+            .iter()
+            .position(|s| *s == self.selected_server)
+            .unwrap_or(0) as isize;
+        let next = (here + delta).rem_euclid(entries.len() as isize) as usize;
+        if let Some(server) = entries.get(next).cloned() {
+            self.select_server(server);
+        }
+    }
+
+    // The "new messages" line
+
+    /// Fix where the line goes for a channel the reader has just opened:
+    /// after the last message they had read. Nothing unread means no
+    /// line, and a channel never opened before gets none either, since a
+    /// line above the whole history says nothing.
+    pub fn set_unread_anchor(&mut self, channel_id: &str) {
+        let last_read = self
+            .read_states
+            .get(channel_id)
+            .and_then(|rs| rs.last_message_id.clone());
+        match last_read {
+            Some(last_read) if self.channel_is_unread(channel_id) => {
+                self.unread_anchor.insert(channel_id.to_string(), last_read);
+            }
+            _ => {
+                self.unread_anchor.remove(channel_id);
+            }
+        }
+        self.messages_version = self.messages_version.wrapping_add(1);
+    }
+
+    /// The message the line sits above: the oldest one in the loaded
+    /// history that arrived after the anchor. None when there is no line
+    /// to draw, or when everything after the anchor is off the top.
+    pub fn first_unread_message_id(&self, channel_id: &str) -> Option<String> {
+        let anchor = self.unread_anchor.get(channel_id)?;
+        let anchor_key = snowflake_sort_key(anchor);
+        self.messages
+            .get(channel_id)?
+            .iter()
+            .find(|m| snowflake_sort_key(&m.id) > anchor_key)
+            .map(|m| m.id.clone())
+    }
+
+    pub fn active_first_unread_message_id(&self) -> Option<String> {
+        self.first_unread_message_id(&self.active_channel_id()?)
+    }
+
+    /// `U`: put the cursor on the first message that arrived after the
+    /// reader last left, and scroll it into view. False when there is no
+    /// line to jump to.
+    pub fn jump_to_first_unread(&mut self) -> bool {
+        let Some(channel_id) = self.active_channel_id() else {
+            return false;
+        };
+        let Some(first_unread) = self.first_unread_message_id(&channel_id) else {
+            return false;
+        };
+        let Some(index) = self
+            .messages
+            .get(&channel_id)
+            .and_then(|messages| messages.iter().position(|m| m.id == first_unread))
+        else {
+            return false;
+        };
+        self.focus = Focus::Messages;
+        self.selected_message_index = Some(index);
+        // moving the selection is a content change, so the reader anchor
+        // would put the view back; see the fork's notes on that family
+        self.pane_anchor = None;
+        self.clamp_scroll_to_selected_message();
+        true
+    }
+
+    /// Drop the line once the reader has scrolled to the bottom of the
+    /// channel with everything read: at that point it has done its job
+    /// and would only be in the way next time.
+    pub fn clear_unread_anchor_if_caught_up(&mut self) {
+        let Some(channel_id) = self.active_channel_id() else {
+            return;
+        };
+        if !self.unread_anchor.contains_key(&channel_id) {
+            return;
+        }
+        if self.message_scroll_from_bottom == 0 && !self.channel_is_unread(&channel_id) {
+            self.clear_unread_anchor(&channel_id);
+        }
+    }
+
+    /// Drop the line: the reader asked to, or has caught up on purpose.
+    pub fn clear_unread_anchor(&mut self, channel_id: &str) {
+        if self.unread_anchor.remove(channel_id).is_some() {
+            self.messages_version = self.messages_version.wrapping_add(1);
+        }
+    }
+
     // r (as in reply)
 
     pub fn start_reply(&mut self) {
@@ -8559,6 +8918,293 @@ mod tests {
             app.friends.as_ref().map(|v| v.tab),
             Some(FriendsTab::Blocked)
         );
+    }
+
+    fn two_guild_app() -> App {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            ..Default::default()
+        }]);
+        for (id, name) in [("g1", "One"), ("g2", "Two")] {
+            app.guilds.push(GuildResponse {
+                id: id.to_string(),
+                name: name.to_string(),
+                ..Default::default()
+            });
+            app.guild_channels.insert(
+                id.to_string(),
+                vec![ChannelResponse {
+                    id: format!("{id}-general"),
+                    kind: CHANNEL_GUILD_TEXT,
+                    guild_id: Some(id.to_string()),
+                    name: "general".to_string(),
+                    ..Default::default()
+                }],
+            );
+        }
+        app
+    }
+
+    #[test]
+    fn slot_one_is_the_conversations_and_the_rest_are_communities_in_order() {
+        let mut app = two_guild_app();
+        assert!(app.go_to_server_slot(2));
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g1".to_string())
+        );
+        assert!(app.go_to_server_slot(3));
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g2".to_string())
+        );
+        assert!(app.go_to_server_slot(1));
+        assert_eq!(app.selected_server, ServerSelection::DirectMessages);
+        // a slot past the end does nothing rather than moving somewhere
+        assert!(!app.go_to_server_slot(4));
+        assert_eq!(app.selected_server, ServerSelection::DirectMessages);
+        assert!(!app.go_to_server_slot(0));
+    }
+
+    #[test]
+    fn stepping_the_server_column_wraps_both_ways() {
+        let mut app = two_guild_app();
+        assert_eq!(app.selected_server, ServerSelection::DirectMessages);
+        app.step_server(1);
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g1".to_string())
+        );
+        app.step_server(1);
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g2".to_string())
+        );
+        app.step_server(1);
+        assert_eq!(app.selected_server, ServerSelection::DirectMessages);
+        app.step_server(-1);
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g2".to_string())
+        );
+    }
+
+    #[test]
+    fn the_toggle_goes_back_to_the_community_last_read() {
+        let mut app = two_guild_app();
+        // with nowhere to go back to it says so rather than moving
+        assert!(!app.toggle_guild_and_dms());
+        app.go_to_server_slot(3);
+        app.selected_channel_id = Some("g2-general".to_string());
+        app.note_active_channel();
+        assert!(app.toggle_guild_and_dms());
+        assert_eq!(app.selected_server, ServerSelection::DirectMessages);
+        assert!(app.toggle_guild_and_dms());
+        assert_eq!(
+            app.selected_server,
+            ServerSelection::Guild("g2".to_string())
+        );
+    }
+
+    #[test]
+    fn the_history_walks_back_and_forward_and_a_new_place_cuts_the_rest_off() {
+        let mut app = two_guild_app();
+        let visit = |app: &mut App, server: ServerSelection, channel: &str| {
+            app.selected_server = server;
+            app.selected_channel_id = Some(channel.to_string());
+            app.note_active_channel();
+        };
+        visit(&mut app, ServerSelection::DirectMessages, "dm1");
+        visit(
+            &mut app,
+            ServerSelection::Guild("g1".to_string()),
+            "g1-general",
+        );
+        visit(
+            &mut app,
+            ServerSelection::Guild("g2".to_string()),
+            "g2-general",
+        );
+        assert_eq!(app.channel_history.len(), 3);
+
+        assert!(app.can_step_history(true));
+        assert!(!app.can_step_history(false));
+        assert!(app.step_channel_history(true));
+        assert_eq!(app.active_channel_id(), Some("g1-general".to_string()));
+        // walking is not itself a visit, so forward is still there
+        app.note_active_channel();
+        assert!(app.can_step_history(false));
+        assert!(app.step_channel_history(false));
+        assert_eq!(app.active_channel_id(), Some("g2-general".to_string()));
+
+        // going somewhere new from the middle throws the forward half away
+        app.step_channel_history(true);
+        app.note_active_channel();
+        visit(&mut app, ServerSelection::DirectMessages, "dm1");
+        assert!(!app.can_step_history(false));
+    }
+
+    #[test]
+    fn the_history_does_not_record_standing_still() {
+        let mut app = two_guild_app();
+        app.selected_channel_id = Some("dm1".to_string());
+        for _ in 0..5 {
+            app.note_active_channel();
+        }
+        assert_eq!(app.channel_history.len(), 1);
+    }
+
+    #[test]
+    fn the_new_messages_line_sits_after_the_last_message_read() {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("40".to_string()),
+            ..Default::default()
+        }]);
+        app.selected_channel_id = Some("dm1".to_string());
+        app.set_channel_messages(
+            "dm1",
+            vec![
+                dm_message("10", "dm1"),
+                dm_message("20", "dm1"),
+                dm_message("30", "dm1"),
+                dm_message("40", "dm1"),
+            ],
+        );
+        app.read_states.insert(
+            "dm1".to_string(),
+            ReadState {
+                last_message_id: Some("20".to_string()),
+                mention_count: 0,
+            },
+        );
+        app.set_unread_anchor("dm1");
+        // the line goes above the oldest message that arrived after it
+        assert_eq!(app.first_unread_message_id("dm1"), Some("30".to_string()));
+        assert_eq!(app.active_first_unread_message_id(), Some("30".to_string()));
+    }
+
+    #[test]
+    fn a_channel_with_nothing_unread_gets_no_line() {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("20".to_string()),
+            ..Default::default()
+        }]);
+        app.selected_channel_id = Some("dm1".to_string());
+        app.set_channel_messages(
+            "dm1",
+            vec![dm_message("10", "dm1"), dm_message("20", "dm1")],
+        );
+        app.read_states.insert(
+            "dm1".to_string(),
+            ReadState {
+                last_message_id: Some("20".to_string()),
+                mention_count: 0,
+            },
+        );
+        app.set_unread_anchor("dm1");
+        assert_eq!(app.first_unread_message_id("dm1"), None);
+    }
+
+    #[test]
+    fn a_channel_never_read_before_gets_no_line_either() {
+        // a rule above the whole history says nothing worth a row
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("20".to_string()),
+            ..Default::default()
+        }]);
+        app.selected_channel_id = Some("dm1".to_string());
+        app.set_channel_messages(
+            "dm1",
+            vec![dm_message("10", "dm1"), dm_message("20", "dm1")],
+        );
+        app.read_states.insert(
+            "dm1".to_string(),
+            ReadState {
+                last_message_id: None,
+                mention_count: 0,
+            },
+        );
+        app.set_unread_anchor("dm1");
+        assert_eq!(app.first_unread_message_id("dm1"), None);
+    }
+
+    #[test]
+    fn the_line_stays_put_while_the_reader_is_in_the_channel() {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("40".to_string()),
+            ..Default::default()
+        }]);
+        app.selected_channel_id = Some("dm1".to_string());
+        app.set_channel_messages(
+            "dm1",
+            vec![dm_message("30", "dm1"), dm_message("40", "dm1")],
+        );
+        app.read_states.insert(
+            "dm1".to_string(),
+            ReadState {
+                last_message_id: Some("20".to_string()),
+                mention_count: 0,
+            },
+        );
+        app.set_unread_anchor("dm1");
+        assert_eq!(app.first_unread_message_id("dm1"), Some("30".to_string()));
+        // the client acks as the reader looks, which moves the read state;
+        // the line must not move with it
+        app.read_states.insert(
+            "dm1".to_string(),
+            ReadState {
+                last_message_id: Some("40".to_string()),
+                mention_count: 0,
+            },
+        );
+        assert_eq!(app.first_unread_message_id("dm1"), Some("30".to_string()));
+        // and it goes once they are at the bottom with nothing unread
+        app.message_scroll_from_bottom = 0;
+        app.clear_unread_anchor_if_caught_up();
+        assert_eq!(app.first_unread_message_id("dm1"), None);
+    }
+
+    #[test]
+    fn u_puts_the_cursor_on_the_first_unread_message() {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("40".to_string()),
+            ..Default::default()
+        }]);
+        app.selected_channel_id = Some("dm1".to_string());
+        app.set_channel_messages(
+            "dm1",
+            vec![
+                dm_message("10", "dm1"),
+                dm_message("20", "dm1"),
+                dm_message("30", "dm1"),
+                dm_message("40", "dm1"),
+            ],
+        );
+        app.read_states.insert(
+            "dm1".to_string(),
+            ReadState {
+                last_message_id: Some("20".to_string()),
+                mention_count: 0,
+            },
+        );
+        app.set_unread_anchor("dm1");
+        assert!(app.jump_to_first_unread());
+        assert_eq!(app.selected_message_index, Some(2));
+        assert_eq!(app.focus, Focus::Messages);
+        // with no line there is nothing to jump to, and it says so
+        app.clear_unread_anchor("dm1");
+        assert!(!app.jump_to_first_unread());
     }
 
     fn dm_message(id: &str, channel_id: &str) -> MessageResponse {

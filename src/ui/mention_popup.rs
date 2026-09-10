@@ -66,7 +66,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .scroll_padding(1)
         .block(
             Block::default()
-                .title(" @ mention - user | role ")
+                .title(crate::ui::footer::autocomplete_title(
+                    "@ user or role",
+                    popup_area.width,
+                ))
                 .borders(Borders::ALL)
                 .border_style(crate::ui::theme::focused_border(true)),
         )

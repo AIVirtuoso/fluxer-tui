@@ -82,6 +82,18 @@ act on them.
 - **A pings list:** **p** opens the messages that mentioned you, newest
   first, across every community and direct message, the way the web
   client's inbox does; **Enter** jumps to one (see "Interface overview").
+- **A "new messages" line**, and **U** to jump to it — so opening a busy
+  channel no longer means scrolling and guessing where you left off.
+- **Getting about by key.** **Alt+1**–**Alt+9** for a place in the left
+  column, **Alt+Up**/**Alt+Down** to step through it from any focus,
+  **Alt+Left**/**Alt+Right** back and forward through the channels you
+  have visited, **Alt+L** between the last community and your
+  conversations (see "Getting about").
+- **The keys are always on screen.** The bar says what works where the
+  focus is, every overlay says it on its own bottom line, and when
+  something happens the words take that line for a few seconds before the
+  keys come back — so sending a friend request tells you it was sent
+  instead of saying it behind the list you are looking at.
 - **Friends, requests and blocking.** **Alt+F** opens the four groups the
   server sorts your relationships into; **+** asks somebody by their tag,
   **a** accepts, **B** blocks, and a blocked account's messages stop
@@ -774,6 +786,77 @@ everything; there is no `/status offline`, because that is not a thing
 you choose. `/customstatus` takes up to 128 characters; setting an emoji
 on it is not wired up here, but one set elsewhere is shown.
 
+## Getting about
+
+The left column has the conversation list first and then the communities,
+and these keys reach it without moving the focus there:
+
+| Key | What it does |
+| --- | ------------ |
+| **Alt+1** … **Alt+9** | The first nine places in that column. **Alt+1** is always the conversation list, **Alt+2** the first community, and so on. The numbering is the web client's. |
+| **Alt+↑** / **Alt+↓** | Previous / next entry in the column, wrapping at both ends. |
+| **Alt+←** / **Alt+→** | **Back** and **forward** through the channels you have visited, the way a browser's buttons work: fifty deep, and going somewhere new from the middle throws away what was ahead. The bar offers whichever way is open, and nothing when neither is. |
+| **Alt+L** | Between the community you were **last** in and the conversation list. |
+
+A channel that has gone since you visited it is not moved to; the client
+says so and the entry stays, in case it comes back.
+
+## The new messages line
+
+An amber rule across the pane, with **new messages** in the middle, above
+the first message that arrived since you last opened the channel.
+**U** jumps to it from anywhere in the client.
+
+Three things about where it sits, because they are the ones that make it
+useful rather than annoying:
+
+- **It stays where it was while you read.** The client marks messages read
+  as you look at them, so a line that followed the read state would slide
+  away under you. It is fixed when you open the channel and does not move
+  until you leave.
+- **It goes once you have caught up** — at the bottom of the channel with
+  nothing unread. It is not there next time unless something new arrived.
+- **A channel you have never opened gets none.** A rule above the whole
+  history says nothing, and would cost a row saying it.
+
+## Knowing what to press
+
+Two places say what the keys do, and neither needs **F1**:
+
+- **The bar under the title**, for wherever the focus is — a different
+  line for the servers, the channels, the messages with and without a
+  selection, and the compose box with and without a selection.
+- **The bottom line of every overlay**, for the keys that work in it:
+  the profile, the friends list, the pins, the bookmarks, the pickers,
+  the settings, the debug panel and the keybindings overlay included.
+- **The title of the `:`, `@` and `/` popups**, which sit straight on top
+  of the compose box and have no row to spare — the keys go there
+  instead, in the longest wording that fits the popup's width.
+- **The compose box's own title**, which says how to finish and how to
+  leave whichever mode it is in: replying, editing or forwarding. It
+  named the mode before this and left you to guess that **Esc** gets out.
+- **The bar**, for the member column, which has no focus of its own and
+  so nowhere else to advertise **Alt+J** / **Alt+K**.
+
+**A line only offers what would do something.** On a profile the three
+relationship keys change with how you stand with the person: a stranger
+gets `+ add friend` and `B block`; a friend gets `x unfriend` instead of
+`+`; somebody who asked you first gets `+ accept` and `x turn down`; a
+request you sent gets `x take it back`; somebody blocked gets `x unblock`
+and nothing else. Your own profile gets none of the three.
+
+That list is not written out twice. The keys and the line read the same
+function, so the line cannot come to offer something the key would not
+do — which is how `+` came to send a fresh friend request at somebody who
+had already asked, where the server wants an accept.
+
+When something happens — a friend request sent, a message pinned, a
+community joined — the words take that line for four seconds and then the
+keys come back. That matters because **an overlay covers the status bar**:
+before this, sending a friend request from the friends list said so behind
+the list you were looking at, which is to say it said nothing. An error is
+the exception and stays until something replaces it.
+
 ## Message actions
 
 The web client puts a message's actions behind a right-click. This client
@@ -1138,6 +1221,11 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open).                                                                                                                                                                   |
 | **Ctrl+K**              | Open **channel picker** (type to filter, **Enter** to jump).                                                                                                                                                                                             |
 | **Alt+A**               | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps.                                                                                                                                                           |
+| **Alt+1** … **Alt+9**   | Go straight to a place in the left column: **Alt+1** is the conversation list, **Alt+2** the first community, and so on (see "Getting about").                                                                                                           |
+| **Alt+↑** / **Alt+↓**   | Previous / next entry in the left column, from any focus; wraps.                                                                                                                                                                                        |
+| **Alt+←** / **Alt+→**   | **Back** and **forward** through the channels you have visited. The bar says which way is open.                                                                                                                                                          |
+| **Alt+L**               | Between the community you were **last** in and the conversation list.                                                                                                                                                                                   |
+| **U**                   | Jump to the **new messages** line (see "The new messages line").                                                                                                                                                                                        |
 | **Alt+M**               | **Member list** of the open channel, in a column beside the messages (see "The member list"). **Alt+J** / **Alt+K** scroll it. Closes itself in a direct message; not drawn below 80 columns.                                                            |
 
 | **Alt+F**               | **Friends**: friends, the requests both ways, and the accounts you have blocked (see "Friends and blocking"). **←** / **→** switch group, **+** adds by tag, **Esc** closes.                                                                             |

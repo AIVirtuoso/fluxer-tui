@@ -4,7 +4,7 @@
 use crate::api::types::{UserProfileResponse, user_flags};
 use crate::app::{App, ProfileState, ProfileView};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -87,12 +87,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        "↑/↓ scroll  ·  p picture  ·  Esc / q close",
-        crate::ui::theme::muted_style(),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, hint_area);
+    crate::ui::footer::render(frame, hint_area, app, &hints(app, view));
+}
+
+/// What can be done from here, which depends on who the profile is
+/// about: the three relationship keys come from the same place the keys
+/// themselves read, so the line never offers something that would do
+/// nothing.
+fn hints(app: &App, view: &ProfileView) -> String {
+    let mut parts = vec!["↑/↓ scroll".to_string(), "p picture".to_string()];
+    parts.extend(app.relationship_keys_for(&view.user_id).hints());
+    parts.push("Esc close".to_string());
+    parts.join("  ·  ")
 }
 
 fn build_lines(app: &App, view: &ProfileView, width: usize, avatar: bool) -> Vec<Line<'static>> {
@@ -444,6 +450,115 @@ fn fit(s: &str, width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+    use crate::api::types::{
+        RELATIONSHIP_BLOCKED, RELATIONSHIP_FRIEND, RELATIONSHIP_INCOMING_REQUEST,
+        RELATIONSHIP_OUTGOING_REQUEST, RelationshipResponse, UserPartialResponse,
+        UserPrivateResponse,
+    };
+    use crate::app::{ProfileState, ServerSelection};
+
+    fn app_with(kind: Option<i32>) -> App {
+        let mut me = UserPrivateResponse::default();
+        me.id = "me".to_string();
+        let mut app = App::new(
+            Default::default(),
+            me,
+            None,
+            Vec::new(),
+            Vec::new(),
+            ServerSelection::DirectMessages,
+            None,
+            Default::default(),
+        );
+        if let Some(kind) = kind {
+            app.upsert_relationship(RelationshipResponse {
+                id: "r".to_string(),
+                relationship_type: kind,
+                user: UserPartialResponse {
+                    id: "u1".to_string(),
+                    username: "ada".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        app
+    }
+
+    fn view(user_id: &str) -> ProfileView {
+        ProfileView {
+            user_id: user_id.to_string(),
+            guild_id: None,
+            user: UserPartialResponse {
+                id: user_id.to_string(),
+                username: "ada".to_string(),
+                ..Default::default()
+            },
+            state: ProfileState::Loading,
+            scroll: 0,
+        }
+    }
+
+    #[test]
+    fn the_line_names_every_action_the_keys_would_take() {
+        // a stranger: ask them, or block them
+        let h = hints(&app_with(None), &view("u1"));
+        assert!(h.contains("+ add friend"), "{h}");
+        assert!(h.contains("B block"), "{h}");
+        assert!(!h.contains("x "), "{h}");
+
+        // a friend: no point asking again
+        let h = hints(&app_with(Some(RELATIONSHIP_FRIEND)), &view("u1"));
+        assert!(!h.contains("+ "), "{h}");
+        assert!(h.contains("x unfriend"), "{h}");
+        assert!(h.contains("B block"), "{h}");
+    }
+
+    #[test]
+    fn somebody_who_asked_first_is_accepted_rather_than_asked_back() {
+        let app = app_with(Some(RELATIONSHIP_INCOMING_REQUEST));
+        let h = hints(&app, &view("u1"));
+        assert!(h.contains("+ accept"), "{h}");
+        assert!(h.contains("x turn down"), "{h}");
+        // and the key really does accept, which is a different call to
+        // the server than asking
+        let keys = app.relationship_keys_for("u1");
+        assert_eq!(
+            keys.plus.map(|(a, _)| a),
+            Some(crate::app::RelationshipAction::Accept)
+        );
+    }
+
+    #[test]
+    fn a_request_already_sent_can_only_be_taken_back() {
+        let h = hints(&app_with(Some(RELATIONSHIP_OUTGOING_REQUEST)), &view("u1"));
+        assert!(!h.contains("+ "), "{h}");
+        assert!(h.contains("x take it back"), "{h}");
+    }
+
+    #[test]
+    fn a_blocked_account_is_offered_nothing_but_unblocking() {
+        let h = hints(&app_with(Some(RELATIONSHIP_BLOCKED)), &view("u1"));
+        assert!(h.contains("x unblock"), "{h}");
+        assert!(!h.contains("B block"), "{h}");
+        assert!(!h.contains("+ "), "{h}");
+    }
+
+    #[test]
+    fn your_own_profile_offers_none_of_the_three() {
+        let h = hints(&app_with(None), &view("me"));
+        assert!(!h.contains("+ "), "{h}");
+        assert!(!h.contains("B "), "{h}");
+        assert!(!h.contains("x "), "{h}");
+        // the ones that always apply are still there
+        assert!(h.contains("p picture"), "{h}");
+        assert!(h.contains("Esc close"), "{h}");
+    }
 }
 
 #[cfg(test)]

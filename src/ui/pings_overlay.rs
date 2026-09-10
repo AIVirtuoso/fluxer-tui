@@ -113,12 +113,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .alignment(Alignment::Left);
     frame.render_widget(paragraph, content);
 
-    let hint = Paragraph::new(Line::from(vec![Span::styled(
-        "↑/↓ move  ·  Enter go to message  ·  x dismiss  ·  X dismiss all  ·  R reload  ·  Esc close",
-        muted,
-    )]))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, body[1]);
+    crate::ui::footer::render(
+        frame,
+        body[1],
+        app,
+        "↑/↓ move · Enter go to it · x dismiss · X all · R reload · Esc close",
+    );
 }
 
 /// The message on one row: its lines joined, mentions and emoji shown as
