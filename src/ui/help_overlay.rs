@@ -21,6 +21,10 @@ Focus & navigation
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
   p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
+  Alt+F - friends: the four groups (friends, wanting, asked, blocked). Left/Right
+           switch group, + adds by tag (name#0001), Enter opens the conversation,
+           n gives a friend a name of your own, a accepts an incoming request,
+           x undoes whichever tie there is, B blocks, R reloads.
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -42,7 +46,8 @@ Messages
            the system clipboard where wl-copy or xclip is there, and always to the
            cut buffer, so Alt+V pastes it in the input (that is the way on the console)
   r - reply to selected message
-  u - profile of the selected message's author (p there: picture full size; Esc closes)
+  u - profile of the selected message's author (p there: picture full size; Esc closes;
+           + asks them to be friends, B blocks them, x undoes whichever tie there is)
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
   e - react: opens emoji picker on selected message (Enter to send reaction, Esc cancels)
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)
@@ -104,7 +109,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)
-  Alt+S - sticker picker (see Input)
+  Alt+S - sticker picker (see Input)      Alt+F - friends and blocked accounts
 
 Other
   Who is about: a filled circle in front of a name, green online, amber idle,

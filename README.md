@@ -82,6 +82,12 @@ act on them.
 - **A pings list:** **p** opens the messages that mentioned you, newest
   first, across every community and direct message, the way the web
   client's inbox does; **Enter** jumps to one (see "Interface overview").
+- **Friends, requests and blocking.** **Alt+F** opens the four groups the
+  server sorts your relationships into; **+** asks somebody by their tag,
+  **a** accepts, **B** blocks, and a blocked account's messages stop
+  appearing at all. The whole `/users/@me/relationships` surface was
+  unused before, so there was no way to block anybody from here (see
+  "Friends and blocking").
 - **Who is online.** The client used to name `PRESENCE_UPDATE` only to
   keep it out of the debug log; it now follows presence and shows it, in
   the conversation list, beside the name on a message, in the profile and
@@ -544,6 +550,43 @@ message, is a Fluxer Premium feature: the server refuses it and the
 client shows what it said. Communities you are in can always use their
 own.
 
+## Friends and blocking
+
+**Alt+F** opens the list. It has the four groups the server sorts
+relationships into, and **←** / **→** move between them:
+
+| Group | Who is in it | Keys |
+| ----- | ------------ | ---- |
+| **Friends** | People you are friends with | **Enter** opens the conversation, **n** gives them a name of your own, **x** unfriends, **B** blocks |
+| **Wanting** | People who have asked you | **a** accepts, **x** turns them down, **B** blocks |
+| **Asked** | People you have asked | **x** takes the request back |
+| **Blocked** | People you have blocked | **x** unblocks |
+
+**+** in any group asks somebody by their **tag** — `name#0001`, shown
+beside every name in the list — which is how you reach an account you
+share nothing with. **R** reloads, **Esc** closes.
+
+The same three keys are on a profile (**u** on a message): **+** asks
+them to be friends, **B** blocks them, and **x** undoes whichever tie
+there is. A profile also says how you stand with them.
+
+### What blocking does here
+
+**A blocked account's messages are not kept at all.** They are dropped as
+they arrive over the gateway and filtered out of every page fetched from
+the API, which is what keeps them out of the pane, out of the
+notifications and out of the unread counts without a check in any of
+those places. Blocking somebody also takes what they have already said
+out of the loaded channels, since otherwise the old messages would sit
+there while new ones vanished.
+
+The consequence is that **unblocking cannot bring back what was thrown
+away**: the channels they were in are marked unloaded and fetched again
+from the server. That happens on its own; there is nothing to press.
+
+A name you give a friend with **n** is stored on the server, so it
+follows you to the web client. An empty one drops it again.
+
 ## Presence
 
 Fluxer tells a client who is about through `PRESENCE_UPDATE`, and through
@@ -811,6 +854,7 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open).                                                                                                                                                                   |
 | **Ctrl+K**              | Open **channel picker** (type to filter, **Enter** to jump).                                                                                                                                                                                             |
 | **Alt+A**               | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps.                                                                                                                                                           |
+| **Alt+F**               | **Friends**: friends, the requests both ways, and the accounts you have blocked (see "Friends and blocking"). **←** / **→** switch group, **+** adds by tag, **Esc** closes.                                                                             |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

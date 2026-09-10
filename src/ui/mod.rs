@@ -4,6 +4,7 @@ pub mod command_popup;
 pub mod debug_overlay;
 pub mod emoji_popup;
 pub mod file_picker;
+pub mod friends_overlay;
 pub mod help_overlay;
 pub mod image_preview;
 pub mod input_bar;
@@ -113,6 +114,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         server_notifications_overlay::render(frame, area, app);
     } else if app.pings.is_some() {
         pings_overlay::render(frame, area, app);
+    } else if app.friends.is_some() {
+        friends_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {

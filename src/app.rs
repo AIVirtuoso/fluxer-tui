@@ -17,6 +17,11 @@ use crate::api::types::{
     VoiceStateResponse, WellKnownFluxerResponse, merge_user_cache, snowflake_sort_key,
 };
 use crate::api::types::{CustomStatusPayload, PresenceRecord, PresenceStatus};
+
+use crate::api::types::{
+    RELATIONSHIP_BLOCKED, RELATIONSHIP_FRIEND, RELATIONSHIP_INCOMING_REQUEST,
+    RELATIONSHIP_OUTGOING_REQUEST, RelationshipResponse,
+};
 use crate::config::UiSettings;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -849,6 +854,98 @@ pub struct PresenceEntry {
     pub custom_status: Option<CustomStatusPayload>,
 }
 
+/// The friends overlay: everybody the reader has a tie to, in the four
+/// groups the server sorts them into.
+#[derive(Debug)]
+pub struct FriendsView {
+    pub state: FriendsState,
+    pub selected: usize,
+    /// Which group the cursor is in decides which keys do anything.
+    pub tab: FriendsTab,
+    /// Text being typed into the footer, when the reader is part way
+    /// through adding somebody or naming a friend.
+    pub input: Option<FriendsInput>,
+}
+
+/// What the footer is taking, while it is taking anything.
+#[derive(Debug, Clone)]
+pub enum FriendsInput {
+    /// A tag, `name#0001`, of somebody to ask.
+    AddTag(String),
+    /// A name of the reader's own for a friend. Empty drops the name.
+    Nickname { user_id: String, text: String },
+}
+
+impl FriendsInput {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::AddTag(text) => text,
+            Self::Nickname { text, .. } => text,
+        }
+    }
+
+    pub fn text_mut(&mut self) -> &mut String {
+        match self {
+            Self::AddTag(text) => text,
+            Self::Nickname { text, .. } => text,
+        }
+    }
+
+    pub fn prompt(&self) -> &'static str {
+        match self {
+            Self::AddTag(_) => "Add by tag",
+            Self::Nickname { .. } => "Your name for them",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendsTab {
+    Friends,
+    Incoming,
+    Outgoing,
+    Blocked,
+}
+
+impl FriendsTab {
+    pub const ALL: [Self; 4] = [Self::Friends, Self::Incoming, Self::Outgoing, Self::Blocked];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Friends => "Friends",
+            Self::Incoming => "Wanting",
+            Self::Outgoing => "Asked",
+            Self::Blocked => "Blocked",
+        }
+    }
+
+    pub fn relationship_type(self) -> i32 {
+        match self {
+            Self::Friends => RELATIONSHIP_FRIEND,
+            Self::Incoming => RELATIONSHIP_INCOMING_REQUEST,
+            Self::Outgoing => RELATIONSHIP_OUTGOING_REQUEST,
+            Self::Blocked => RELATIONSHIP_BLOCKED,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    pub fn previous(self) -> Self {
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum FriendsState {
+    Loading,
+    Ready,
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -967,6 +1064,16 @@ pub struct App {
     /// dot, so the key has to move when a presence does or the pane keeps
     /// the old one.
     pub presence_version: u64,
+
+    /// The friends overlay while it is open.
+    pub friends: Option<FriendsView>,
+    /// Everybody the reader has a tie to, by their user id: friends,
+    /// requests both ways, and blocked accounts.
+    pub relationships: HashMap<String, RelationshipResponse>,
+    /// Bumped on every relationship change. Blocking hides somebody's
+    /// messages, so the message pane's cached layout has to be dropped
+    /// when a block goes on or comes off.
+    pub relationships_version: u64,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1169,6 +1276,10 @@ impl App {
             pings: None,
             presences: HashMap::new(),
             presence_version: 0,
+
+            friends: None,
+            relationships: HashMap::new(),
+            relationships_version: 0,
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -4137,6 +4248,12 @@ impl App {
         if message.channel_id.is_empty() {
             return false;
         }
+        // a blocked account's messages are not kept at all, which is what
+        // keeps them out of the pane, the notifications and the unread
+        // counts without a filter in any of those places
+        if self.is_blocked(&message.author.id) {
+            return false;
+        }
         self.merge_message_embedded_members(&message);
         merge_user_cache(&mut self.user_cache, [message.author.clone()]);
         merge_user_cache(&mut self.user_cache, message.mentions.iter().cloned());
@@ -4164,6 +4281,7 @@ impl App {
     }
 
     pub fn set_channel_messages(&mut self, channel_id: &str, mut messages: Vec<MessageResponse>) {
+        messages.retain(|message| !self.is_blocked(&message.author.id));
         for message in &messages {
             self.merge_message_embedded_members(message);
             merge_user_cache(&mut self.user_cache, [message.author.clone()]);
@@ -4200,7 +4318,8 @@ impl App {
         self.message_scroll_from_bottom = 0;
     }
 
-    pub fn prepend_channel_messages(&mut self, channel_id: &str, older: Vec<MessageResponse>) {
+    pub fn prepend_channel_messages(&mut self, channel_id: &str, mut older: Vec<MessageResponse>) {
+        older.retain(|message| !self.is_blocked(&message.author.id));
         for message in &older {
             self.merge_message_embedded_members(message);
             merge_user_cache(&mut self.user_cache, [message.author.clone()]);
@@ -4665,6 +4784,220 @@ impl App {
         }
     }
 
+    // Alt+F: friends, requests and blocked accounts
+
+    pub fn open_friends(&mut self) {
+        self.show_settings = false;
+        self.show_server_notifications = false;
+        self.show_help = false;
+        self.dismiss_image_preview();
+        self.profile = None;
+        self.channel_picker = None;
+        self.pings = None;
+        self.friends = Some(FriendsView {
+            state: if self.relationships.is_empty() {
+                FriendsState::Loading
+            } else {
+                // what arrived at start is shown at once and refreshed
+                // behind it, so the list is never blank for no reason
+                FriendsState::Ready
+            },
+            selected: 0,
+            tab: FriendsTab::Friends,
+            input: None,
+        });
+    }
+
+    pub fn dismiss_friends(&mut self) {
+        self.friends = None;
+    }
+
+    pub fn set_relationships(&mut self, list: Vec<RelationshipResponse>) {
+        merge_user_cache(&mut self.user_cache, list.iter().map(|r| r.user.clone()));
+        self.relationships = list
+            .into_iter()
+            .filter(|r| !r.user.id.is_empty())
+            .map(|r| (r.user.id.clone(), r))
+            .collect();
+        self.relationships_version = self.relationships_version.wrapping_add(1);
+        if let Some(view) = &mut self.friends {
+            view.state = FriendsState::Ready;
+            view.selected = 0;
+        }
+    }
+
+    pub fn set_relationships_failed(&mut self, message: String) {
+        if let Some(view) = &mut self.friends {
+            view.state = FriendsState::Failed(message);
+        }
+    }
+
+    /// Take one RELATIONSHIP_ADD or _UPDATE.
+    pub fn upsert_relationship(&mut self, relationship: RelationshipResponse) {
+        if relationship.user.id.is_empty() {
+            return;
+        }
+        merge_user_cache(&mut self.user_cache, [relationship.user.clone()]);
+        self.relationships
+            .insert(relationship.user.id.clone(), relationship);
+        self.relationships_version = self.relationships_version.wrapping_add(1);
+        self.clamp_friends_selection();
+    }
+
+    pub fn remove_relationship(&mut self, user_id: &str) {
+        self.relationships.remove(user_id);
+        self.relationships_version = self.relationships_version.wrapping_add(1);
+        self.clamp_friends_selection();
+    }
+
+    /// Blocking somebody takes what they have already said out of every
+    /// loaded channel, since new messages are dropped at the door and the
+    /// pane would otherwise keep showing the old ones.
+    pub fn forget_messages_from(&mut self, user_id: &str) {
+        let channels: Vec<String> = self
+            .messages
+            .iter()
+            .filter(|(_, messages)| messages.iter().any(|m| m.author.id == user_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if channels.is_empty() {
+            return;
+        }
+        for channel_id in channels {
+            if let Some(messages) = self.messages.get_mut(&channel_id) {
+                std::rc::Rc::make_mut(messages).retain(|m| m.author.id != user_id);
+            }
+        }
+        self.messages_version = self.messages_version.wrapping_add(1);
+        self.normalize_selection();
+    }
+
+    /// Unblocking cannot bring back what was thrown away, so the channels
+    /// they were in are marked unloaded and fetched again.
+    pub fn reload_channels_for(&mut self, user_id: &str) {
+        let channels: Vec<String> = self
+            .private_channels
+            .iter()
+            .filter(|c| c.recipients.iter().any(|u| u.id == user_id))
+            .map(|c| c.id.clone())
+            .collect();
+        let here = self.active_channel_id();
+        for channel_id in channels.into_iter().chain(here) {
+            self.messages.remove(&channel_id);
+            self.messages_loaded.remove(&channel_id);
+            self.messages_older_exhausted.remove(&channel_id);
+            self.loading_messages.remove(&channel_id);
+            self.api_backoff_clear_channel_messages(&channel_id);
+        }
+        self.messages_version = self.messages_version.wrapping_add(1);
+        self.normalize_selection();
+    }
+
+    pub fn relationship_with(&self, user_id: &str) -> Option<&RelationshipResponse> {
+        self.relationships.get(user_id)
+    }
+
+    /// Whether the reader has blocked this account. Their messages are
+    /// hidden from the pane and they raise no notification.
+    pub fn is_blocked(&self, user_id: &str) -> bool {
+        self.relationships
+            .get(user_id)
+            .is_some_and(|r| r.is_blocked())
+    }
+
+    /// The name the reader gave a friend, where they gave one.
+    pub fn relationship_nickname(&self, user_id: &str) -> Option<&str> {
+        self.relationships
+            .get(user_id)?
+            .nickname
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+    }
+
+    /// The people in one group of the friends overlay, by name.
+    pub fn relationships_in(&self, tab: FriendsTab) -> Vec<RelationshipResponse> {
+        let wanted = tab.relationship_type();
+        let mut out: Vec<RelationshipResponse> = self
+            .relationships
+            .values()
+            .filter(|r| r.relationship_type == wanted)
+            .cloned()
+            .collect();
+        out.sort_by_key(|r| {
+            self.relationship_nickname(&r.user.id)
+                .map(str::to_string)
+                .unwrap_or_else(|| display_name(&r.user))
+                .to_lowercase()
+        });
+        out
+    }
+
+    pub fn friends_selected(&self) -> Option<RelationshipResponse> {
+        let view = self.friends.as_ref()?;
+        self.relationships_in(view.tab).get(view.selected).cloned()
+    }
+
+    pub fn friends_move(&mut self, delta: isize) {
+        let Some(tab) = self.friends.as_ref().map(|v| v.tab) else {
+            return;
+        };
+        let count = self.relationships_in(tab).len();
+        if let Some(view) = &mut self.friends {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
+    pub fn friends_switch_tab(&mut self, forward: bool) {
+        if let Some(view) = &mut self.friends {
+            view.tab = if forward {
+                view.tab.next()
+            } else {
+                view.tab.previous()
+            };
+            view.selected = 0;
+        }
+    }
+
+    fn clamp_friends_selection(&mut self) {
+        let Some(tab) = self.friends.as_ref().map(|v| v.tab) else {
+            return;
+        };
+        let count = self.relationships_in(tab).len();
+        if let Some(view) = &mut self.friends {
+            view.selected = view.selected.min(count.saturating_sub(1));
+        }
+    }
+
+    /// Open a one-to-one conversation with somebody the reader already
+    /// has one with. None when there is none to open yet.
+    /// Open a channel the client already knows, the way the channel
+    /// picker does.
+    pub fn jump_to_channel(&mut self, channel_id: &str) -> bool {
+        let Some(server) = self.server_for_channel(channel_id) else {
+            self.set_status("That channel is not on your list.");
+            return false;
+        };
+        self.selected_server = server;
+        self.selected_channel_id = Some(channel_id.to_string());
+        self.message_scroll_from_bottom = 0;
+        self.selected_message_index = None;
+        self.normalize_selection();
+        self.focus = Focus::Messages;
+        true
+    }
+
+    pub fn dm_channel_with(&self, user_id: &str) -> Option<String> {
+        self.private_channels
+            .iter()
+            .find(|c| {
+                c.channel_type() == CHANNEL_DM && c.recipients.iter().any(|u| u.id == user_id)
+            })
+            .map(|c| c.id.clone())
+    }
     // r (as in reply)
 
     pub fn start_reply(&mut self) {
@@ -5610,6 +5943,126 @@ mod tests {
             ..channel
         };
         assert_eq!(app.dm_peer_id(&group), None);
+    }
+
+    fn relationship(user_id: &str, kind: i32) -> RelationshipResponse {
+        RelationshipResponse {
+            id: format!("r{user_id}"),
+            relationship_type: kind,
+            user: UserPartialResponse {
+                id: user_id.to_string(),
+                username: user_id.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn message_from(id: &str, channel_id: &str, author: &str) -> MessageResponse {
+        MessageResponse {
+            id: id.to_string(),
+            channel_id: channel_id.to_string(),
+            author: UserPartialResponse {
+                id: author.to_string(),
+                username: author.to_string(),
+                ..Default::default()
+            },
+            content: format!("from {author}"),
+            timestamp: "2026-09-10T10:00:00.000Z".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_blocked_accounts_messages_are_never_kept() {
+        let mut app = test_app(Vec::new());
+        app.upsert_relationship(relationship("bad", RELATIONSHIP_BLOCKED));
+        assert!(app.is_blocked("bad"));
+        // one arriving over the gateway is dropped at the door
+        assert!(!app.upsert_message(message_from("m1", "c1", "bad")));
+        assert!(app.messages.get("c1").is_none_or(|m| m.is_empty()));
+        // and a fetched page comes back without them
+        app.set_channel_messages(
+            "c1",
+            vec![
+                message_from("m2", "c1", "bad"),
+                message_from("m3", "c1", "ok"),
+            ],
+        );
+        let kept = app.messages.get("c1").expect("channel");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].author.id, "ok");
+        // older history too
+        app.prepend_channel_messages("c1", vec![message_from("m0", "c1", "bad")]);
+        assert_eq!(app.messages.get("c1").expect("channel").len(), 1);
+    }
+
+    #[test]
+    fn blocking_somebody_takes_what_they_already_said_out_of_the_pane() {
+        let mut app = test_app(Vec::new());
+        app.set_channel_messages(
+            "c1",
+            vec![
+                message_from("m1", "c1", "bad"),
+                message_from("m2", "c1", "ok"),
+                message_from("m3", "c1", "bad"),
+            ],
+        );
+        assert_eq!(app.messages.get("c1").expect("channel").len(), 3);
+        app.upsert_relationship(relationship("bad", RELATIONSHIP_BLOCKED));
+        app.forget_messages_from("bad");
+        let kept = app.messages.get("c1").expect("channel");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].author.id, "ok");
+    }
+
+    #[test]
+    fn the_four_groups_hold_the_right_people_and_a_nickname_wins() {
+        let mut app = test_app(Vec::new());
+        app.set_relationships(vec![
+            relationship("u1", RELATIONSHIP_FRIEND),
+            relationship("u2", RELATIONSHIP_INCOMING_REQUEST),
+            relationship("u3", RELATIONSHIP_OUTGOING_REQUEST),
+            relationship("u4", RELATIONSHIP_BLOCKED),
+        ]);
+        assert_eq!(app.relationships_in(FriendsTab::Friends).len(), 1);
+        assert_eq!(app.relationships_in(FriendsTab::Incoming).len(), 1);
+        assert_eq!(app.relationships_in(FriendsTab::Outgoing).len(), 1);
+        assert_eq!(app.relationships_in(FriendsTab::Blocked).len(), 1);
+        assert!(app.is_blocked("u4"));
+        assert!(!app.is_blocked("u1"));
+        // a name the reader gave wins over the account's own
+        let mut named = relationship("u1", RELATIONSHIP_FRIEND);
+        named.nickname = Some("Ada L".to_string());
+        app.upsert_relationship(named);
+        assert_eq!(app.relationship_nickname("u1"), Some("Ada L"));
+        // and an empty one counts as none
+        let mut blank = relationship("u1", RELATIONSHIP_FRIEND);
+        blank.nickname = Some("   ".to_string());
+        app.upsert_relationship(blank);
+        assert_eq!(app.relationship_nickname("u1"), None);
+    }
+
+    #[test]
+    fn the_group_tabs_go_round_both_ways() {
+        let mut app = test_app(Vec::new());
+        app.open_friends();
+        assert_eq!(
+            app.friends.as_ref().map(|v| v.tab),
+            Some(FriendsTab::Friends)
+        );
+        for _ in 0..4 {
+            app.friends_switch_tab(true);
+        }
+        assert_eq!(
+            app.friends.as_ref().map(|v| v.tab),
+            Some(FriendsTab::Friends)
+        );
+        app.friends_switch_tab(false);
+        assert_eq!(
+            app.friends.as_ref().map(|v| v.tab),
+            Some(FriendsTab::Blocked)
+        );
     }
 
     fn dm_message(id: &str, channel_id: &str) -> MessageResponse {

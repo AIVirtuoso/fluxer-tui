@@ -158,6 +158,12 @@ pub enum AppEvent {
     MentionsFailed {
         message: String,
     },
+    RelationshipsLoaded {
+        list: Vec<crate::api::types::RelationshipResponse>,
+    },
+    RelationshipsFailed {
+        message: String,
+    },
     /// The settings the server holds after a change of the reader's own,
     /// which is what decides their status from then on.
     UserSettingsChanged {
@@ -187,6 +193,9 @@ pub struct EventEffects {
     pub chafa_fallback: Option<(String, Vec<u8>)>,
     /// Messages to announce outside the client.
     pub notify: Vec<crate::notify::Notification>,
+    /// Somebody who was unblocked: their messages were thrown away while
+    /// the block was on, so the channels they are in are fetched again.
+    pub reload_after_unblock: Option<String>,
 }
 
 /// A gateway payload read into its type; when it cannot be, the debug
@@ -250,6 +259,12 @@ pub fn apply_event(
         AppEvent::MentionsFailed { message } => {
             app.set_pings_failed(message);
         }
+        AppEvent::RelationshipsLoaded { list } => {
+            app.set_relationships(list);
+        }
+        AppEvent::RelationshipsFailed { message } => {
+            app.set_relationships_failed(message);
+        }
         AppEvent::UserSettingsChanged { settings } => {
             app.user_settings = Some(*settings);
         }
@@ -311,6 +326,7 @@ pub fn apply_event(
                     }
                     app.set_user_guild_settings(ready.user_guild_settings);
                     app.apply_presences(ready.presences);
+                    app.set_relationships(ready.relationships);
                     for guild in ready.guilds {
                         if guild.unavailable {
                             continue;
@@ -520,6 +536,46 @@ pub fn apply_event(
                         }
                     }
                     msg.reactions.retain(|r| r.count > 0);
+                }
+            }
+            "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
+                if let Some(relationship) =
+                    read::<crate::api::types::RelationshipResponse>(&kind, payload)
+                {
+                    let user_id = relationship.user.id.clone();
+                    let now_blocked = relationship.is_blocked();
+                    let was_blocked = app.is_blocked(&user_id);
+                    app.upsert_relationship(relationship);
+                    if now_blocked && !was_blocked {
+                        app.forget_messages_from(&user_id);
+                    }
+                }
+            }
+            "RELATIONSHIP_REMOVE" => {
+                #[derive(serde::Deserialize)]
+                struct RelationshipRemove {
+                    #[serde(default)]
+                    user: crate::api::types::UserPartialResponse,
+                    #[serde(default)]
+                    id: String,
+                }
+                if let Some(event) = read::<RelationshipRemove>(&kind, payload) {
+                    // the payload names the user, but an older shape used
+                    // the relationship id, which is the user id as well
+                    let user_id = if event.user.id.is_empty() {
+                        event.id
+                    } else {
+                        event.user.id
+                    };
+                    if !user_id.is_empty() {
+                        let was_blocked = app.is_blocked(&user_id);
+                        app.remove_relationship(&user_id);
+                        if was_blocked {
+                            // what they said while blocked was thrown
+                            // away, so those channels are fetched again
+                            effects.reload_after_unblock = Some(user_id);
+                        }
+                    }
                 }
             }
             "PRESENCE_UPDATE" => {

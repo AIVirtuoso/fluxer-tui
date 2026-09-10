@@ -3,8 +3,9 @@ use crate::api::types::{
     CreateMessageAttachment, CreateMessageRequest, EditMessageRequest, GatewayBotResponse,
     GuildResponse, HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
     PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
-    PresignedAttachmentUploadResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
-    UserPrivateResponse, UserSettingsPatch, UserSettingsResponse, WellKnownFluxerResponse,
+    PresignedAttachmentUploadResponse, RelationshipResponse, UserGuildSettingsPatch,
+    UserGuildSettingsResponse, UserPrivateResponse, UserSettingsPatch, UserSettingsResponse,
+    WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
@@ -722,6 +723,139 @@ impl FluxerHttpClient {
             .context("failed to remove reaction")?;
         if !resp.status().is_success() && resp.status() != StatusCode::NO_CONTENT {
             bail!("remove reaction failed: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// Everybody the reader has a tie to: friends, requests both ways,
+    /// and blocked accounts, in one list.
+    pub async fn relationships(&self) -> Result<Vec<RelationshipResponse>> {
+        self.send_json::<(), (), Vec<RelationshipResponse>>(
+            Method::GET,
+            "/users/@me/relationships",
+            None::<&()>,
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Ask somebody to be friends by their tag, which is how you reach an
+    /// account you have no conversation with.
+    pub async fn friend_request_by_tag(&self, username: &str, discriminator: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            username: &'a str,
+            discriminator: &'a str,
+        }
+        self.send_empty(
+            Method::POST,
+            "/users/@me/relationships",
+            Some(&Body {
+                username,
+                discriminator,
+            }),
+            "send the friend request",
+        )
+        .await
+    }
+
+    /// Ask somebody you can already see to be friends.
+    pub async fn friend_request(&self, user_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::POST,
+            &format!("/users/@me/relationships/{user_id}"),
+            Some(&serde_json::json!({})),
+            "send the friend request",
+        )
+        .await
+    }
+
+    /// Accept an incoming request. The same route with a type blocks
+    /// instead, which is what `block_user` sends.
+    pub async fn accept_friend_request(&self, user_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::PUT,
+            &format!("/users/@me/relationships/{user_id}"),
+            Some(&serde_json::json!({})),
+            "accept the friend request",
+        )
+        .await
+    }
+
+    pub async fn block_user(&self, user_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::PUT,
+            &format!("/users/@me/relationships/{user_id}"),
+            Some(&serde_json::json!({ "type": crate::api::types::RELATIONSHIP_BLOCKED })),
+            "block",
+        )
+        .await
+    }
+
+    /// Undo any of them: unfriend, unblock, take back a request, or turn
+    /// down an incoming one. The server has one route for all four.
+    pub async fn remove_relationship(&self, user_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/users/@me/relationships/{user_id}"),
+            None,
+            "change the relationship",
+        )
+        .await
+    }
+
+    /// A name of the reader's own for a friend, or None to drop it.
+    pub async fn set_relationship_nickname(
+        &self,
+        user_id: &str,
+        nickname: Option<&str>,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            nickname: Option<&'a str>,
+        }
+        self.send_empty(
+            Method::PATCH,
+            &format!("/users/@me/relationships/{user_id}"),
+            Some(&Body { nickname }),
+            "change the nickname",
+        )
+        .await
+    }
+
+    /// A call whose answer is either 204 or nothing worth reading.
+    async fn send_empty<B>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        what: &str,
+    ) -> Result<()>
+    where
+        B: Serialize + ?Sized,
+    {
+        let mut builder = self
+            .inner
+            .request(method, self.url(path))
+            .header("X-Fluxer-Platform", "desktop")
+            .header("Authorization", self.token.as_deref().unwrap_or(""));
+        if let Some(body) = body {
+            builder = builder.json(body);
+        }
+        let resp = builder
+            .send()
+            .await
+            .with_context(|| format!("failed to {what}"))?;
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            let detail = resp.text().await.unwrap_or_default();
+            let detail = detail.chars().take(200).collect::<String>();
+            crate::debug::log("http", format!("{what} failed: {status}"));
+            if detail.is_empty() {
+                bail!("{what} failed: {status}");
+            }
+            bail!("{what} failed: {status} {detail}");
         }
         Ok(())
     }
