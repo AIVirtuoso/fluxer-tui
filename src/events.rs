@@ -158,6 +158,11 @@ pub enum AppEvent {
     MentionsFailed {
         message: String,
     },
+    /// The settings the server holds after a change of the reader's own,
+    /// which is what decides their status from then on.
+    UserSettingsChanged {
+        settings: Box<crate::api::types::UserSettingsResponse>,
+    },
     ProfileLoaded {
         user_id: String,
         guild_id: Option<String>,
@@ -245,6 +250,9 @@ pub fn apply_event(
         AppEvent::MentionsFailed { message } => {
             app.set_pings_failed(message);
         }
+        AppEvent::UserSettingsChanged { settings } => {
+            app.user_settings = Some(*settings);
+        }
         AppEvent::ProfileLoaded {
             user_id,
             guild_id,
@@ -302,6 +310,7 @@ pub fn apply_event(
                         app.set_private_channels(ready.private_channels);
                     }
                     app.set_user_guild_settings(ready.user_guild_settings);
+                    app.apply_presences(ready.presences);
                     for guild in ready.guilds {
                         if guild.unavailable {
                             continue;
@@ -322,6 +331,7 @@ pub fn apply_event(
                         // without an HTTP call, and a guild with none is
                         // answered too.
                         app.set_guild_stickers(&guild_id, guild.stickers);
+                        app.apply_presences(guild.presences);
 
                         for voice_state in guild.voice_states {
                             app.update_voice_state(voice_state);
@@ -510,6 +520,21 @@ pub fn apply_event(
                         }
                     }
                     msg.reactions.retain(|r| r.count > 0);
+                }
+            }
+            "PRESENCE_UPDATE" => {
+                if let Some(record) = read::<crate::api::types::PresenceRecord>(&kind, payload) {
+                    app.apply_presence(record);
+                }
+            }
+            "PRESENCE_UPDATE_BULK" => {
+                #[derive(serde::Deserialize)]
+                struct Bulk {
+                    #[serde(default)]
+                    presences: Vec<crate::api::types::PresenceRecord>,
+                }
+                if let Some(bulk) = read::<Bulk>(&kind, payload) {
+                    app.apply_presences(bulk.presences);
                 }
             }
             "VOICE_STATE_UPDATE" => {

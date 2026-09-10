@@ -469,6 +469,11 @@ fn header_row(
     name_color: ratatui::style::Color,
     style: Style,
     clock_12h: bool,
+    // `presence` is set only when the client has been told of one that is
+    // not offline: a hollow dot on every other message would be noise,
+    // and would claim they are away where the truth is that the server
+    // has said nothing about them.
+    presence: Option<crate::api::types::PresenceStatus>,
 ) -> BlockRow {
     let timestamp = format_timestamp(&message.timestamp, clock_12h);
     let mut spans = vec![Span::styled(
@@ -477,6 +482,9 @@ fn header_row(
     )];
     if message_was_edited(message) {
         spans.push(edited_span());
+    }
+    if let Some(status) = presence {
+        spans.push(crate::ui::presence::dot_prefix(status));
     }
     spans.push(Span::styled(
         author.to_string(),
@@ -607,6 +615,11 @@ fn build_message_lines(
 
         let is_self = message.author.id == app.me.id;
         let name_color = app.member_name_color(gid.as_deref(), &message.author.id, is_self);
+        // only somebody who is about is marked; see `header_row`
+        let author_presence = {
+            let status = app.presence_status(&message.author.id);
+            (!status.is_offline()).then_some(status)
+        };
 
         let has_reply_rail =
             message.referenced_message.is_some() || message.message_reference.is_some();
@@ -663,6 +676,7 @@ fn build_message_lines(
                 name_color,
                 header_style,
                 clock_12h,
+                author_presence,
             ));
         } else if let Some(mref) = &message.message_reference {
             let (ctx_body, body_style) = if mref.reference_type == 1 {
@@ -689,6 +703,7 @@ fn build_message_lines(
                 name_color,
                 header_style,
                 clock_12h,
+                author_presence,
             ));
         } else if within_group && !is_selected_msg {
             // grouped under the previous message: no header
@@ -704,6 +719,7 @@ fn build_message_lines(
                 name_color,
                 header_style,
                 clock_12h,
+                author_presence,
             ));
         }
 
@@ -1009,6 +1025,7 @@ pub struct LayoutKey {
     cell_px: (u32, u32),
     roster: u64,
     emoji: u64,
+    presence: u64,
 }
 
 /// The message pane's lines as built for one [`LayoutKey`], with what the
@@ -1050,6 +1067,7 @@ pub fn pane_layout(
         pane_rows,
         selected: app.selected_message_index,
         messages: app.messages_version,
+        presence: app.presence_version,
         count: messages.len(),
         clock_12h: app.ui_settings.clock_12h,
         avatars: app.avatars_enabled(),

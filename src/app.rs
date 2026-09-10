@@ -16,6 +16,7 @@ use crate::api::types::{
     UserGuildSettingsResponse, UserPartialResponse, UserPrivateResponse, UserSettingsResponse,
     VoiceStateResponse, WellKnownFluxerResponse, merge_user_cache, snowflake_sort_key,
 };
+use crate::api::types::{CustomStatusPayload, PresenceRecord, PresenceStatus};
 use crate::config::UiSettings;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -839,6 +840,15 @@ pub enum PingsState {
     Failed(String),
 }
 
+/// What the client keeps about one person's presence.
+#[derive(Debug, Clone, Default)]
+pub struct PresenceEntry {
+    pub status: PresenceStatus,
+    /// Set when their presence came from a phone.
+    pub mobile: bool,
+    pub custom_status: Option<CustomStatusPayload>,
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -947,6 +957,16 @@ pub struct App {
     pub own_typing: OwnTyping,
     /// The pings overlay while it is open.
     pub pings: Option<PingsView>,
+    /// Who is online, by user id, from READY and PRESENCE_UPDATE. An
+    /// account with no entry has never been heard of and counts as
+    /// offline; the server only sends presences for people the reader
+    /// shares something with.
+    pub presences: HashMap<String, PresenceEntry>,
+    /// Bumped on every presence change. The message pane caches its
+    /// layout by a key, and a presence decides whether an author gets a
+    /// dot, so the key has to move when a presence does or the pane keeps
+    /// the old one.
+    pub presence_version: u64,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1147,6 +1167,8 @@ impl App {
             typing_users: HashMap::new(),
             own_typing: OwnTyping::default(),
             pings: None,
+            presences: HashMap::new(),
+            presence_version: 0,
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -4547,6 +4569,102 @@ impl App {
         Some(to_clipboard)
     }
 
+    // presence
+
+    /// Somebody's online state. An account the server has said nothing
+    /// about is offline: it only sends presences for people the reader
+    /// shares a community or a conversation with.
+    pub fn presence_status(&self, user_id: &str) -> PresenceStatus {
+        if user_id == self.me.id {
+            return self.own_status();
+        }
+        self.presences
+            .get(user_id)
+            .map(|entry| entry.status)
+            .unwrap_or_default()
+    }
+
+    pub fn presence_entry(&self, user_id: &str) -> Option<&PresenceEntry> {
+        self.presences.get(user_id)
+    }
+
+    /// The reader's own status, which is a setting rather than a
+    /// presence: the server does not send the reader their own.
+    pub fn own_status(&self) -> PresenceStatus {
+        self.user_settings
+            .as_ref()
+            .map(|s| PresenceStatus::parse(&s.status))
+            .unwrap_or(PresenceStatus::Online)
+    }
+
+    pub fn own_custom_status(&self) -> Option<&CustomStatusPayload> {
+        self.user_settings.as_ref()?.custom_status.as_ref()
+    }
+
+    /// Take one PRESENCE_UPDATE, or one entry of a ready payload.
+    pub fn apply_presence(&mut self, record: PresenceRecord) {
+        let user_id = record.user.id.clone();
+        if user_id.is_empty() {
+            return;
+        }
+        if !record.user.username.is_empty() {
+            merge_user_cache(&mut self.user_cache, [record.user.clone()]);
+        }
+        let status = record
+            .status
+            .as_deref()
+            .map(PresenceStatus::parse)
+            .unwrap_or_default();
+        // an offline presence with nothing else on it is the server
+        // saying they have gone; keeping the row would only cost memory
+        self.presence_version = self.presence_version.wrapping_add(1);
+        if status.is_offline() && record.custom_status.is_none() {
+            self.presences.remove(&user_id);
+            return;
+        }
+        self.presences.insert(
+            user_id,
+            PresenceEntry {
+                status,
+                mobile: record.mobile,
+                custom_status: record.custom_status,
+            },
+        );
+    }
+
+    pub fn apply_presences(&mut self, records: Vec<PresenceRecord>) {
+        for record in records {
+            self.apply_presence(record);
+        }
+    }
+
+    /// The other person in a one-to-one conversation, whose presence is
+    /// what the channel row shows.
+    pub fn dm_peer_id(&self, channel: &ChannelResponse) -> Option<String> {
+        if channel.channel_type() != CHANNEL_DM {
+            return None;
+        }
+        channel
+            .recipients
+            .iter()
+            .find(|u| u.id != self.me.id)
+            .map(|u| u.id.clone())
+    }
+
+    /// Set the reader's own status locally, so the screen follows before
+    /// the server has answered.
+    pub fn set_own_status(&mut self, status: PresenceStatus) {
+        if let Some(settings) = &mut self.user_settings {
+            settings.status = status.wire().to_string();
+        }
+    }
+
+    pub fn set_own_custom_status(&mut self, custom: Option<CustomStatusPayload>) {
+        if let Some(settings) = &mut self.user_settings {
+            settings.custom_status = custom;
+        }
+    }
+
     // r (as in reply)
 
     pub fn start_reply(&mut self) {
@@ -5392,6 +5510,106 @@ mod tests {
         app.guild_channels.insert("guild-1".to_string(), channels);
         app.selected_server = ServerSelection::Guild("guild-1".to_string());
         app
+    }
+
+    fn presence(user_id: &str, status: &str) -> PresenceRecord {
+        PresenceRecord {
+            user: UserPartialResponse {
+                id: user_id.to_string(),
+                username: user_id.to_string(),
+                ..Default::default()
+            },
+            status: Some(status.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_presence_is_kept_and_an_offline_one_forgets_the_row() {
+        let mut app = test_app(Vec::new());
+        assert_eq!(app.presence_status("u2"), PresenceStatus::Offline);
+        app.apply_presence(presence("u2", "online"));
+        assert_eq!(app.presence_status("u2"), PresenceStatus::Online);
+        app.apply_presence(presence("u2", "idle"));
+        assert_eq!(app.presence_status("u2"), PresenceStatus::Idle);
+        // going offline drops the row rather than keeping an offline one
+        app.apply_presence(presence("u2", "offline"));
+        assert!(app.presence_entry("u2").is_none());
+        assert_eq!(app.presence_status("u2"), PresenceStatus::Offline);
+    }
+
+    #[test]
+    fn an_offline_presence_with_a_status_line_is_kept_for_the_line() {
+        let mut app = test_app(Vec::new());
+        let mut record = presence("u2", "offline");
+        record.custom_status = Some(CustomStatusPayload {
+            text: Some("back later".to_string()),
+            ..Default::default()
+        });
+        app.apply_presence(record);
+        let entry = app.presence_entry("u2").expect("kept");
+        assert_eq!(entry.status, PresenceStatus::Offline);
+        assert_eq!(
+            entry.custom_status.as_ref().and_then(|c| c.text.as_deref()),
+            Some("back later")
+        );
+    }
+
+    #[test]
+    fn the_readers_own_status_comes_from_their_settings_not_a_presence() {
+        let mut app = test_app(Vec::new());
+        // with no settings at all the client assumes online rather than
+        // showing the reader as offline to themselves
+        assert_eq!(app.presence_status("me"), PresenceStatus::Online);
+        app.user_settings = Some(UserSettingsResponse {
+            status: "dnd".to_string(),
+            ..Default::default()
+        });
+        assert_eq!(app.own_status(), PresenceStatus::Dnd);
+        assert_eq!(app.presence_status("me"), PresenceStatus::Dnd);
+        app.set_own_status(PresenceStatus::Invisible);
+        assert_eq!(app.own_status(), PresenceStatus::Invisible);
+        // and a presence the server sent about the reader does not win
+        app.apply_presence(presence("me", "online"));
+        assert_eq!(app.presence_status("me"), PresenceStatus::Invisible);
+    }
+
+    #[test]
+    fn every_presence_change_moves_the_version_the_pane_caches_on() {
+        let mut app = test_app(Vec::new());
+        let before = app.presence_version;
+        app.apply_presence(presence("u2", "online"));
+        assert_ne!(app.presence_version, before);
+        let mid = app.presence_version;
+        app.apply_presence(presence("u2", "offline"));
+        assert_ne!(app.presence_version, mid);
+    }
+
+    #[test]
+    fn a_one_to_one_channel_knows_whose_presence_it_shows() {
+        let channel = ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            recipients: vec![
+                UserPartialResponse {
+                    id: "me".to_string(),
+                    ..Default::default()
+                },
+                UserPartialResponse {
+                    id: "u2".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let app = test_app(vec![channel.clone()]);
+        assert_eq!(app.dm_peer_id(&channel), Some("u2".to_string()));
+        // a group has no single peer, so no dot
+        let group = ChannelResponse {
+            kind: CHANNEL_GROUP_DM,
+            ..channel
+        };
+        assert_eq!(app.dm_peer_id(&group), None);
     }
 
     fn dm_message(id: &str, channel_id: &str) -> MessageResponse {

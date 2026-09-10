@@ -17,6 +17,7 @@ mod ui;
 use crate::api::client::{ApiError, FluxerHttpClient};
 use crate::api::gateway::{GatewayCommand, run_gateway};
 use crate::api::types::{CreateMessageRequest, MessageQuery, MessageReferenceRequest};
+use crate::api::types::{CustomStatusPayload, UserSettingsPatch};
 use crate::app::{
     App, Focus, GatewayStatus, ImagePreviewState, ServerSelection, display_name, me_as_partial,
 };
@@ -1440,6 +1441,43 @@ fn handle_input_focus_key(
                     app.dismiss_command_autocomplete();
                     let _ = app.take_input();
                     app.debug_frame_wanted = true;
+                    return;
+                }
+                if let crate::slash_commands::OutgoingSlash::SetStatus(status) = resolved {
+                    let _ = app.take_input();
+                    app.set_own_status(status);
+                    app.set_status(format!("You are {} now.", status.label()));
+                    spawn_settings_patch(
+                        client.clone(),
+                        event_tx.clone(),
+                        UserSettingsPatch {
+                            status: Some(status.wire().to_string()),
+                            custom_status: None,
+                        },
+                    );
+                    return;
+                }
+                if let crate::slash_commands::OutgoingSlash::SetCustomStatus(text) = &resolved {
+                    let _ = app.take_input();
+                    let payload = text.as_ref().map(|t| CustomStatusPayload {
+                        text: Some(t.clone()),
+                        ..Default::default()
+                    });
+                    app.set_own_custom_status(payload.clone());
+                    app.set_status(match text {
+                        Some(_) => "Status line set.",
+                        None => "Status line cleared.",
+                    });
+                    spawn_settings_patch(
+                        client.clone(),
+                        event_tx.clone(),
+                        UserSettingsPatch {
+                            status: None,
+                            // an explicit null is what clears it, so the
+                            // field is always sent once we are here
+                            custom_status: Some(payload),
+                        },
+                    );
                     return;
                 }
                 if let crate::slash_commands::OutgoingSlash::SetNick {
@@ -3209,6 +3247,30 @@ fn spawn_file_attach(event_tx: UnboundedSender<AppEvent>, path: String) {
                 let _ = event_tx.send(AppEvent::AttachmentFailed {
                     message: format!("{err:#}"),
                 });
+            }
+        }
+    });
+}
+
+/// Write the reader's own settings. The screen was already changed, so a
+/// refusal has to put it back; the answer carries the settings the server
+/// now holds, which is what goes back into the client.
+fn spawn_settings_patch(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    patch: crate::api::types::UserSettingsPatch,
+) {
+    tokio::spawn(async move {
+        match client.update_user_settings(&patch).await {
+            Ok(settings) => {
+                let _ = event_tx.send(AppEvent::UserSettingsChanged {
+                    settings: Box::new(settings),
+                });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!(
+                    "Failed to change your status: {err}"
+                )));
             }
         }
     });

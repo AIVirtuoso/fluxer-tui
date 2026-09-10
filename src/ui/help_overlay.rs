@@ -77,6 +77,9 @@ Input
            one on the message (at most 3), /sticker <name> opens it filtered
   Enter sends text, attachments and stickers together (the compose box shows what is
            staged)
+  /status online|idle|dnd|invisible - your own online status (the status bar
+           shows it); /customstatus <text> sets the line under your name,
+           /customstatus alone clears it
   : - custom emoji autocomplete     @ - mention autocomplete (guild/DM)
   Long lines wrap; input height grows with wrapped rows
 
@@ -104,6 +107,10 @@ Alt
   Alt+S - sticker picker (see Input)
 
 Other
+  Who is about: a filled circle in front of a name, green online, amber idle,
+           red do not disturb; nothing at all where the server has said
+           nothing. A one-to-one conversation shows the other person's in
+           place of its @. u on a message spells the state out in words.
   Edited messages show “(edited)” after the timestamp when the API sends edited_timestamp.
   F12 or /debug - debug panel: session facts and the last log lines (no message text,
            no names); s there, or /debug save, writes them to a file for a bug report;

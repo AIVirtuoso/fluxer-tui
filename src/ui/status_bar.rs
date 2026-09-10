@@ -41,12 +41,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
+    // the reader's own presence sits beside the connection, which is the
+    // other thing on the bar that says how the client stands
+    let own = app.own_status();
     let paragraph = Paragraph::new(Line::from(vec![
         Span::styled(" ", Style::default()),
         Span::styled(
             app.gateway_status.label(),
             crate::ui::theme::gateway_status_style(app.gateway_status),
         ),
+        Span::styled(" ", Style::default()),
+        crate::ui::presence::dot(own),
+        Span::styled(format!(" {}", own.label()), crate::ui::presence::style(own)),
         Span::styled(
             format!(" | {server}{status_mid}"),
             crate::ui::theme::dim_style(),
