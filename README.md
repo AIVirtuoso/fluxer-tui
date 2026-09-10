@@ -11,8 +11,7 @@ keeps its config file, keys and slash commands and differs as follows, set
 against upstream's master of April 2026. Each item has its own section or
 table row further down.
 
-Bugs and feature requests belong in [this client's own issue
-tracker](https://github.com/AIVirtuoso/fluxter/issues); upstream cannot
+Bugs and feature requests belong in [this client's own issue tracker](https://github.com/AIVirtuoso/fluxter/issues); upstream cannot
 act on them.
 
 **Login and packaging**
@@ -202,6 +201,23 @@ for pasting, and `fc-match` (fontconfig) only when running on a Linux
 virtual console, where the UI is drawn through DRM (see `[console]`
 below).
 
+## Install with the PKGBUILD on Arch (or its derivatives)
+
+This is good for those who use an Arch-based distro and want to manage their
+install with Pacman. This requires `wget` to be installed.
+
+```bash
+cd $(mktemp -d)
+wget https://raw.githubusercontent.com/AIVirtuoso/fluxter/refs/heads/master/PKGBUILD
+makepkg -si
+```
+
+A few tools are looked up on PATH at runtime and are optional:
+`chafa` for text-art pictures on a terminal without a graphics
+protocol, `wl-copy` or `xclip` for pasting, and `fc-match`
+(fontconfig) only when running on a Linux virtual console,
+where the UI is drawn through DRM (see `[console]` below).
+
 ## Trying a branch without a full rebuild
 
 `nix run github:AIVirtuoso/fluxter/<branch>` builds the package in the
@@ -258,12 +274,12 @@ Or you can CTRL + L (see below)
 
 ## Command-line options
 
-| Option | Description |
-|--------|-------------|
-| `--token <TOKEN>` | Use this token for this run (still written to config if login succeeds). |
-| `--config <PATH>` | Config file path (default: see below). |
-| `--api-base-url <URL>` | API base URL (default: `https://api.fluxer.app/v1`). |
-| `--logout` | Clear stored token from config and exit. |
+| Option                 | Description                                                              |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `--token <TOKEN>`      | Use this token for this run (still written to config if login succeeds). |
+| `--config <PATH>`      | Config file path (default: see below).                                   |
+| `--api-base-url <URL>` | API base URL (default: `https://api.fluxer.app/v1`).                     |
+| `--logout`             | Clear stored token from config and exit.                                 |
 
 ## Config file
 
@@ -298,14 +314,14 @@ a size cap, the oldest files evicted first. Nothing else is written.
 
 ```toml
 [ui]
-inline_media = true   # pictures and GIFs under messages
-avatars = true        # profile pictures beside messages
+inline_media = true # pictures and GIFs under messages
+avatars = true # profile pictures beside messages
 image_background = "" # see "Transparent pictures" below
 
 [media]
-disk_cache_mb = 64    # 0 turns the disk cache off
+disk_cache_mb = 64 # 0 turns the disk cache off
 memory_cache_mb = 64
-audio_player = ""     # see "Audio" below
+audio_player = "" # see "Audio" below
 ```
 
 Both `[ui]` switches are also in the settings overlay (**F2**). A picture
@@ -364,15 +380,15 @@ all. This table says how far each one has actually been tried, which is not
 the same as how well it is expected to work: most of the list has never
 been run.
 
-| Terminal | Pictures | How far it has been tried |
-| --- | --- | --- |
-| **foot** | sixel | Everything in this README has been used on it. The transparency was checked against the screen pixel by pixel. |
-| **Linux console** (a tty, no X or Wayland) | the client draws them itself through DRM | Used regularly; see "Console mode" below. |
-| **xterm** | sixel, once told to be a VT340 | Used with pictures, stickers and animations, and checked against the screen. It leaves unset sixel positions alone, so transparency works; it cannot hold a frame back until it is whole, so a large picture can be caught part-drawn. It has no coloured underlines (SGR 58) either, which the client is careful never to rely on. Needs the resources below. |
-| **tmux** | whatever tmux itself manages; halfblocks when it does no sixel | Only used for the project's own headless tests, where it comes out as halfblocks. |
-| kitty, iTerm2 | their own protocols, which carry transparency | Never tried. Nothing has to be flattened on these, so `[ui] image_background` does nothing at all. |
-| WezTerm, Konsole, mlterm, Contour, mintty | sixel | Never tried. |
-| alacritty | none of them; falls back to halfblocks | Never tried. |
+| Terminal                                   | Pictures                                                       | How far it has been tried                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **foot**                                   | sixel                                                          | Everything in this README has been used on it. The transparency was checked against the screen pixel by pixel.                                                                                                                                                                                                                                                 |
+| **Linux console** (a tty, no X or Wayland) | the client draws them itself through DRM                       | Used regularly; see "Console mode" below.                                                                                                                                                                                                                                                                                                                      |
+| **xterm**                                  | sixel, once told to be a VT340                                 | Used with pictures, stickers and animations, and checked against the screen. It leaves unset sixel positions alone, so transparency works; it cannot hold a frame back until it is whole, so a large picture can be caught part-drawn. It has no coloured underlines (SGR 58) either, which the client is careful never to rely on. Needs the resources below. |
+| **tmux**                                   | whatever tmux itself manages; halfblocks when it does no sixel | Only used for the project's own headless tests, where it comes out as halfblocks.                                                                                                                                                                                                                                                                              |
+| kitty, iTerm2                              | their own protocols, which carry transparency                  | Never tried. Nothing has to be flattened on these, so `[ui] image_background` does nothing at all.                                                                                                                                                                                                                                                             |
+| WezTerm, Konsole, mlterm, Contour, mintty  | sixel                                                          | Never tried.                                                                                                                                                                                                                                                                                                                                                   |
+| alacritty                                  | none of them; falls back to halfblocks                         | Never tried.                                                                                                                                                                                                                                                                                                                                                   |
 
 If a sixel terminal paints the transparent parts of a picture instead of
 leaving them alone, set `[ui] image_background` to your background colour;
@@ -540,10 +556,10 @@ what you see is what the web app shows:
   `@here`, slash commands, `<t:...>` timestamps in all nine styles in
   your local time (and `R` as "3 hours ago"), community emoji and
   `:shortcodes:`.
-- **Blocks:** `# `, `## `, `### `, `#### ` headings; `-# ` small print;
-  `> ` quotes and `>>> ` for the rest of the message; `> [!NOTE]`,
+- **Blocks:** `#`, `##`, `###`, `####` headings; `-#` small print;
+  `>` quotes and `>>>` for the rest of the message; `> [!NOTE]`,
   `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` and `[!CAUTION]` callouts with
-  a badge and a coloured bar; `- `, `* ` and `1. ` lists, nested by two
+  a badge and a coloured bar; `-`, `*` and `1.` lists, nested by two
   spaces of indent; fenced code blocks with an optional language, drawn
   with a bar in the margin; `||` spoilers spanning several lines; and
   tables with `|` cells and `:--`, `:-:`, `--:` alignment.
@@ -620,14 +636,14 @@ to Mail for the console. The config file has the rest:
 
 ```toml
 [ui]
-notifications = "auto"      # auto | desktop | mail (opt in) | off
-notify_mail_to = ""         # recipient; the login user when empty
-notify_mail_command = ""    # the mail program; "mail" when empty
+notifications = "auto" # auto | desktop | mail (opt in) | off
+notify_mail_to = "" # recipient; the login user when empty
+notify_mail_command = "" # the mail program; "mail" when empty
 notify_desktop_command = "" # the desktop program; "notify-send" when empty
 notify_all_messages = false # also every message in channels set to all messages
-notify_sound = true         # a sound with every notification
-notify_sound_file = ""      # the sound; a built-in chime when empty
-notify_sound_player = ""    # the player; [media] audio_player or the usual ones when empty
+notify_sound = true # a sound with every notification
+notify_sound_file = "" # the sound; a built-in chime when empty
+notify_sound_player = "" # the player; [media] audio_player or the usual ones when empty
 ```
 
 Nothing is announced for your own messages, and a channel's own
@@ -687,8 +703,8 @@ or in the config file:
 
 ```toml
 [ui]
-show_typing_indicators = true  # who else is typing, in the compose box
-send_typing = true             # tell the channel when you are typing
+show_typing_indicators = true # who else is typing, in the compose box
+send_typing = true # tell the channel when you are typing
 ```
 
 Consecutive messages from one person are grouped under a single header,
@@ -718,131 +734,130 @@ fetched until it turns up. **x** takes an entry off the list and **X** all of th
 server too, so the web client agrees; **R** reloads; **Esc** or **q**
 close. The profile of a selected message's author is on **u** now.
 
-
 ## Keyboard shortcuts
 
 ### Global (not typing in the input box)
 
-| Key | Action |
-|-----|--------|
-| **Tab** | Next focus (Servers → Channels → Messages → Input → …). |
-| **Shift+Tab** | Previous focus. |
-| **Left** / **h** | Previous focus. |
-| **Right** / **l** | Next focus. |
-| **i** | Jump to **Input** (text channel, if you can send). |
-| **p** | **Pings**: the messages that mentioned you, newest first, from every community and direct message (see "Interface overview"). **↑** / **↓** move, **Enter** jumps to one, **x** dismisses it, **X** dismisses all, **R** reloads, **Esc** / **q** close. |
-| **Enter** | On a **link** channel: open URL in browser. On a **text** channel: jump to **Input**. |
-| **Esc** | Clear message selection; focus **Messages**. |
-| **↑** / **k** | Move selection / scroll (depends on focus; see below). |
-| **↓** / **j** | Move selection / scroll (depends on focus). |
-| **PageUp** | Scroll message list up (larger step). |
-| **PageDown** | Scroll message list down (larger step). |
-| **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open). |
-| **Ctrl+K** | Open **channel picker** (type to filter, **Enter** to jump). |
-| **Alt+A** | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps. |
-| **F1** | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close). |
-| **Ctrl+H** | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends). |
-| **F12** | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging"). |
-| **R** | **Refresh** active channel messages and guild metadata used for loads (clears local message cache for the channel and resets fetch/backoff state for the current guild). |
-| **Ctrl+C** | Quit - except with a **message selected** (it copies that message) or with **text selected in the input** (it copies the selection). |
-| **Ctrl+L** | Log out (clear intent flag) and quit - token is cleared when the process exits cleanly after this. |
-| **q** | Quit. |
+| Key                     | Action                                                                                                                                                                                                                                                   |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tab**                 | Next focus (Servers → Channels → Messages → Input → …).                                                                                                                                                                                                  |
+| **Shift+Tab**           | Previous focus.                                                                                                                                                                                                                                          |
+| **Left** / **h**        | Previous focus.                                                                                                                                                                                                                                          |
+| **Right** / **l**       | Next focus.                                                                                                                                                                                                                                              |
+| **i**                   | Jump to **Input** (text channel, if you can send).                                                                                                                                                                                                       |
+| **p**                   | **Pings**: the messages that mentioned you, newest first, from every community and direct message (see "Interface overview"). **↑** / **↓** move, **Enter** jumps to one, **x** dismisses it, **X** dismisses all, **R** reloads, **Esc** / **q** close. |
+| **Enter**               | On a **link** channel: open URL in browser. On a **text** channel: jump to **Input**.                                                                                                                                                                    |
+| **Esc**                 | Clear message selection; focus **Messages**.                                                                                                                                                                                                             |
+| **↑** / **k**           | Move selection / scroll (depends on focus; see below).                                                                                                                                                                                                   |
+| **↓** / **j**           | Move selection / scroll (depends on focus).                                                                                                                                                                                                              |
+| **PageUp**              | Scroll message list up (larger step).                                                                                                                                                                                                                    |
+| **PageDown**            | Scroll message list down (larger step).                                                                                                                                                                                                                  |
+| **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open).                                                                                                                                                                   |
+| **Ctrl+K**              | Open **channel picker** (type to filter, **Enter** to jump).                                                                                                                                                                                             |
+| **Alt+A**               | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps.                                                                                                                                                           |
+| **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
+| **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
+| **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |
+| **R**                   | **Refresh** active channel messages and guild metadata used for loads (clears local message cache for the channel and resets fetch/backoff state for the current guild).                                                                                 |
+| **Ctrl+C**              | Quit - except with a **message selected** (it copies that message) or with **text selected in the input** (it copies the selection).                                                                                                                     |
+| **Ctrl+L**              | Log out (clear intent flag) and quit - token is cleared when the process exits cleanly after this.                                                                                                                                                       |
+| **q**                   | Quit.                                                                                                                                                                                                                                                    |
 
 ### When focus is **Servers**
 
-| Key | Action |
-|-----|--------|
+| Key           | Action                      |
+| ------------- | --------------------------- |
 | **↑** / **k** | Previous server / DM entry. |
-| **↓** / **j** | Next server / DM entry. |
+| **↓** / **j** | Next server / DM entry.     |
 
 ### When focus is **Channels**
 
-| Key | Action |
-|-----|--------|
+| Key           | Action            |
+| ------------- | ----------------- |
 | **↑** / **k** | Previous channel. |
-| **↓** / **j** | Next channel. |
+| **↓** / **j** | Next channel.     |
 
 Changing channels marks read state for the new channel when applicable.
 
 ### When focus is **Messages**
 
-| Key | Action |
-|-----|--------|
-| **↑** / **k** | With **message select mode** on: previous message; the pane scrolls to it once it would go off the top. Otherwise: scroll up a few lines. |
-| **↓** / **j** | With **message select mode** on: next message; the pane scrolls to it once it would go off the bottom. Otherwise: scroll down a few lines. |
-| **s** | **Select** mode: select the latest message (start of thread for reply / react / forward). The selected message carries its own header - the author's name and the time - even where it is grouped under another message from the same person, so whoever wrote it is named however far you have scrolled. Their picture comes with it only where the header that already names them has gone off the top of the pane, so the same face is never drawn twice. |
-| **G** | Jump to the **newest** message (also from the Servers and Channels focus). While you are scrolled up, the view stays on the message you are reading as new messages arrive or older ones load. |
-| **y** / **Ctrl+C** | **Copy** the selected message: its text, and the link of each file on it, one per line. It goes to the system clipboard through `wl-copy` (Wayland) or `xclip` (X11) when one of them is there, and always to the client's own cut buffer, so **Alt+V** in the input pastes it - that is the way on the Linux console, where there is no clipboard. |
-| **r** | **Reply** to the selected message (only in select mode). Moves focus to **Input** with reply state set. |
-| **u** | **Profile** of the selected message's author: name, badges, pronouns, bio, when they joined Fluxer and the community, roles, connections, mutual communities and friends. **↑** / **↓** scroll; **p** shows the profile picture full size; **Esc** / **q** close. |
-| **e** | **React**: pick an emoji (**Enter** sends the reaction via API; **Esc** cancels). |
-| **f** | **Forward**: optional note, switch target channel (**Ctrl+K** or list), **Enter** to send (reference type forward). |
-| **Ctrl+E** | **Edit** the selected message (your messages only; **Enter** in input to save, **Esc** to cancel). |
-| **Ctrl+D** | **Delete** the selected message (yours, or with **Manage Messages**). |
-| **[** | Load **older messages** (prepends history; repeat until exhausted). |
+| Key                | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **↑** / **k**      | With **message select mode** on: previous message; the pane scrolls to it once it would go off the top. Otherwise: scroll up a few lines.                                                                                                                                                                                                                                                                                                                    |
+| **↓** / **j**      | With **message select mode** on: next message; the pane scrolls to it once it would go off the bottom. Otherwise: scroll down a few lines.                                                                                                                                                                                                                                                                                                                   |
+| **s**              | **Select** mode: select the latest message (start of thread for reply / react / forward). The selected message carries its own header - the author's name and the time - even where it is grouped under another message from the same person, so whoever wrote it is named however far you have scrolled. Their picture comes with it only where the header that already names them has gone off the top of the pane, so the same face is never drawn twice. |
+| **G**              | Jump to the **newest** message (also from the Servers and Channels focus). While you are scrolled up, the view stays on the message you are reading as new messages arrive or older ones load.                                                                                                                                                                                                                                                               |
+| **y** / **Ctrl+C** | **Copy** the selected message: its text, and the link of each file on it, one per line. It goes to the system clipboard through `wl-copy` (Wayland) or `xclip` (X11) when one of them is there, and always to the client's own cut buffer, so **Alt+V** in the input pastes it - that is the way on the Linux console, where there is no clipboard.                                                                                                          |
+| **r**              | **Reply** to the selected message (only in select mode). Moves focus to **Input** with reply state set.                                                                                                                                                                                                                                                                                                                                                      |
+| **u**              | **Profile** of the selected message's author: name, badges, pronouns, bio, when they joined Fluxer and the community, roles, connections, mutual communities and friends. **↑** / **↓** scroll; **p** shows the profile picture full size; **Esc** / **q** close.                                                                                                                                                                                            |
+| **e**              | **React**: pick an emoji (**Enter** sends the reaction via API; **Esc** cancels).                                                                                                                                                                                                                                                                                                                                                                            |
+| **f**              | **Forward**: optional note, switch target channel (**Ctrl+K** or list), **Enter** to send (reference type forward).                                                                                                                                                                                                                                                                                                                                          |
+| **Ctrl+E**         | **Edit** the selected message (your messages only; **Enter** in input to save, **Esc** to cancel).                                                                                                                                                                                                                                                                                                                                                           |
+| **Ctrl+D**         | **Delete** the selected message (yours, or with **Manage Messages**).                                                                                                                                                                                                                                                                                                                                                                                        |
+| **[**              | Load **older messages** (prepends history; repeat until exhausted).                                                                                                                                                                                                                                                                                                                                                                                          |
 
 Edited messages show **(edited)** in dim italics after the timestamp when the API supplies `edited_timestamp` (including live **MESSAGE_UPDATE** from the gateway).
 
 ### When focus is **Input**
 
-| Key | Action |
-|-----|--------|
-| **Enter** | Send message, save **edit**, or forward with reference only. Long lines **wrap** and the input bar **grows** with the text, then scrolls to the cursor. |
-| **Shift+Enter** / **Alt+Enter** / **Ctrl+J** | New line. **Ctrl+J** is the one that arrives in xterm, which binds Alt+Enter to its own fullscreen action. |
-| **←** / **→**, **Ctrl+←** / **Ctrl+→** (or **Alt+B** / **Alt+F**) | Move by character or word; **←** with nothing before the cursor leaves **Input** and focuses **Messages**, so **←** walks the boxes back the way **→** walks them forward. **Ctrl+←** stays in the box. |
-| **Home** / **End** (or **Ctrl+A** / **Ctrl+E**), **Ctrl+Home** / **Ctrl+End** | Start or end of the line; of the whole text. |
-| **↑** / **↓** | Line above or below; **↑** on the first line leaves **Input** and focuses **Messages**. |
-| **Backspace** (or **Ctrl+H**) / **Delete** (or **Ctrl+D**) | Delete the character before / after the cursor (or the selection). |
-| **Ctrl+Backspace** / **Alt+Backspace** / **Ctrl+W**, **Ctrl+Delete** / **Alt+D** | Delete the previous / next whitespace-separated word. |
-| **Alt+K** | Delete to the end of the line. |
-| **Shift+movement**, or **Ctrl+Space** then movement | Select; **Esc** drops the selection. |
-| **Ctrl+C** / **Ctrl+X** / **Alt+V** | Copy / cut the selected text here (also to `wl-copy` or `xclip`) / paste back what was cut or copied, a message copied with **y** included. |
-| **Ctrl+V** | Paste text from the system clipboard at the cursor; an image or files on it are attached instead. |
-| **Alt+S** | Open the sticker picker (also `/sticker`, `/sticker <name>`). |
-| **Ctrl+X** (nothing selected) | Drop the last staged sticker, or the last staged file when no sticker is staged. |
-| **Ctrl+B**, **Ctrl+I** (or **Tab** with a selection), **Alt+U**, **Ctrl+S**, **Alt+C**, **Alt+P** | Bold, italic, underline, strikethrough, code, spoiler around the selection or the word at the cursor; again to remove. |
-| **Ctrl+Z** / **Ctrl+Y** | Undo / redo. |
-| `/debug`, `/debug save`, `/debug frame` | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging"). |
-| **Ctrl+U** | Clear the whole input line. |
-| **Esc** | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Messages**. |
-| **:** (colon) | Start **custom emoji** autocomplete (server emojis + unicode picker). |
-| **@** | Start **@mention** autocomplete (users/roles in guilds; DMs use recipients). Triggers loading full member list from the API only when needed. |
+| Key                                                                                               | Action                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Enter**                                                                                         | Send message, save **edit**, or forward with reference only. Long lines **wrap** and the input bar **grows** with the text, then scrolls to the cursor.                                                 |
+| **Shift+Enter** / **Alt+Enter** / **Ctrl+J**                                                      | New line. **Ctrl+J** is the one that arrives in xterm, which binds Alt+Enter to its own fullscreen action.                                                                                              |
+| **←** / **→**, **Ctrl+←** / **Ctrl+→** (or **Alt+B** / **Alt+F**)                                 | Move by character or word; **←** with nothing before the cursor leaves **Input** and focuses **Messages**, so **←** walks the boxes back the way **→** walks them forward. **Ctrl+←** stays in the box. |
+| **Home** / **End** (or **Ctrl+A** / **Ctrl+E**), **Ctrl+Home** / **Ctrl+End**                     | Start or end of the line; of the whole text.                                                                                                                                                            |
+| **↑** / **↓**                                                                                     | Line above or below; **↑** on the first line leaves **Input** and focuses **Messages**.                                                                                                                 |
+| **Backspace** (or **Ctrl+H**) / **Delete** (or **Ctrl+D**)                                        | Delete the character before / after the cursor (or the selection).                                                                                                                                      |
+| **Ctrl+Backspace** / **Alt+Backspace** / **Ctrl+W**, **Ctrl+Delete** / **Alt+D**                  | Delete the previous / next whitespace-separated word.                                                                                                                                                   |
+| **Alt+K**                                                                                         | Delete to the end of the line.                                                                                                                                                                          |
+| **Shift+movement**, or **Ctrl+Space** then movement                                               | Select; **Esc** drops the selection.                                                                                                                                                                    |
+| **Ctrl+C** / **Ctrl+X** / **Alt+V**                                                               | Copy / cut the selected text here (also to `wl-copy` or `xclip`) / paste back what was cut or copied, a message copied with **y** included.                                                             |
+| **Ctrl+V**                                                                                        | Paste text from the system clipboard at the cursor; an image or files on it are attached instead.                                                                                                       |
+| **Alt+S**                                                                                         | Open the sticker picker (also `/sticker`, `/sticker <name>`).                                                                                                                                           |
+| **Ctrl+X** (nothing selected)                                                                     | Drop the last staged sticker, or the last staged file when no sticker is staged.                                                                                                                        |
+| **Ctrl+B**, **Ctrl+I** (or **Tab** with a selection), **Alt+U**, **Ctrl+S**, **Alt+C**, **Alt+P** | Bold, italic, underline, strikethrough, code, spoiler around the selection or the word at the cursor; again to remove.                                                                                  |
+| **Ctrl+Z** / **Ctrl+Y**                                                                           | Undo / redo.                                                                                                                                                                                            |
+| `/debug`, `/debug save`, `/debug frame`                                                           | Debug panel; write its facts and log lines to a file; map the screen into the log (see "Debugging").                                                                                                    |
+| **Ctrl+U**                                                                                        | Clear the whole input line.                                                                                                                                                                             |
+| **Esc**                                                                                           | If replying/forwarding, cancel; if picking a reaction, cancel; otherwise leave **Input** and focus **Messages**.                                                                                        |
+| **:** (colon)                                                                                     | Start **custom emoji** autocomplete (server emojis + unicode picker).                                                                                                                                   |
+| **@**                                                                                             | Start **@mention** autocomplete (users/roles in guilds; DMs use recipients). Triggers loading full member list from the API only when needed.                                                           |
 
 Plain letters (without **Ctrl**) are inserted into the message, except where autocomplete consumes them.
 
 ### @mention autocomplete (while open)
 
-| Key | Action |
-|-----|--------|
-| **↑** / **↓** | Previous / next suggestion. |
-| **Tab** / **Enter** | Insert selected mention. |
-| **Esc** | Close autocomplete. |
-| **Backspace** | Edit text; filter updates. |
-| **Any character** | Type to filter (unless **Ctrl**). |
+| Key                 | Action                            |
+| ------------------- | --------------------------------- |
+| **↑** / **↓**       | Previous / next suggestion.       |
+| **Tab** / **Enter** | Insert selected mention.          |
+| **Esc**             | Close autocomplete.               |
+| **Backspace**       | Edit text; filter updates.        |
+| **Any character**   | Type to filter (unless **Ctrl**). |
 
 ### Sticker picker (while open)
 
-| Key | Action |
-|-----|--------|
-| **j** / **k**, **↑** / **↓** | Move through the stickers. |
-| **g** / **G**, **Home** / **End** | First / last sticker. |
-| **Ctrl+D** / **Ctrl+U**, **Ctrl+F** / **Ctrl+B**, **PgDn** / **PgUp** | Move by ten. |
-| **Enter**, **l** / **→** | Put the sticker on the message (at most three) and close. |
-| **q**, **h** / **←**, **Esc** | Close the picker. |
-| **/** | Search by name or tag; the list narrows as you type. |
-| **Enter** (searching) | Keep the search and go back to moving. |
-| **Esc** (searching) | Leave the search; the list goes back as it was. |
-| **Backspace** (**Ctrl+U**) | While searching: edit (clear) what is typed. |
+| Key                                                                   | Action                                                    |
+| --------------------------------------------------------------------- | --------------------------------------------------------- |
+| **j** / **k**, **↑** / **↓**                                          | Move through the stickers.                                |
+| **g** / **G**, **Home** / **End**                                     | First / last sticker.                                     |
+| **Ctrl+D** / **Ctrl+U**, **Ctrl+F** / **Ctrl+B**, **PgDn** / **PgUp** | Move by ten.                                              |
+| **Enter**, **l** / **→**                                              | Put the sticker on the message (at most three) and close. |
+| **q**, **h** / **←**, **Esc**                                         | Close the picker.                                         |
+| **/**                                                                 | Search by name or tag; the list narrows as you type.      |
+| **Enter** (searching)                                                 | Keep the search and go back to moving.                    |
+| **Esc** (searching)                                                   | Leave the search; the list goes back as it was.           |
+| **Backspace** (**Ctrl+U**)                                            | While searching: edit (clear) what is typed.              |
 
 ### Emoji autocomplete (while open)
 
-| Key | Action |
-|-----|--------|
-| **↑** / **↓** | Previous / next emoji. |
+| Key                 | Action                                                                                         |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| **↑** / **↓**       | Previous / next emoji.                                                                         |
 | **Tab** / **Enter** | Insert selected emoji into the message, **or** confirm **reaction** when **e** flow is active. |
-| **Esc** | Close autocomplete. |
-| **Backspace** | Edit; filter updates. |
-| **Any character** | Type to filter (unless **Ctrl**). |
+| **Esc**             | Close autocomplete.                                                                            |
+| **Backspace**       | Edit; filter updates.                                                                          |
+| **Any character**   | Type to filter (unless **Ctrl**).                                                              |
 
 ---
 
@@ -927,12 +942,12 @@ over and back. Settings, all optional:
 
 ```toml
 [console]
-mode = "auto"        # auto | always | never
-drm_device = ""      # default /dev/dri/card0
-font = ""            # path to a TTF/OTF; default: fc-match monospace
-bold_font = ""       # default: fc-match monospace:bold
-emoji_font = ""      # default: fc-match emoji (e.g. Noto Color Emoji)
-font_px = 28         # text size in pixels
+mode = "auto" # auto | always | never
+drm_device = "" # default /dev/dri/card0
+font = "" # path to a TTF/OTF; default: fc-match monospace
+bold_font = "" # default: fc-match monospace:bold
+emoji_font = "" # default: fc-match emoji (e.g. Noto Color Emoji)
+font_px = 28 # text size in pixels
 ```
 
 `FLUXER_TUI_CONSOLE=never|always` overrides the mode for one run, and
