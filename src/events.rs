@@ -219,6 +219,17 @@ pub enum AppEvent {
     SearchFailed {
         message: String,
     },
+    /// A conversation the server made or handed back.
+    PrivateChannelOpened {
+        channel: Box<ChannelResponse>,
+    },
+    /// A pin the server refused: the list is put back the way it was,
+    /// since it was changed before the call went out.
+    DmPinFailed {
+        channel_id: String,
+        pinned: bool,
+        message: String,
+    },
     ProfileLoaded {
         user_id: String,
         guild_id: Option<String>,
@@ -378,6 +389,19 @@ pub fn apply_event(
         }
         AppEvent::SearchFailed { message } => {
             app.set_search_failed(message);
+        }
+        AppEvent::PrivateChannelOpened { channel } => {
+            let channel_id = channel.id.clone();
+            app.adopt_private_channel(*channel);
+            app.jump_to_channel(&channel_id);
+        }
+        AppEvent::DmPinFailed {
+            channel_id,
+            pinned,
+            message,
+        } => {
+            app.set_dm_pinned_local(&channel_id, pinned);
+            app.set_status(message);
         }
         AppEvent::ProfileLoaded {
             user_id,
@@ -843,6 +867,30 @@ pub fn apply_event(
                 }
                 if let Some(event) = read::<SavedChange>(&kind, payload) {
                     app.forget_saved_message(&event.message_id);
+                }
+            }
+            "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE" => {
+                #[derive(serde::Deserialize)]
+                struct RecipientChange {
+                    channel_id: String,
+                    user: crate::api::types::UserPartialResponse,
+                }
+                if let Some(event) = read::<RecipientChange>(&kind, payload) {
+                    app.set_group_recipient(
+                        &event.channel_id,
+                        event.user,
+                        kind == "CHANNEL_RECIPIENT_ADD",
+                    );
+                }
+            }
+            "USER_PINNED_DMS_UPDATE" => {
+                #[derive(serde::Deserialize)]
+                struct PinnedDms {
+                    #[serde(default)]
+                    pinned_channel_ids: Vec<String>,
+                }
+                if let Some(event) = read::<PinnedDms>(&kind, payload) {
+                    app.set_pinned_dms(event.pinned_channel_ids);
                 }
             }
             "VOICE_STATE_UPDATE" => {

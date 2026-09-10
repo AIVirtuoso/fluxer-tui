@@ -115,6 +115,12 @@ act on them.
   phrases typed straight into the query; **Enter** on a hit jumps to it in
   the chat. `POST /search/messages` was never called before, so there was
   no search of any kind (see "Searching").
+
+- **Starting a conversation.** **Alt+N** opens one with anybody the client
+  knows, or makes a group of several; **Alt+G** renames a group, adds
+  somebody, takes somebody out or leaves it. Before this the client could
+  read every conversation it already had and open none, because
+  `POST /users/@me/channels` was never called (see "Conversations").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -790,6 +796,39 @@ channels its hits are in, so a result from a community you have never
 scrolled still says where it came from. Jumping to one in a community you
 have since left says so instead of moving the pane somewhere wrong.
 
+## Conversations
+
+**Alt+N** starts one. It lists everybody the client knows — the people you
+are already talking to, and the members of every community you are in —
+and typing narrows the list by display name, username or tag. **Enter**
+opens the conversation with the person under the cursor; the server hands
+back the one you already have rather than a second, so this is also the
+way back to a conversation you closed.
+
+**Space** ticks somebody instead. Tick two or more and **Enter** makes a
+**group** of them and you.
+
+### Looking after a group
+
+**Alt+G** on an open group offers what a group needs: **rename it** (an
+empty name drops the name and it goes back to listing its people), **add
+somebody** (the same people list, but Enter puts them in the group),
+**take somebody out**, and **leave it**.
+
+### In the conversation list
+
+| Key | What it does |
+| --- | ------------ |
+| **P** | Keep the conversation at the top of the list, or let it go. Pinned ones sort above the rest and carry a small `·pin`; within each half the newest message is still first. |
+| **x** | Close the conversation, or leave the group. |
+
+**Closing deletes nothing.** The messages stay on the server and the
+conversation comes back the moment either side writes; **Alt+N** reopens
+it. Leaving a group is the same call and does take you out of it.
+
+People joining and leaving a group arrive over the gateway, so a change
+made in another client shows here without a reload.
+
 ## Message formatting
 
 Messages are drawn with the markup Fluxer's own parser understands, so
@@ -1014,6 +1053,9 @@ close. The profile of a selected message's author is on **u** now.
 | **Alt+B**               | **Bookmarks**: the messages you have saved, from every community and direct message. **↑** / **↓** move, **Enter** jumps to one, **x** takes the bookmark off, **R** reloads, **Esc** / **q** close.                                                     |
 
 | **/**                   | **Search messages** (see "Searching"). **←** / **→** pick the scope, **Enter** searches, then **↑** / **↓** move through the hits and **Enter** jumps to one.                                                                                            |
+
+| **Alt+N**               | **Start a conversation** with somebody, or a group with several (see "Conversations").                                                                                                                                                                  |
+| **Alt+G**               | Look after the **group** now open: rename it, add somebody, take somebody out, leave it.                                                                                                                                                                |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

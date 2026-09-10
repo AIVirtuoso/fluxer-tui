@@ -777,6 +777,24 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Open the one-to-one conversation with somebody, or make it. The
+    /// server hands back the one that already exists rather than a
+    /// second, so this is safe to call for a conversation you have.
+    pub async fn create_dm(&self, recipient_id: &str) -> Result<ChannelResponse> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            recipient_id: &'a str,
+        }
+        self.send_json::<(), Body, ChannelResponse>(
+            Method::POST,
+            "/users/@me/channels",
+            None::<&()>,
+            Some(&Body { recipient_id }),
+            false,
+        )
+        .await
+    }
+
     /// Ask somebody you can already see to be friends.
     pub async fn friend_request(&self, user_id: &str) -> Result<()> {
         self.send_empty(
@@ -784,6 +802,23 @@ impl FluxerHttpClient {
             &format!("/users/@me/relationships/{user_id}"),
             Some(&serde_json::json!({})),
             "send the friend request",
+        )
+        .await
+    }
+
+    /// Make a group conversation with several people. The server takes
+    /// the other recipients only; the reader is not one of them.
+    pub async fn create_group_dm(&self, recipients: &[String]) -> Result<ChannelResponse> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            recipients: &'a [String],
+        }
+        self.send_json::<(), Body, ChannelResponse>(
+            Method::POST,
+            "/users/@me/channels",
+            None::<&()>,
+            Some(&Body { recipients }),
+            false,
         )
         .await
     }
@@ -822,6 +857,18 @@ impl FluxerHttpClient {
         .await
     }
 
+    /// Close a conversation, or leave a group. The messages are not
+    /// deleted; the conversation comes back when either side writes.
+    pub async fn close_channel(&self, channel_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/channels/{channel_id}"),
+            None,
+            "close the conversation",
+        )
+        .await
+    }
+
     /// A name of the reader's own for a friend, or None to drop it.
     pub async fn set_relationship_nickname(
         &self,
@@ -837,6 +884,63 @@ impl FluxerHttpClient {
             &format!("/users/@me/relationships/{user_id}"),
             Some(&Body { nickname }),
             "change the nickname",
+        )
+        .await
+    }
+
+    pub async fn add_group_recipient(&self, channel_id: &str, user_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::PUT,
+            &format!("/channels/{channel_id}/recipients/{user_id}"),
+            None,
+            "add them to the group",
+        )
+        .await
+    }
+
+    pub async fn remove_group_recipient(&self, channel_id: &str, user_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/channels/{channel_id}/recipients/{user_id}"),
+            None,
+            "take them out of the group",
+        )
+        .await
+    }
+
+    /// Rename a group. The update route is a tagged union, so the
+    /// channel's type goes with the name.
+    pub async fn rename_group_dm(&self, channel_id: &str, name: Option<&str>) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            #[serde(rename = "type")]
+            channel_type: i32,
+            name: Option<&'a str>,
+        }
+        self.send_empty(
+            Method::PATCH,
+            &format!("/channels/{channel_id}"),
+            Some(&Body {
+                channel_type: crate::api::types::CHANNEL_GROUP_DM,
+                name,
+            }),
+            "rename the group",
+        )
+        .await
+    }
+
+    /// Keep a conversation at the top of the list, or let it go.
+    pub async fn set_dm_pinned(&self, channel_id: &str, pinned: bool) -> Result<()> {
+        let method = if pinned { Method::PUT } else { Method::DELETE };
+        self.send_empty::<()>(
+            method,
+            &format!("/users/@me/channels/{channel_id}/pin"),
+            None,
+            if pinned {
+                "pin the conversation"
+            } else {
+                "unpin the conversation"
+            },
         )
         .await
     }

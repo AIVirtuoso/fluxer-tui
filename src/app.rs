@@ -1209,6 +1209,65 @@ pub enum SearchState {
     Failed(String),
 }
 
+/// Starting a conversation, and looking after one that exists.
+///
+/// One overlay in two modes: a list of people to start with, and the
+/// handful of things a group conversation needs doing to it.
+#[derive(Debug)]
+pub struct ConversationView {
+    pub mode: ConversationMode,
+    pub filter: String,
+    pub selected: usize,
+    /// The people ticked with Space, which is what turns a one-to-one
+    /// into a group.
+    pub marked: Vec<String>,
+    /// Text being typed into the footer, when a row asked for some.
+    pub input: Option<ConversationInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationMode {
+    /// Pick somebody, or several, to talk to.
+    People,
+    /// What can be done to the group now open.
+    Group { channel_id: String },
+    /// Which of a group's people to take out.
+    RemoveFrom { channel_id: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum ConversationInput {
+    Rename { channel_id: String, text: String },
+}
+
+/// One row of the group menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupAction {
+    Rename,
+    AddSomebody,
+    RemoveSomebody,
+    Leave,
+}
+
+impl GroupAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rename => "Rename it",
+            Self::AddSomebody => "Add somebody",
+            Self::RemoveSomebody => "Take somebody out",
+            Self::Leave => "Leave it",
+        }
+    }
+}
+
+/// Somebody the reader could start talking to.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub user: UserPartialResponse,
+    /// Where the client knows them from, for the row's second column.
+    pub note: String,
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -1362,6 +1421,14 @@ pub struct App {
     /// of, so a hit from a community the reader has not opened can still
     /// say where it came from.
     pub search_channels: HashMap<String, ChannelResponse>,
+    /// Starting or managing a conversation, while that overlay is open.
+    pub conversation: Option<ConversationView>,
+    /// The group somebody is being picked for, when the people list was
+    /// opened from a group's "Add somebody" rather than on its own.
+    pub pending_group_add: Option<String>,
+    /// Conversations the reader has pinned to the top of the list, from
+    /// USER_PINNED_DMS_UPDATE.
+    pub pinned_dms: HashSet<String>,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1578,6 +1645,9 @@ impl App {
             channels_with_new_pins: HashSet::new(),
             search: None,
             search_channels: HashMap::new(),
+            conversation: None,
+            pending_group_add: None,
+            pinned_dms: HashSet::new(),
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -2346,18 +2416,18 @@ impl App {
         match server {
             ServerSelection::DirectMessages => {
                 let mut dms = self.private_channels.clone();
+                // pinned conversations sit above the rest; within each
+                // half the newest message comes first
                 dms.sort_by(|a, b| {
-                    let a_key = a
-                        .last_message_id
-                        .as_deref()
-                        .and_then(|id| id.parse::<u128>().ok())
-                        .unwrap_or(0);
-                    let b_key = b
-                        .last_message_id
-                        .as_deref()
-                        .and_then(|id| id.parse::<u128>().ok())
-                        .unwrap_or(0);
-                    b_key.cmp(&a_key)
+                    let recency = |c: &ChannelResponse| {
+                        c.last_message_id
+                            .as_deref()
+                            .and_then(|id| id.parse::<u128>().ok())
+                            .unwrap_or(0)
+                    };
+                    self.is_dm_pinned(&b.id)
+                        .cmp(&self.is_dm_pinned(&a.id))
+                        .then_with(|| recency(b).cmp(&recency(a)))
                 });
                 dms
             }
@@ -4443,6 +4513,10 @@ impl App {
     pub fn remove_private_channel(&mut self, channel_id: &str) {
         self.private_channels
             .retain(|channel| channel.id != channel_id);
+        self.pinned_dms.remove(channel_id);
+        if self.selected_channel_id.as_deref() == Some(channel_id) {
+            self.selected_channel_id = None;
+        }
         self.normalize_selection();
     }
 
@@ -5270,6 +5344,60 @@ impl App {
     // Alt+F: friends, requests and blocked accounts
 
     pub fn open_friends(&mut self) {
+        self.close_conversation_overlays();
+        self.friends = Some(FriendsView {
+            state: if self.relationships.is_empty() {
+                FriendsState::Loading
+            } else {
+                // what arrived at start is shown at once and refreshed
+                // behind it, so the list is never blank for no reason
+                FriendsState::Ready
+            },
+            selected: 0,
+            tab: FriendsTab::Friends,
+            input: None,
+        });
+    }
+
+    // Alt+N: starting a conversation, and looking after one
+
+    pub fn open_new_conversation(&mut self) {
+        self.close_conversation_overlays();
+        self.conversation = Some(ConversationView {
+            mode: ConversationMode::People,
+            filter: String::new(),
+            selected: 0,
+            marked: Vec::new(),
+            input: None,
+        });
+    }
+
+    /// The menu for the group now open. None when the channel showing is
+    /// not a group.
+    pub fn open_group_menu(&mut self) -> bool {
+        let Some(channel) = self
+            .active_channel_id()
+            .and_then(|id| self.channel_by_id(&id).cloned())
+        else {
+            return false;
+        };
+        if channel.channel_type() != CHANNEL_GROUP_DM {
+            return false;
+        }
+        self.close_conversation_overlays();
+        self.conversation = Some(ConversationView {
+            mode: ConversationMode::Group {
+                channel_id: channel.id,
+            },
+            filter: String::new(),
+            selected: 0,
+            marked: Vec::new(),
+            input: None,
+        });
+        true
+    }
+
+    fn close_conversation_overlays(&mut self) {
         self.show_settings = false;
         self.show_server_notifications = false;
         self.show_help = false;
@@ -5456,6 +5584,87 @@ impl App {
             .unwrap_or_default()
     }
 
+    pub fn dismiss_conversation(&mut self) {
+        self.conversation = None;
+        self.pending_group_add = None;
+    }
+
+    /// Everybody the client knows well enough to start talking to: the
+    /// people already in a conversation, and the members of every
+    /// community. The reader themselves is left out, and so is anybody
+    /// there is already a one-to-one with, since Enter on them would only
+    /// open what the channel list already holds.
+    pub fn conversation_candidates(&self) -> Vec<Candidate> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out: Vec<Candidate> = Vec::new();
+        seen.insert(self.me.id.clone());
+
+        for channel in &self.private_channels {
+            let note = match channel.channel_type() {
+                CHANNEL_GROUP_DM => "in a group with you".to_string(),
+                _ => "you talk already".to_string(),
+            };
+            for user in &channel.recipients {
+                if seen.insert(user.id.clone()) {
+                    out.push(Candidate {
+                        user: user.clone(),
+                        note: note.clone(),
+                    });
+                }
+            }
+        }
+        for guild in &self.guilds {
+            let Some(members) = self.guild_members.get(&guild.id) else {
+                continue;
+            };
+            for member in members {
+                if seen.insert(member.user.id.clone()) {
+                    out.push(Candidate {
+                        user: member.user.clone(),
+                        note: guild.name.clone(),
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|c| display_name(&c.user).to_lowercase());
+        out
+    }
+
+    /// The candidates that match what has been typed, by display name,
+    /// username or tag.
+    pub fn conversation_matches(&self) -> Vec<Candidate> {
+        let Some(view) = self.conversation.as_ref() else {
+            return Vec::new();
+        };
+        let needle = view.filter.trim().to_lowercase();
+        let all = self.conversation_candidates();
+        if needle.is_empty() {
+            return all;
+        }
+        all.into_iter()
+            .filter(|c| {
+                display_name(&c.user).to_lowercase().contains(&needle)
+                    || c.user.username.to_lowercase().contains(&needle)
+                    || format!("{}#{}", c.user.username, c.user.discriminator)
+                        .to_lowercase()
+                        .contains(&needle)
+            })
+            .collect()
+    }
+
+    /// The people in the group the overlay is about.
+    pub fn group_members(&self, channel_id: &str) -> Vec<UserPartialResponse> {
+        self.channel_by_id(channel_id)
+            .map(|c| {
+                c.recipients
+                    .iter()
+                    .filter(|u| u.id != self.me.id)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn is_marked(&self, channel_id: &str, message_id: &str) -> bool {
         self.marked_messages
             .get(channel_id)
@@ -5627,6 +5836,40 @@ impl App {
         }
     }
 
+    /// What the group menu offers. Renaming and adding are open to
+    /// anybody in a group; the server decides the rest.
+    pub fn group_actions(&self, channel_id: &str) -> Vec<GroupAction> {
+        let mut out = vec![GroupAction::Rename, GroupAction::AddSomebody];
+        if !self.group_members(channel_id).is_empty() {
+            out.push(GroupAction::RemoveSomebody);
+        }
+        out.push(GroupAction::Leave);
+        out
+    }
+
+    /// How many rows the overlay is showing, whichever mode it is in.
+    pub fn conversation_len(&self) -> usize {
+        match self.conversation.as_ref().map(|v| &v.mode) {
+            None => 0,
+            Some(ConversationMode::People) => self.conversation_matches().len(),
+            Some(ConversationMode::Group { channel_id }) => self.group_actions(channel_id).len(),
+            Some(ConversationMode::RemoveFrom { channel_id }) => {
+                self.group_members(channel_id).len()
+            }
+        }
+    }
+
+    pub fn conversation_move(&mut self, delta: isize) {
+        let count = self.conversation_len();
+        if let Some(view) = &mut self.conversation {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
     pub fn friends_switch_tab(&mut self, forward: bool) {
         if let Some(view) = &mut self.friends {
             view.tab = if forward {
@@ -5634,6 +5877,70 @@ impl App {
             } else {
                 view.tab.previous()
             };
+            view.selected = 0;
+        }
+    }
+
+    pub fn conversation_selected_user(&self) -> Option<UserPartialResponse> {
+        let view = self.conversation.as_ref()?;
+        match &view.mode {
+            ConversationMode::People => self
+                .conversation_matches()
+                .get(view.selected)
+                .map(|c| c.user.clone()),
+            ConversationMode::RemoveFrom { channel_id } => {
+                self.group_members(channel_id).get(view.selected).cloned()
+            }
+            ConversationMode::Group { .. } => None,
+        }
+    }
+
+    pub fn conversation_selected_action(&self) -> Option<GroupAction> {
+        let view = self.conversation.as_ref()?;
+        match &view.mode {
+            ConversationMode::Group { channel_id } => {
+                self.group_actions(channel_id).get(view.selected).copied()
+            }
+            _ => None,
+        }
+    }
+
+    /// Tick or untick the person under the cursor. Ticking anybody is
+    /// what turns Enter from "open a conversation" into "make a group".
+    pub fn conversation_toggle_mark(&mut self) -> Option<usize> {
+        let user = self.conversation_selected_user()?;
+        let view = self.conversation.as_mut()?;
+        if !matches!(view.mode, ConversationMode::People) {
+            return None;
+        }
+        match view.marked.iter().position(|id| *id == user.id) {
+            Some(index) => {
+                view.marked.remove(index);
+            }
+            None => view.marked.push(user.id),
+        }
+        Some(view.marked.len())
+    }
+
+    pub fn conversation_is_marked(&self, user_id: &str) -> bool {
+        self.conversation
+            .as_ref()
+            .is_some_and(|v| v.marked.iter().any(|id| id == user_id))
+    }
+
+    pub fn conversation_marked(&self) -> Vec<String> {
+        self.conversation
+            .as_ref()
+            .map(|v| v.marked.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn conversation_filter_push(&mut self, c: char) {
+        if let Some(view) = &mut self.conversation
+            && matches!(view.mode, ConversationMode::People)
+            && view.filter.chars().count() < 64
+        {
+            view.filter.push(c);
             view.selected = 0;
         }
     }
@@ -5652,6 +5959,13 @@ impl App {
         }
     }
 
+    pub fn conversation_filter_pop(&mut self) {
+        if let Some(view) = &mut self.conversation {
+            view.filter.pop();
+            view.selected = 0;
+        }
+    }
+
     fn clamp_friends_selection(&mut self) {
         let Some(tab) = self.friends.as_ref().map(|v| v.tab) else {
             return;
@@ -5661,7 +5975,6 @@ impl App {
             view.selected = view.selected.min(count.saturating_sub(1));
         }
     }
-
     /// Open a channel the client already knows, the way the channel
     /// picker does.
     pub fn jump_to_channel(&mut self, channel_id: &str) -> bool {
@@ -6294,6 +6607,59 @@ impl App {
                     &channel_id[channel_id.len().saturating_sub(4)..]
                 ),
             ),
+        }
+    }
+    /// Take a channel the server just made and put it on the list, so the
+    /// reader can be moved into it at once.
+    pub fn adopt_private_channel(&mut self, channel: ChannelResponse) {
+        if channel.id.is_empty() {
+            return;
+        }
+        merge_user_cache(&mut self.user_cache, channel.recipients.iter().cloned());
+        match self
+            .private_channels
+            .iter_mut()
+            .find(|c| c.id == channel.id)
+        {
+            Some(existing) => *existing = channel,
+            None => self.private_channels.push(channel),
+        }
+    }
+
+    pub fn is_dm_pinned(&self, channel_id: &str) -> bool {
+        self.pinned_dms.contains(channel_id)
+    }
+
+    pub fn set_pinned_dms(&mut self, ids: Vec<String>) {
+        self.pinned_dms = ids.into_iter().collect();
+    }
+
+    pub fn set_dm_pinned_local(&mut self, channel_id: &str, pinned: bool) {
+        if pinned {
+            self.pinned_dms.insert(channel_id.to_string());
+        } else {
+            self.pinned_dms.remove(channel_id);
+        }
+    }
+
+    /// Add or drop somebody in a group the client already holds, from
+    /// CHANNEL_RECIPIENT_ADD and _REMOVE.
+    pub fn set_group_recipient(
+        &mut self,
+        channel_id: &str,
+        user: UserPartialResponse,
+        present: bool,
+    ) {
+        merge_user_cache(&mut self.user_cache, [user.clone()]);
+        if let Some(channel) = self
+            .private_channels
+            .iter_mut()
+            .find(|c| c.id == channel_id)
+        {
+            channel.recipients.retain(|u| u.id != user.id);
+            if present {
+                channel.recipients.push(user);
+            }
         }
     }
     // r (as in reply)
@@ -7358,6 +7724,108 @@ mod tests {
             ..channel
         };
         assert_eq!(app.dm_peer_id(&group), None);
+    }
+
+    #[test]
+    fn a_pinned_conversation_sits_above_a_busier_one() {
+        let older = ChannelResponse {
+            id: "quiet".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("100".to_string()),
+            ..Default::default()
+        };
+        let newer = ChannelResponse {
+            id: "busy".to_string(),
+            kind: CHANNEL_DM,
+            last_message_id: Some("900".to_string()),
+            ..Default::default()
+        };
+        let mut app = test_app(vec![older, newer]);
+        // by recency alone the busy one is first
+        let order: Vec<String> = app
+            .all_channels_for_server(&ServerSelection::DirectMessages)
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        assert_eq!(order, vec!["busy", "quiet"]);
+        app.set_pinned_dms(vec!["quiet".to_string()]);
+        let order: Vec<String> = app
+            .all_channels_for_server(&ServerSelection::DirectMessages)
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        assert_eq!(order, vec!["quiet", "busy"]);
+        assert!(app.is_dm_pinned("quiet"));
+    }
+
+    #[test]
+    fn somebody_joining_or_leaving_a_group_changes_its_people() {
+        let group = ChannelResponse {
+            id: "g1".to_string(),
+            kind: CHANNEL_GROUP_DM,
+            recipients: vec![UserPartialResponse {
+                id: "u1".to_string(),
+                username: "ada".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut app = test_app(vec![group]);
+        let bob = UserPartialResponse {
+            id: "u2".to_string(),
+            username: "bob".to_string(),
+            ..Default::default()
+        };
+        app.set_group_recipient("g1", bob.clone(), true);
+        assert_eq!(app.group_members("g1").len(), 2);
+        // adding the same person again does not double them
+        app.set_group_recipient("g1", bob.clone(), true);
+        assert_eq!(app.group_members("g1").len(), 2);
+        app.set_group_recipient("g1", bob, false);
+        assert_eq!(app.group_members("g1").len(), 1);
+    }
+
+    #[test]
+    fn closing_a_conversation_takes_it_off_the_list_and_the_pins() {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "dm1".to_string(),
+            kind: CHANNEL_DM,
+            ..Default::default()
+        }]);
+        app.set_pinned_dms(vec!["dm1".to_string()]);
+        app.selected_channel_id = Some("dm1".to_string());
+        app.remove_private_channel("dm1");
+        assert!(app.private_channels.is_empty());
+        assert!(!app.is_dm_pinned("dm1"));
+        assert_eq!(app.selected_channel_id, None);
+    }
+
+    #[test]
+    fn the_reader_is_never_offered_as_somebody_to_talk_to() {
+        let mut app = test_app(vec![ChannelResponse {
+            id: "g1".to_string(),
+            kind: CHANNEL_GROUP_DM,
+            recipients: vec![
+                UserPartialResponse {
+                    id: "me".to_string(),
+                    username: "me".to_string(),
+                    ..Default::default()
+                },
+                UserPartialResponse {
+                    id: "u1".to_string(),
+                    username: "ada".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }]);
+        app.open_new_conversation();
+        let ids: Vec<String> = app
+            .conversation_candidates()
+            .iter()
+            .map(|c| c.user.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["u1".to_string()]);
     }
 
     fn relationship(user_id: &str, kind: i32) -> RelationshipResponse {

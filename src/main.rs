@@ -1940,6 +1940,88 @@ fn handle_key_event(
         return;
     }
 
+    if app.conversation.is_some() {
+        let mode = app.conversation.as_ref().map(|v| v.mode.clone());
+        // a rename takes the keys while it is being typed
+        if let Some(crate::app::ConversationInput::Rename { channel_id, text }) =
+            app.conversation.as_ref().and_then(|v| v.input.clone())
+        {
+            match key.code {
+                KeyCode::Esc => {
+                    if let Some(view) = app.conversation.as_mut() {
+                        view.input = None;
+                    }
+                }
+                KeyCode::Enter => {
+                    app.dismiss_conversation();
+                    let trimmed = text.trim().to_string();
+                    spawn_rename_group(
+                        client.clone(),
+                        event_tx.clone(),
+                        channel_id,
+                        (!trimmed.is_empty()).then_some(trimmed),
+                    );
+                }
+                KeyCode::Backspace => {
+                    if let Some(view) = app.conversation.as_mut()
+                        && let Some(crate::app::ConversationInput::Rename { text, .. }) =
+                            view.input.as_mut()
+                    {
+                        text.pop();
+                    }
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(view) = app.conversation.as_mut()
+                        && let Some(crate::app::ConversationInput::Rename { text, .. }) =
+                            view.input.as_mut()
+                        && text.chars().count() < 100
+                    {
+                        text.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => match mode {
+                // stepping back out of the remove list rather than
+                // closing outright
+                Some(crate::app::ConversationMode::RemoveFrom { channel_id }) => {
+                    if let Some(view) = app.conversation.as_mut() {
+                        view.mode = crate::app::ConversationMode::Group { channel_id };
+                        view.selected = 0;
+                    }
+                }
+                _ => app.dismiss_conversation(),
+            },
+            KeyCode::Up => app.conversation_move(-1),
+            KeyCode::Down => app.conversation_move(1),
+            KeyCode::PageUp => app.conversation_move(-8),
+            KeyCode::PageDown => app.conversation_move(8),
+            KeyCode::Home => app.conversation_move(isize::MIN / 2),
+            KeyCode::End => app.conversation_move(isize::MAX / 2),
+            KeyCode::Char(' ') if matches!(mode, Some(crate::app::ConversationMode::People)) => {
+                app.conversation_toggle_mark();
+            }
+            KeyCode::Backspace => app.conversation_filter_pop(),
+            KeyCode::Enter => run_conversation_action(app, client, event_tx),
+            // in the people list every other letter is the filter, so no
+            // key there can be a command
+            KeyCode::Char(c)
+                if matches!(mode, Some(crate::app::ConversationMode::People))
+                    && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.conversation_filter_push(c);
+            }
+            KeyCode::Char('k') => app.conversation_move(-1),
+            KeyCode::Char('j') => app.conversation_move(1),
+            KeyCode::Char('q') => app.dismiss_conversation(),
+            _ => {}
+        }
+        return;
+    }
+
     if app.message_actions.is_some() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.message_actions_back(),
@@ -3022,8 +3104,6 @@ fn handle_key_event(
                     Focus::Servers | Focus::Channels | Focus::Messages
                 ) =>
         {
-            app.open_friends();
-            spawn_relationships_load(client.clone(), event_tx.clone());
             match app.active_channel_id() {
                 Some(channel_id) => {
                     app.open_pins(channel_id.clone());
@@ -3042,6 +3122,51 @@ fn handle_key_event(
         {
             app.open_saved();
             spawn_saved_load(client.clone(), event_tx.clone());
+        }
+        // P on a conversation keeps it at the top of the list
+        KeyCode::Char('P')
+            if app.focus == Focus::Channels
+                && app.active_channel_id().is_some()
+                && app.selected_server == ServerSelection::DirectMessages =>
+        {
+            if let Some(channel_id) = app.active_channel_id() {
+                let pinned = !app.is_dm_pinned(&channel_id);
+                app.set_dm_pinned_local(&channel_id, pinned);
+                spawn_set_dm_pinned(client.clone(), event_tx.clone(), channel_id, pinned);
+            }
+        }
+        // x closes the conversation the cursor is on
+        KeyCode::Char('x')
+            if app.focus == Focus::Channels
+                && app.selected_server == ServerSelection::DirectMessages
+                && app.active_channel_id().is_some() =>
+        {
+            if let Some(channel_id) = app.active_channel_id() {
+                app.set_status("Closing…");
+                spawn_close_channel(client.clone(), event_tx.clone(), channel_id);
+            }
+        }
+        // Alt+N = start a conversation
+        KeyCode::Char('n') | KeyCode::Char('N')
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            app.open_new_conversation();
+        }
+        // Alt+G = look after the group now open
+        KeyCode::Char('g') | KeyCode::Char('G')
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            if !app.open_group_menu() {
+                app.set_status("Open a group conversation first (Alt+N makes one).");
+            }
         }
         // / = search messages
         KeyCode::Char('/')
@@ -3371,6 +3496,232 @@ fn spawn_search(
                 debug::log("search", format!("search failed: {err:#}"));
                 let _ = event_tx.send(AppEvent::SearchFailed {
                     message: format!("Search failed: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Enter in the conversation overlay: whichever of its three modes is
+/// showing decides what that means.
+fn run_conversation_action(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+) {
+    let Some(mode) = app.conversation.as_ref().map(|v| v.mode.clone()) else {
+        return;
+    };
+    match mode {
+        crate::app::ConversationMode::People => {
+            // the list was opened from a group's "Add somebody", so Enter
+            // puts them in that group rather than starting anything
+            if let Some(channel_id) = app.pending_group_add.take() {
+                let Some(user) = app.conversation_selected_user() else {
+                    return;
+                };
+                app.dismiss_conversation();
+                let name = display_name(&user);
+                spawn_group_recipient(
+                    client.clone(),
+                    event_tx.clone(),
+                    channel_id,
+                    user.id,
+                    true,
+                    &format!("{name} is in the group now."),
+                );
+                return;
+            }
+            let marked = app.conversation_marked();
+            if marked.is_empty() {
+                let Some(user) = app.conversation_selected_user() else {
+                    return;
+                };
+                app.dismiss_conversation();
+                app.set_status(format!(
+                    "Opening a conversation with {}…",
+                    display_name(&user)
+                ));
+                spawn_create_dm(client.clone(), event_tx.clone(), vec![user.id]);
+            } else {
+                app.dismiss_conversation();
+                app.set_status(format!("Making a group of {}…", marked.len() + 1));
+                spawn_create_dm(client.clone(), event_tx.clone(), marked);
+            }
+        }
+        crate::app::ConversationMode::Group { channel_id } => {
+            let Some(action) = app.conversation_selected_action() else {
+                return;
+            };
+            match action {
+                crate::app::GroupAction::Rename => {
+                    let existing = app
+                        .channel_by_id(&channel_id)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    if let Some(view) = app.conversation.as_mut() {
+                        view.input = Some(crate::app::ConversationInput::Rename {
+                            channel_id,
+                            text: existing,
+                        });
+                    }
+                }
+                crate::app::GroupAction::AddSomebody => {
+                    // the people list, but adding to this group rather
+                    // than starting something new
+                    if let Some(view) = app.conversation.as_mut() {
+                        view.mode = crate::app::ConversationMode::People;
+                        view.selected = 0;
+                        view.filter.clear();
+                        view.marked.clear();
+                    }
+                    app.set_status("Pick who to add, then Enter.");
+                    app.pending_group_add = Some(channel_id);
+                }
+                crate::app::GroupAction::RemoveSomebody => {
+                    if let Some(view) = app.conversation.as_mut() {
+                        view.mode = crate::app::ConversationMode::RemoveFrom { channel_id };
+                        view.selected = 0;
+                    }
+                }
+                crate::app::GroupAction::Leave => {
+                    app.dismiss_conversation();
+                    app.set_status("Leaving the group…");
+                    spawn_close_channel(client.clone(), event_tx.clone(), channel_id);
+                }
+            }
+        }
+        crate::app::ConversationMode::RemoveFrom { channel_id } => {
+            let Some(user) = app.conversation_selected_user() else {
+                return;
+            };
+            app.dismiss_conversation();
+            let name = display_name(&user);
+            spawn_group_recipient(
+                client.clone(),
+                event_tx.clone(),
+                channel_id,
+                user.id,
+                false,
+                &format!("{name} is out of the group."),
+            );
+        }
+    }
+}
+
+fn spawn_create_dm(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    recipients: Vec<String>,
+) {
+    tokio::spawn(async move {
+        let result = if recipients.len() == 1 {
+            client.create_dm(&recipients[0]).await
+        } else {
+            client.create_group_dm(&recipients).await
+        };
+        match result {
+            Ok(channel) => {
+                let _ = event_tx.send(AppEvent::PrivateChannelOpened {
+                    channel: Box::new(channel),
+                });
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!(
+                    "Failed to start the conversation: {err}"
+                )));
+            }
+        }
+    });
+}
+
+fn spawn_close_channel(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+) {
+    tokio::spawn(async move {
+        match client.close_channel(&channel_id).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus("Closed.".to_string()));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("Failed to close it: {err}")));
+            }
+        }
+    });
+}
+
+fn spawn_group_recipient(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    user_id: String,
+    add: bool,
+    done: &str,
+) {
+    let done = done.to_string();
+    tokio::spawn(async move {
+        let result = if add {
+            client.add_group_recipient(&channel_id, &user_id).await
+        } else {
+            client.remove_group_recipient(&channel_id, &user_id).await
+        };
+        match result {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(done));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
+            }
+        }
+    });
+}
+
+fn spawn_rename_group(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    name: Option<String>,
+) {
+    tokio::spawn(async move {
+        match client.rename_group_dm(&channel_id, name.as_deref()).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(match name {
+                    Some(name) => format!("The group is called {name} now."),
+                    None => "The group's name is gone.".to_string(),
+                }));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
+            }
+        }
+    });
+}
+
+fn spawn_set_dm_pinned(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    pinned: bool,
+) {
+    tokio::spawn(async move {
+        match client.set_dm_pinned(&channel_id, pinned).await {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(
+                    if pinned {
+                        "Kept at the top."
+                    } else {
+                        "Back in order."
+                    }
+                    .to_string(),
+                ));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::DmPinFailed {
+                    channel_id,
+                    pinned: !pinned,
+                    message: format!("{err}"),
                 });
             }
         }

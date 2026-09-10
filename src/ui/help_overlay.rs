@@ -36,6 +36,10 @@ Focus & navigation
            to the query, Esc closes. A query takes "words in quotes" that have
            to appear together, from:someone, has:image|sound|video|file|embed
            and pinned:true.
+  Alt+N - start a conversation: type to filter the people the client knows,
+           Space picks several for a group, Enter opens it (or makes the group)
+  Alt+G - the group conversation now open: rename it, add somebody, take
+           somebody out, leave it
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -46,6 +50,9 @@ Channels (middle column)
   Up / Down / j / k - move channel
   n - notification settings for the selected community
   Enter - open message view for channel
+  In the direct messages list: P keeps a conversation at the top of the list
+           (it shows ·pin), x closes it. Closing deletes nothing; the
+           conversation comes back the moment either side writes.
 
 Messages
   Up / Down / j / k - scroll list, or move selection when a message is selected
@@ -139,6 +146,7 @@ Alt
   Alt+M - member list      Alt+J / Alt+K - scroll it
   Alt+S - sticker picker (see Input)      Alt+F - friends and blocked accounts
   Alt+P - pinned messages of the open channel     Alt+B - your bookmarks
+  Alt+N - start a conversation      Alt+G - look after the open group
 
 Other
   Who is about: a filled circle in front of a name, green online, amber idle,
