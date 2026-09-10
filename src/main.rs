@@ -19,7 +19,8 @@ use crate::api::gateway::{GatewayCommand, run_gateway};
 use crate::api::types::{CreateMessageRequest, MessageQuery, MessageReferenceRequest};
 use crate::api::types::{CustomStatusPayload, UserSettingsPatch};
 use crate::app::{
-    App, Focus, GatewayStatus, ImagePreviewState, ServerSelection, display_name, me_as_partial,
+    App, Focus, FriendsInput, GatewayStatus, ImagePreviewState, ServerSelection, display_name,
+    me_as_partial,
 };
 use crate::auth::ensure_auth;
 use crate::config::{
@@ -622,6 +623,14 @@ async fn main() -> Result<()> {
                 if let Some(token) = effects.persist_token {
                     config.token = Some(token);
                     save_config(&config_path, &config)?;
+                }
+                if let Some(user_id) = effects.reload_after_unblock {
+                    app.reload_channels_for(&user_id);
+                    schedule_needed_fetches(
+                        &mut app,
+                        authed_client.clone(),
+                        event_tx.clone(),
+                    );
                 }
                 if let Some((title, bytes)) = effects.chafa_fallback {
                     let (cols, rows) = app.chafa_preview_cells;
@@ -1763,6 +1772,169 @@ fn handle_key_event(
         return;
     }
 
+    if app.friends.is_some() {
+        // while a tag is being typed the list keys are the tag's
+        if let Some(input) = app.friends.as_ref().and_then(|v| v.input.clone()) {
+            match key.code {
+                KeyCode::Esc => {
+                    if let Some(view) = app.friends.as_mut() {
+                        view.input = None;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(view) = app.friends.as_mut() {
+                        view.input = None;
+                    }
+                    match input {
+                        FriendsInput::AddTag(typed) => match typed.rsplit_once('#') {
+                            Some((username, discriminator))
+                                if !username.is_empty()
+                                    && discriminator.len() == 4
+                                    && discriminator.chars().all(|c| c.is_ascii_digit()) =>
+                            {
+                                spawn_friend_request_by_tag(
+                                    client.clone(),
+                                    event_tx.clone(),
+                                    username.to_string(),
+                                    discriminator.to_string(),
+                                );
+                            }
+                            _ => app.set_status("A tag looks like name#0001."),
+                        },
+                        FriendsInput::Nickname { user_id, text } => {
+                            let trimmed = text.trim().to_string();
+                            spawn_relationship_nickname(
+                                client.clone(),
+                                event_tx.clone(),
+                                user_id,
+                                (!trimmed.is_empty()).then_some(trimmed),
+                            );
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(view) = app.friends.as_mut()
+                        && let Some(input) = view.input.as_mut()
+                    {
+                        input.text_mut().pop();
+                    }
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(view) = app.friends.as_mut()
+                        && let Some(input) = view.input.as_mut()
+                        && input.text().chars().count() < 64
+                    {
+                        input.text_mut().push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        let tab = app.friends.as_ref().map(|v| v.tab);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.dismiss_friends(),
+            KeyCode::Up | KeyCode::Char('k') => app.friends_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.friends_move(1),
+            KeyCode::PageUp => app.friends_move(-8),
+            KeyCode::PageDown => app.friends_move(8),
+            KeyCode::Home => app.friends_move(isize::MIN / 2),
+            KeyCode::End => app.friends_move(isize::MAX / 2),
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => app.friends_switch_tab(true),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => app.friends_switch_tab(false),
+            KeyCode::Char('+') => {
+                if let Some(view) = app.friends.as_mut() {
+                    view.input = Some(FriendsInput::AddTag(String::new()));
+                }
+            }
+            // n gives a friend a name of the reader's own, which is shown
+            // in place of theirs; an empty one drops it again
+            KeyCode::Char('n') if tab == Some(crate::app::FriendsTab::Friends) => {
+                if let Some(relationship) = app.friends_selected() {
+                    let existing = app
+                        .relationship_nickname(&relationship.user.id)
+                        .unwrap_or_default()
+                        .to_string();
+                    if let Some(view) = app.friends.as_mut() {
+                        view.input = Some(FriendsInput::Nickname {
+                            user_id: relationship.user.id,
+                            text: existing,
+                        });
+                    }
+                }
+            }
+            KeyCode::Char('R') => {
+                app.open_friends();
+                spawn_relationships_load(client.clone(), event_tx.clone());
+            }
+            // Enter opens the conversation with a friend, where there
+            // already is one; starting a new one is another branch's work
+            KeyCode::Enter if tab == Some(crate::app::FriendsTab::Friends) => {
+                if let Some(relationship) = app.friends_selected() {
+                    match app.dm_channel_with(&relationship.user.id) {
+                        Some(channel_id) => {
+                            app.dismiss_friends();
+                            app.jump_to_channel(&channel_id);
+                        }
+                        None => app.set_status(
+                            "No conversation with them yet; the web client can start one.",
+                        ),
+                    }
+                }
+            }
+            KeyCode::Char('a') if tab == Some(crate::app::FriendsTab::Incoming) => {
+                if let Some(relationship) = app.friends_selected() {
+                    let name = crate::app::display_name(&relationship.user);
+                    spawn_relationship_action(
+                        client.clone(),
+                        event_tx.clone(),
+                        RelationshipAction::Accept,
+                        relationship.user.id,
+                        &format!("{name} is a friend now."),
+                    );
+                }
+            }
+            KeyCode::Char('B') => {
+                if let Some(relationship) = app.friends_selected()
+                    && !relationship.is_blocked()
+                {
+                    let name = crate::app::display_name(&relationship.user);
+                    spawn_relationship_action(
+                        client.clone(),
+                        event_tx.clone(),
+                        RelationshipAction::Block,
+                        relationship.user.id,
+                        &format!("{name} is blocked."),
+                    );
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if let Some(relationship) = app.friends_selected() {
+                    let name = crate::app::display_name(&relationship.user);
+                    let done = match tab {
+                        Some(crate::app::FriendsTab::Friends) => {
+                            format!("{name} is no longer a friend.")
+                        }
+                        Some(crate::app::FriendsTab::Incoming) => format!("Turned {name} down."),
+                        Some(crate::app::FriendsTab::Outgoing) => {
+                            format!("Took the request to {name} back.")
+                        }
+                        _ => format!("{name} is unblocked."),
+                    };
+                    spawn_relationship_action(
+                        client.clone(),
+                        event_tx.clone(),
+                        RelationshipAction::Remove,
+                        relationship.user.id,
+                        &done,
+                    );
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.pings.is_some() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.dismiss_pings(),
@@ -1824,6 +1996,64 @@ fn handle_key_event(
             },
             KeyCode::Up | KeyCode::Char('k') => app.profile_scroll(-1),
             KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
+            // + ask them to be friends, B block, x undo whichever tie
+            // there is: the three the web client's profile card offers
+            KeyCode::Char('+') => {
+                if let Some(view) = app.profile.as_ref()
+                    && view.user_id != app.me.id
+                {
+                    let user_id = view.user_id.clone();
+                    let name = app
+                        .user_cache
+                        .get(&user_id)
+                        .map(display_name)
+                        .unwrap_or_else(|| "them".to_string());
+                    spawn_relationship_action(
+                        client.clone(),
+                        event_tx.clone(),
+                        RelationshipAction::Add,
+                        user_id,
+                        &format!("Asked {name} to be friends."),
+                    );
+                }
+            }
+            KeyCode::Char('B') => {
+                if let Some(view) = app.profile.as_ref()
+                    && view.user_id != app.me.id
+                {
+                    let user_id = view.user_id.clone();
+                    let name = app
+                        .user_cache
+                        .get(&user_id)
+                        .map(display_name)
+                        .unwrap_or_else(|| "them".to_string());
+                    app.dismiss_profile();
+                    spawn_relationship_action(
+                        client.clone(),
+                        event_tx.clone(),
+                        RelationshipAction::Block,
+                        user_id,
+                        &format!("{name} is blocked."),
+                    );
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(view) = app.profile.as_ref()
+                    && view.user_id != app.me.id
+                {
+                    let user_id = view.user_id.clone();
+                    match app.relationship_with(&user_id) {
+                        Some(_) => spawn_relationship_action(
+                            client.clone(),
+                            event_tx.clone(),
+                            RelationshipAction::Remove,
+                            user_id,
+                            "Done.",
+                        ),
+                        None => app.set_status("Nothing to undo: they are nothing to you yet."),
+                    }
+                }
+            }
             KeyCode::PageUp => app.profile_scroll(-12),
             KeyCode::PageDown => app.profile_scroll(12),
             _ => {}
@@ -2405,6 +2635,17 @@ fn handle_key_event(
                 }
                 None => app.set_status("Open a community's channel first."),
             }
+        }
+        // Alt+F = friends, requests and blocked accounts
+        KeyCode::Char('f') | KeyCode::Char('F')
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            app.open_friends();
+            spawn_relationships_load(client.clone(), event_tx.clone());
         }
         KeyCode::Char('[') if app.focus == Focus::Messages => {
             try_load_older_messages(app, client, event_tx);
@@ -3308,6 +3549,108 @@ fn spawn_file_attach(event_tx: UnboundedSender<AppEvent>, path: String) {
 /// Write the reader's own settings. The screen was already changed, so a
 /// refusal has to put it back; the answer carries the settings the server
 /// now holds, which is what goes back into the client.
+fn spawn_relationships_load(client: FluxerHttpClient, event_tx: UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        match client.relationships().await {
+            Ok(list) => {
+                debug::log("friends", format!("{} relationships", list.len()));
+                let _ = event_tx.send(AppEvent::RelationshipsLoaded { list });
+            }
+            Err(err) => {
+                debug::log("friends", format!("relationships failed: {err:#}"));
+                let _ = event_tx.send(AppEvent::RelationshipsFailed {
+                    message: format!("Failed to load the list: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// What to do to a relationship. The gateway tells the client what came
+/// of it, so nothing here writes to the list itself.
+#[derive(Debug, Clone, Copy)]
+enum RelationshipAction {
+    Add,
+    Accept,
+    Block,
+    Remove,
+}
+
+fn spawn_relationship_action(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    action: RelationshipAction,
+    user_id: String,
+    done: &str,
+) {
+    let done = done.to_string();
+    tokio::spawn(async move {
+        let result = match action {
+            RelationshipAction::Add => client.friend_request(&user_id).await,
+            RelationshipAction::Accept => client.accept_friend_request(&user_id).await,
+            RelationshipAction::Block => client.block_user(&user_id).await,
+            RelationshipAction::Remove => client.remove_relationship(&user_id).await,
+        };
+        match result {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(done));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
+            }
+        }
+    });
+}
+
+/// Ask somebody by their tag, which is how you reach an account you have
+/// no conversation with. The tag is `name#0001`.
+fn spawn_friend_request_by_tag(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    username: String,
+    discriminator: String,
+) {
+    tokio::spawn(async move {
+        match client
+            .friend_request_by_tag(&username, &discriminator)
+            .await
+        {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(format!(
+                    "Asked {username}#{discriminator} to be friends."
+                )));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
+            }
+        }
+    });
+}
+
+fn spawn_relationship_nickname(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    user_id: String,
+    nickname: Option<String>,
+) {
+    tokio::spawn(async move {
+        match client
+            .set_relationship_nickname(&user_id, nickname.as_deref())
+            .await
+        {
+            Ok(()) => {
+                let _ = event_tx.send(AppEvent::SetStatus(match nickname {
+                    Some(name) => format!("They show as {name} now."),
+                    None => "Your name for them is gone.".to_string(),
+                }));
+            }
+            Err(err) => {
+                let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
+            }
+        }
+    });
+}
+
 fn spawn_settings_patch(
     client: FluxerHttpClient,
     event_tx: UnboundedSender<AppEvent>,

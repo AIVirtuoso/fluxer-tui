@@ -153,6 +153,27 @@ fn build_lines(app: &App, view: &ProfileView, width: usize, avatar: bool) -> Vec
         Span::styled(fit(&tag, header_w), dim),
     ]));
 
+    // how the reader stands with them, and what a key would do about it
+    if view.user_id != app.me.id {
+        let relationship = app.relationship_with(&view.user_id);
+        let (label, style) = match relationship {
+            Some(r) if r.is_blocked() => (
+                r.label().to_string(),
+                Style::default().fg(crate::ui::theme::danger()),
+            ),
+            Some(r) if r.is_friend() => (
+                r.label().to_string(),
+                Style::default().fg(crate::ui::theme::voice_color()),
+            ),
+            Some(r) if !r.label().is_empty() => (r.label().to_string(), muted),
+            _ => ("Not a friend".to_string(), muted),
+        };
+        lines.push(Line::from(vec![
+            Span::raw(margin.clone()),
+            Span::styled(label, style),
+        ]));
+    }
+
     // where they are: spelled out as well as coloured, so the dot is
     // never the only thing saying it
     let status = app.presence_status(&view.user_id);

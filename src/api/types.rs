@@ -935,6 +935,9 @@ pub struct ReadyEvent {
     /// messages and friends; a community's own are on its guild object.
     #[serde(default)]
     pub presences: Vec<PresenceRecord>,
+    /// Friends, requests both ways and blocked accounts.
+    #[serde(default)]
+    pub relationships: Vec<RelationshipResponse>,
     #[serde(default, deserialize_with = "deserialize_lenient_vec")]
     pub user_guild_settings: Vec<UserGuildSettingsResponse>,
     #[serde(
@@ -1438,6 +1441,50 @@ pub struct GuildMemberListUpdateEvent {
     // is all the pane needs
     #[serde(default)]
     pub ops: Vec<MemberListOp>,
+}
+
+/// The four kinds of tie between two accounts.
+pub const RELATIONSHIP_FRIEND: i32 = 1;
+pub const RELATIONSHIP_BLOCKED: i32 = 2;
+pub const RELATIONSHIP_INCOMING_REQUEST: i32 = 3;
+pub const RELATIONSHIP_OUTGOING_REQUEST: i32 = 4;
+
+/// One entry of `GET /users/@me/relationships`, and the payload of the
+/// RELATIONSHIP_ADD and _UPDATE events.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RelationshipResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, rename = "type")]
+    pub relationship_type: i32,
+    #[serde(default)]
+    pub user: UserPartialResponse,
+    #[serde(default)]
+    pub since: Option<String>,
+    /// A name the reader gave this person, shown instead of their own.
+    #[serde(default)]
+    pub nickname: Option<String>,
+}
+
+impl RelationshipResponse {
+    pub fn is_friend(&self) -> bool {
+        self.relationship_type == RELATIONSHIP_FRIEND
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.relationship_type == RELATIONSHIP_BLOCKED
+    }
+
+    /// What to call this kind of tie on the screen.
+    pub fn label(&self) -> &'static str {
+        match self.relationship_type {
+            RELATIONSHIP_FRIEND => "Friend",
+            RELATIONSHIP_BLOCKED => "Blocked",
+            RELATIONSHIP_INCOMING_REQUEST => "Wants to be friends",
+            RELATIONSHIP_OUTGOING_REQUEST => "Asked",
+            _ => "",
+        }
+    }
 }
 
 #[cfg(test)]
