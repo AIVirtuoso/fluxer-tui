@@ -81,7 +81,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .scroll_padding(1)
         .block(
             Block::default()
-                .title(" / commands ")
+                .title(crate::ui::footer::autocomplete_title(
+                    "/ commands",
+                    popup_area.width,
+                ))
                 .borders(Borders::ALL)
                 .border_style(crate::ui::theme::focused_border(true)),
         )

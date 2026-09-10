@@ -41,6 +41,29 @@ pub fn line(app: &App, hints: &str) -> Line<'static> {
     }
 }
 
+/// A title for one of the autocomplete popups, with the keys on it.
+///
+/// The `:`, `@` and `/` popups sit straight on top of the compose box
+/// and have no row to spare for a line of their own, so the keys go in
+/// the title instead — the same trick the message pane uses to name the
+/// author of the message at its top without costing a row.
+///
+/// The longest wording that fits is used, so a narrow popup still says
+/// something rather than being cut off mid-word.
+pub fn autocomplete_title(name: &str, width: u16) -> String {
+    const FULL: &str = "\u{2191}\u{2193} move \u{00B7} Tab/Enter pick \u{00B7} Esc close";
+    const SHORT: &str = "\u{2191}\u{2193} Tab Esc";
+    // the two border columns are not the title's to use
+    let usable = width.saturating_sub(2) as usize;
+    for keys in [FULL, SHORT] {
+        let title = format!(" {name} \u{00B7} {keys} ");
+        if title.chars().count() <= usable {
+            return title;
+        }
+    }
+    format!(" {name} ")
+}
+
 /// What just happened, when anything did.
 fn notice(app: &App) -> Option<String> {
     let message = app.status_message.trim();
@@ -91,6 +114,25 @@ mod tests {
         app.set_transient_status("gone", Duration::from_millis(0));
         app.expire_status_if_needed();
         assert_eq!(text(&line(&app, "Enter go")), "Enter go");
+    }
+
+    #[test]
+    fn a_popup_title_keeps_the_longest_wording_that_fits() {
+        // the command popup is 64 wide and takes the lot
+        let wide = autocomplete_title("/ commands", 64);
+        assert!(wide.contains("Tab/Enter pick"), "{wide}");
+        assert!(wide.chars().count() <= 62, "{wide}");
+
+        // the emoji popup is 40 and falls back to the short form rather
+        // than being cut off part way through a word
+        let narrow = autocomplete_title("Emojis", 40);
+        assert!(narrow.contains("Tab"), "{narrow}");
+        assert!(!narrow.contains("pick"), "{narrow}");
+        assert!(narrow.chars().count() <= 38, "{narrow}");
+
+        // and a popup with no room for keys at all still says what it is
+        let tiny = autocomplete_title("Emojis", 12);
+        assert_eq!(tiny, " Emojis ");
     }
 
     #[test]

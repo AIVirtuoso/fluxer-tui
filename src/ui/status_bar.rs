@@ -41,6 +41,11 @@ pub fn hints_for(app: &App) -> String {
             }
         }
     };
+    // the member column has no focus of its own, so the bar is the only
+    // place its two keys can be offered
+    if app.member_list.is_some() {
+        out.push_str(" · Alt+J/K members");
+    }
     // the two that depend on where the reader has been, so they are only
     // offered when they would do something
     if !matches!(app.focus, Focus::Input) {

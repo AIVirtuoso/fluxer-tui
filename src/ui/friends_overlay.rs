@@ -127,7 +127,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let footer = match &view.input {
         Some(input) => format!(
-            "{}: {}\u{2588}  ·  Enter save  ·  Esc cancel",
+            "{}: {}\u{2588}  ·  type it  ·  Backspace edits  ·  Enter save  ·  Esc cancel",
             input.prompt(),
             input.text()
         ),
@@ -154,7 +154,9 @@ fn footer_for(tab: FriendsTab) -> String {
         FriendsTab::Outgoing => "x take it back",
         FriendsTab::Blocked => "x unblock",
     };
-    format!("\u{2190}/\u{2192} group · {doing} · + add by tag · R reload · Esc close")
+    format!(
+        "\u{2191}/\u{2193} move · \u{2190}/\u{2192} group · {doing} · + add by tag · R reload · Esc close"
+    )
 }
 
 #[cfg(test)]

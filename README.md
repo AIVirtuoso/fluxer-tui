@@ -828,7 +828,15 @@ Two places say what the keys do, and neither needs **F1**:
   selection, and the compose box with and without a selection.
 - **The bottom line of every overlay**, for the keys that work in it:
   the profile, the friends list, the pins, the bookmarks, the pickers,
-  the settings, the debug panel and this one included.
+  the settings, the debug panel and the keybindings overlay included.
+- **The title of the `:`, `@` and `/` popups**, which sit straight on top
+  of the compose box and have no row to spare — the keys go there
+  instead, in the longest wording that fits the popup's width.
+- **The compose box's own title**, which says how to finish and how to
+  leave whichever mode it is in: replying, editing or forwarding. It
+  named the mode before this and left you to guess that **Esc** gets out.
+- **The bar**, for the member column, which has no focus of its own and
+  so nowhere else to advertise **Alt+J** / **Alt+K**.
 
 **A line only offers what would do something.** On a profile the three
 relationship keys change with how you stand with the person: a stranger

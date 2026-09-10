@@ -185,9 +185,12 @@ Other
   What you can press: the bar under the title says it for wherever the
            focus is, and every overlay — profile, friends, pins, pickers, the
            settings, this one — says it on its own bottom line, naming only
-           what would actually do something where you are. When something
-           happens (a request sent, a message pinned) the words take that
-           line for a few seconds and then the keys come back.
+           what would actually do something where you are. The : @ and /
+           popups have no row to spare, so their keys are on their title;
+           the compose box says how to finish and how to leave whichever
+           mode it is in. When something happens (a request sent, a message
+           pinned) the words take that line for a few seconds and then the
+           keys come back.
   Who is about: a filled circle in front of a name, green online, amber idle,
            red do not disturb; nothing at all where the server has said
            nothing. A one-to-one conversation shows the other person's in

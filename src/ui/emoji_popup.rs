@@ -53,7 +53,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .scroll_padding(0)
         .block(
             Block::default()
-                .title(" Emojis ")
+                .title(crate::ui::footer::autocomplete_title(
+                    "Emojis",
+                    popup_area.width,
+                ))
                 .borders(Borders::ALL)
                 .border_style(crate::ui::theme::focused_border(true)),
         )
