@@ -1,10 +1,11 @@
 use crate::api::types::{
     ChannelResponse, CompleteMultipartAttachmentUploadRequest, CompleteMultipartUploadItem,
-    CreateMessageAttachment, CreateMessageRequest, EditMessageRequest, GatewayBotResponse,
-    GuildResponse, HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
-    PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
-    PresignedAttachmentUploadResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
-    UserPrivateResponse, UserSettingsResponse, WellKnownFluxerResponse,
+    CreateMessageAttachment, CreateMessageRequest, DiscoveryGuildListResponse, EditMessageRequest,
+    GatewayBotResponse, GuildResponse, HandoffInitiateResponse, HandoffStatusResponse,
+    InviteResponse, MessageQuery, MessageResponse, PresignedAttachmentUploadRequest,
+    PresignedAttachmentUploadRequestItem, PresignedAttachmentUploadResponse,
+    UserGuildSettingsPatch, UserGuildSettingsResponse, UserPrivateResponse, UserSettingsResponse,
+    WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
@@ -706,6 +707,175 @@ impl FluxerHttpClient {
             .context("failed to remove reaction")?;
         if !resp.status().is_success() && resp.status() != StatusCode::NO_CONTENT {
             bail!("remove reaction failed: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// What an invite leads to, without taking it.
+    pub async fn invite_info(&self, code: &str) -> Result<InviteResponse> {
+        self.send_json::<(), (), InviteResponse>(
+            Method::GET,
+            &format!("/invites/{code}"),
+            None::<&()>,
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Take an invite: join the community, or the group conversation.
+    pub async fn accept_invite(&self, code: &str) -> Result<InviteResponse> {
+        self.send_json::<(), serde_json::Value, InviteResponse>(
+            Method::POST,
+            &format!("/invites/{code}"),
+            None::<&()>,
+            Some(&serde_json::json!({})),
+            false,
+        )
+        .await
+    }
+
+    /// Make an invite to a channel. `max_age` is in seconds and
+    /// `max_uses` a count, both zero for "no limit".
+    pub async fn create_invite(
+        &self,
+        channel_id: &str,
+        max_age: u32,
+        max_uses: u32,
+    ) -> Result<InviteResponse> {
+        #[derive(Serialize)]
+        struct Body {
+            max_age: u32,
+            max_uses: u32,
+        }
+        self.send_json::<(), Body, InviteResponse>(
+            Method::POST,
+            &format!("/channels/{channel_id}/invites"),
+            None::<&()>,
+            Some(&Body { max_age, max_uses }),
+            false,
+        )
+        .await
+    }
+
+    /// Every invite of a community that the reader may see. Needs Manage
+    /// Guild.
+    pub async fn guild_invites(&self, guild_id: &str) -> Result<Vec<InviteResponse>> {
+        self.send_json::<(), (), Vec<InviteResponse>>(
+            Method::GET,
+            &format!("/guilds/{guild_id}/invites"),
+            None::<&()>,
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    pub async fn delete_invite(&self, code: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/invites/{code}"),
+            None,
+            "revoke the invite",
+        )
+        .await
+    }
+
+    pub async fn create_guild(&self, name: &str) -> Result<GuildResponse> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            name: &'a str,
+        }
+        self.send_json::<(), Body, GuildResponse>(
+            Method::POST,
+            "/guilds",
+            None::<&()>,
+            Some(&Body { name }),
+            false,
+        )
+        .await
+    }
+
+    /// Leave a community. The reader cannot leave one they own; the
+    /// server says so.
+    pub async fn leave_guild(&self, guild_id: &str) -> Result<()> {
+        self.send_empty::<()>(
+            Method::DELETE,
+            &format!("/users/@me/guilds/{guild_id}"),
+            None,
+            "leave the community",
+        )
+        .await
+    }
+
+    /// Search the discovery directory.
+    pub async fn discover_guilds(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<DiscoveryGuildListResponse> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "str::is_empty")]
+            query: &'a str,
+            limit: u32,
+        }
+        self.send_json::<Query, (), DiscoveryGuildListResponse>(
+            Method::GET,
+            "/discovery/guilds",
+            Some(&Query {
+                query,
+                limit: limit.clamp(1, 48),
+            }),
+            None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Join a community straight from the directory, without an invite.
+    pub async fn join_discoverable_guild(&self, guild_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::POST,
+            &format!("/discovery/guilds/{guild_id}/join"),
+            Some(&serde_json::json!({})),
+            "join the community",
+        )
+        .await
+    }
+
+    /// A call whose answer is either 204 or nothing worth reading.
+    async fn send_empty<B>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        what: &str,
+    ) -> Result<()>
+    where
+        B: Serialize + ?Sized,
+    {
+        let mut builder = self
+            .inner
+            .request(method, self.url(path))
+            .header("X-Fluxer-Platform", "desktop")
+            .header("Authorization", self.token.as_deref().unwrap_or(""));
+        if let Some(body) = body {
+            builder = builder.json(body);
+        }
+        let resp = builder
+            .send()
+            .await
+            .with_context(|| format!("failed to {what}"))?;
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            let detail = resp.text().await.unwrap_or_default();
+            let detail = detail.chars().take(200).collect::<String>();
+            crate::debug::log("http", format!("{what} failed: {status}"));
+            if detail.is_empty() {
+                bail!("{what} failed: {status}");
+            }
+            bail!("{what} failed: {status} {detail}");
         }
         Ok(())
     }

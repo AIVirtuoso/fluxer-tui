@@ -158,6 +158,37 @@ pub enum AppEvent {
     MentionsFailed {
         message: String,
     },
+    InvitePreview {
+        code: String,
+        invite: Box<crate::api::types::InviteResponse>,
+    },
+    InvitePreviewFailed {
+        code: String,
+        message: String,
+    },
+    DiscoverResults {
+        guilds: Vec<crate::api::types::DiscoveryGuildResponse>,
+        total: u32,
+    },
+    DiscoverFailed {
+        message: String,
+    },
+    GuildInvitesLoaded {
+        guild_id: String,
+        invites: Vec<crate::api::types::InviteResponse>,
+    },
+    GuildInvitesFailed {
+        guild_id: String,
+        message: String,
+    },
+    /// An invite the client just made; the list is asked for again so it
+    /// shows with whatever the server decided about it.
+    InviteCreated {
+        code: String,
+    },
+    InviteRevoked {
+        guild_id: Option<String>,
+    },
     ProfileLoaded {
         user_id: String,
         guild_id: Option<String>,
@@ -182,6 +213,9 @@ pub struct EventEffects {
     pub chafa_fallback: Option<(String, Vec<u8>)>,
     /// Messages to announce outside the client.
     pub notify: Vec<crate::notify::Notification>,
+    /// A community whose invite list has to be fetched again, after one
+    /// was made or revoked.
+    pub reload_invites: Option<String>,
 }
 
 /// A gateway payload read into its type; when it cannot be, the debug
@@ -244,6 +278,40 @@ pub fn apply_event(
         }
         AppEvent::MentionsFailed { message } => {
             app.set_pings_failed(message);
+        }
+        AppEvent::InvitePreview { code, invite } => {
+            app.set_invite_preview(&code, *invite);
+        }
+        AppEvent::InvitePreviewFailed { code, message } => {
+            app.set_invite_preview_failed(&code, message);
+        }
+        AppEvent::DiscoverResults { guilds, total } => {
+            app.discover_total = total;
+            app.set_discover_results(guilds);
+        }
+        AppEvent::DiscoverFailed { message } => {
+            app.set_discover_failed(message);
+        }
+        AppEvent::GuildInvitesLoaded { guild_id, invites } => {
+            app.set_guild_invites(&guild_id, invites);
+        }
+        AppEvent::GuildInvitesFailed { guild_id, message } => {
+            app.set_guild_invites_failed(&guild_id, message);
+        }
+        AppEvent::InviteCreated { code } => {
+            let link = app.invite_link(&code);
+            let clipboard = crate::compose::copy_to_system_clipboard(&link);
+            app.cut_buffer = link;
+            app.set_status(if clipboard {
+                "Invite made, and the link copied."
+            } else {
+                "Invite made; Alt+V pastes the link."
+            });
+            effects.reload_invites = app.active_guild_id();
+        }
+        AppEvent::InviteRevoked { guild_id } => {
+            app.set_status("Revoked.");
+            effects.reload_invites = guild_id;
         }
         AppEvent::ProfileLoaded {
             user_id,

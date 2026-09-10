@@ -82,6 +82,10 @@ act on them.
 - **A pings list:** **p** opens the messages that mentioned you, newest
   first, across every community and direct message, the way the web
   client's inbox does; **Enter** jumps to one (see "Interface overview").
+- **Invites, and joining a community.** **Alt+C** takes an invite, makes a
+  community, browses the directory, lists a community's invites or leaves
+  it. The client had no invite handling of any kind, so whatever you were
+  already in was what you got (see "Communities and invites").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -539,6 +543,32 @@ message, is a Fluxer Premium feature: the server refuses it and the
 client shows what it said. Communities you are in can always use their
 own.
 
+## Communities and invites
+
+**Alt+C** opens the menu. What it offers depends on where you are: the
+first three are always there, the last two only inside a community.
+
+| Row | What it does |
+| --- | ------------ |
+| **Join with an invite** | Takes a bare code or a pasted link — from this instance or any other, with or without a scheme, and with anything after the code (`?utm=…`, `#top`) ignored. |
+| **Make a community** | Asks for a name and makes it. You are its owner. |
+| **Browse the directory** | The instance's discovery listing. **/** searches it, **Enter** joins straight from the list without an invite. |
+| **Invites to this community** | Every invite you may see. **y** copies its link, **+** makes one to the channel now open, **x** revokes. |
+| **Leave this community** | Leaves it. A community you own cannot be left, and the client says so rather than sending a call the server would refuse. |
+
+### An invite is looked up before it is taken
+
+Typing a code does not join anything. The client fetches the invite first
+and shows what it leads to — the name, the description, how many are
+online of how many members, who made it, when it runs out, and whether
+the membership is temporary — and **Enter** on that takes it. That is one
+extra keystroke and it means nobody joins something whose name they have
+not seen.
+
+An invite made with **+** is a day long with no limit on uses, which is
+what the server itself defaults to, and its link goes on the clipboard as
+soon as it exists.
+
 ## Message formatting
 
 Messages are drawn with the markup Fluxer's own parser understands, so
@@ -755,6 +785,7 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open).                                                                                                                                                                   |
 | **Ctrl+K**              | Open **channel picker** (type to filter, **Enter** to jump).                                                                                                                                                                                             |
 | **Alt+A**               | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps.                                                                                                                                                           |
+| **Alt+C**               | **Communities**: join with an invite, make one, browse the directory, list this community's invites, or leave it (see "Communities and invites").                                                                                                        |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

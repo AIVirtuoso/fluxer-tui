@@ -21,6 +21,10 @@ Focus & navigation
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
   p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
+  Alt+C - communities: join with an invite (a code or a pasted link; what it
+           leads to is shown before you take it), make one, browse the
+           directory, list this community's invites (y copies a link, + makes
+           one to the open channel, x revokes) or leave it
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -102,6 +106,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)
   Alt+S - sticker picker (see Input)
+  Alt+C - join, make, browse or leave a community
 
 Other
   Edited messages show “(edited)” after the timestamp when the API sends edited_timestamp.
