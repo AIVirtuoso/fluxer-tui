@@ -87,6 +87,11 @@ act on them.
   the conversation list, beside the name on a message, in the profile and
   on the status bar for your own. `/status` sets yours and
   `/customstatus` the line under your name (see "Presence").
+- **A member list.** **Alt+M** opens the roster of the open channel in a
+  column beside the messages, grouped by hoisted role and then by who is
+  about, the way the web client's member sidebar is. Members, joins,
+  leaves and nickname changes arrive live; upstream fetched members only
+  to complete an `@` and never showed them (see "The member list").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -544,6 +549,47 @@ message, is a Fluxer Premium feature: the server refuses it and the
 client shows what it said. Communities you are in can always use their
 own.
 
+## The member list
+
+**Alt+M** opens the roster of the open channel in a column to the right
+of the messages, and closes it again. **Alt+J** and **Alt+K** scroll it.
+The column has no focus of its own — it is a thing to read beside the
+messages, not a place the **Tab** cycle stops at.
+
+It is grouped the way the web client's member sidebar is: each hoisted
+role in role order with its count, then everybody else who is about under
+**Online**, then **Offline**. People who are away are dimmed. The box's
+title counts the two: `12 of 40`.
+
+The list follows you from channel to channel, because who can see a
+channel decides who is in its list. In a direct message it closes itself,
+since there is no list to show; on a terminal narrower than 80 columns it
+is not drawn at all rather than squeezing the messages.
+
+### How it arrives
+
+The gateway does not send a whole roster. A client asks for windows of it
+with a Lazy Request (op 14) — this one asks for rows 0 to 99, which is
+the most the server allows in one window and more than a terminal shows —
+and the server answers with `GUILD_MEMBER_LIST_UPDATE`, whose `SYNC`
+operations each replace one inclusive range of rows. So the list is kept
+as a sparse map by position rather than a list of people, and a row no
+window has covered is simply not known yet.
+
+Two consequences worth knowing:
+
+- **A community's `Offline` group is left out once it holds more than a
+  thousand people**, and its members are left out of the rows with it. The
+  count in the title still counts them, so `12 of 4000` with far fewer
+  than 4000 rows to scroll is the server being terse, not a bug.
+- **The list needs `VIEW_CHANNEL` and `VIEW_CHANNEL_MEMBERS` on the
+  channel.** Without both the server sends nothing, and the column says
+  it is still loading.
+
+The presences the list carries are folded into the client's own, so
+opening it on a channel also fills in the dots on that channel's
+messages.
+
 ## Presence
 
 Fluxer tells a client who is about through `PRESENCE_UPDATE`, and through
@@ -811,6 +857,7 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open).                                                                                                                                                                   |
 | **Ctrl+K**              | Open **channel picker** (type to filter, **Enter** to jump).                                                                                                                                                                                             |
 | **Alt+A**               | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps.                                                                                                                                                           |
+| **Alt+M**               | **Member list** of the open channel, in a column beside the messages (see "The member list"). **Alt+J** / **Alt+K** scroll it. Closes itself in a direct message; not drawn below 80 columns.                                                            |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

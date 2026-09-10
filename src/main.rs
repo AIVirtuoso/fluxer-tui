@@ -791,6 +791,11 @@ fn ensure_lazy_guild_subscription(app: &mut App, gateway_cmd_tx: &UnboundedSende
     if app.gateway_status != GatewayStatus::Connected {
         return;
     }
+    // an open member list follows the reader from channel to channel,
+    // and gives itself up where the next place has none
+    if let Some((guild_id, channel_id)) = app.member_list_follow_channel() {
+        send_member_list_subscription(gateway_cmd_tx, guild_id, channel_id);
+    }
     match &app.selected_server {
         ServerSelection::DirectMessages => {
             app.gateway_lazy_guild_id = None;
@@ -1628,7 +1633,7 @@ fn handle_key_event(
     key: KeyEvent,
     client: &FluxerHttpClient,
     event_tx: &UnboundedSender<AppEvent>,
-    _gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
+    gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
     config_path: &Path,
     config: &mut AppConfig,
 ) {
@@ -2213,6 +2218,19 @@ fn handle_key_event(
             app.selected_message_index = None;
             app.focus = Focus::Messages;
         }
+        // Alt+J / Alt+K scroll the member column, which has no focus of
+        // its own: it is a list to read beside the messages, not a place
+        // the Tab cycle stops at
+        KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Down
+            if key.modifiers.contains(KeyModifiers::ALT) && app.member_list.is_some() =>
+        {
+            app.member_list_scroll(1);
+        }
+        KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Up
+            if key.modifiers.contains(KeyModifiers::ALT) && app.member_list.is_some() =>
+        {
+            app.member_list_scroll(-1);
+        }
         KeyCode::Up | KeyCode::Char('k') => match app.focus {
             Focus::Servers => {
                 let old_ch = app.selected_channel_id.clone();
@@ -2373,11 +2391,46 @@ fn handle_key_event(
                 app.set_status("Forward: pick channel (Ctrl+K), type optional note, Enter to send");
             }
         }
+        // Alt+M = the member list beside the messages
+        KeyCode::Char('m') | KeyCode::Char('M')
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            match app.toggle_member_list() {
+                Some((guild_id, channel_id)) => {
+                    send_member_list_subscription(gateway_cmd_tx, guild_id, channel_id);
+                }
+                None => app.set_status("Open a community's channel first."),
+            }
+        }
         KeyCode::Char('[') if app.focus == Focus::Messages => {
             try_load_older_messages(app, client, event_tx);
         }
         _ => {}
     }
+}
+
+/// Ask the gateway for a channel's member list, or with `channel_id`
+/// None give the guild's up. The window is one page: the server takes a
+/// hundred rows at most and no terminal shows that many.
+fn send_member_list_subscription(
+    gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
+    guild_id: String,
+    channel_id: Option<String>,
+) {
+    let ranges = if channel_id.is_some() {
+        vec![(0, App::MEMBER_LIST_WINDOW - 1)]
+    } else {
+        Vec::new()
+    };
+    let _ = gateway_cmd_tx.send(GatewayCommand::SubscribeMemberList {
+        guild_id,
+        channel_id,
+        ranges,
+    });
 }
 
 fn schedule_needed_fetches(

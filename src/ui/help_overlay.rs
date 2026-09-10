@@ -21,6 +21,9 @@ Focus & navigation
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
   p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
+  Alt+M - the member list of the open channel, in a column beside the messages;
+           Alt+J / Alt+K scroll it. It follows you from channel to channel and
+           closes itself in a direct message, which has no member list.
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -105,6 +108,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)
   Alt+S - sticker picker (see Input)
+  Alt+M - member list      Alt+J / Alt+K - scroll it
 
 Other
   Who is about: a filled circle in front of a name, green online, amber idle,

@@ -16,7 +16,9 @@ use crate::api::types::{
     UserGuildSettingsResponse, UserPartialResponse, UserPrivateResponse, UserSettingsResponse,
     VoiceStateResponse, WellKnownFluxerResponse, merge_user_cache, snowflake_sort_key,
 };
-use crate::api::types::{CustomStatusPayload, PresenceRecord, PresenceStatus};
+use crate::api::types::{
+    CustomStatusPayload, GuildMemberListUpdateEvent, PresenceRecord, PresenceStatus,
+};
 use crate::config::UiSettings;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -840,6 +842,46 @@ pub enum PingsState {
     Failed(String),
 }
 
+/// One row of the member list as the client keeps it: a heading, or
+/// somebody. The gateway sends the two mixed in one array, and the pane
+/// draws them the same way.
+#[derive(Debug, Clone)]
+pub enum MemberRow {
+    /// A hoisted role's name, or "Online" / "Offline", with its count.
+    Heading {
+        label: String,
+        count: u32,
+    },
+    Member {
+        user_id: String,
+    },
+}
+
+/// The member list of one channel, as GUILD_MEMBER_LIST_UPDATE builds it.
+///
+/// The gateway sends windows rather than the whole list: a SYNC operation
+/// replaces one inclusive range of rows. Rows outside every window that
+/// has arrived are simply not known yet, so the list is a sparse map by
+/// position rather than a vector.
+#[derive(Debug, Default)]
+pub struct MemberList {
+    pub guild_id: String,
+    pub channel_id: String,
+    pub member_count: u32,
+    pub online_count: u32,
+    /// Row index to what is there. Sparse until the windows arrive.
+    pub rows: HashMap<u32, MemberRow>,
+    /// The highest row index any window has covered, so the pane knows
+    /// how far it can scroll without asking for more.
+    pub known_rows: u32,
+    /// The member objects the list carried, by user id.
+    pub members: HashMap<String, GuildMemberResponse>,
+    pub scroll: u16,
+    /// Whether anything has arrived yet, so an empty list can say
+    /// "loading" rather than "nobody".
+    pub loaded: bool,
+}
+
 /// What the client keeps about one person's presence.
 #[derive(Debug, Clone, Default)]
 pub struct PresenceEntry {
@@ -957,6 +999,8 @@ pub struct App {
     pub own_typing: OwnTyping,
     /// The pings overlay while it is open.
     pub pings: Option<PingsView>,
+    /// The member list pane while it is open, and what has arrived for it.
+    pub member_list: Option<MemberList>,
     /// Who is online, by user id, from READY and PRESENCE_UPDATE. An
     /// account with no entry has never been heard of and counts as
     /// offline; the server only sends presences for people the reader
@@ -1167,6 +1211,7 @@ impl App {
             typing_users: HashMap::new(),
             own_typing: OwnTyping::default(),
             pings: None,
+            member_list: None,
             presences: HashMap::new(),
             presence_version: 0,
             pending_jump: None,
@@ -4665,6 +4710,181 @@ impl App {
         }
     }
 
+    // Alt+M: the member list
+
+    /// How many rows the list asks for at a time. The server takes at
+    /// most a hundred per window, which is more than any terminal shows.
+    pub const MEMBER_LIST_WINDOW: u32 = 100;
+
+    /// Open the member list on the channel now showing, or shut it. The
+    /// caller sends the subscription; this only says what to ask for.
+    pub fn toggle_member_list(&mut self) -> Option<(String, Option<String>)> {
+        if let Some(list) = self.member_list.take() {
+            // giving the list up is a subscription with no channel
+            return Some((list.guild_id, None));
+        }
+        let guild_id = self.active_guild_id()?;
+        let channel_id = self.active_channel_id()?;
+        self.member_list = Some(MemberList {
+            guild_id: guild_id.clone(),
+            channel_id: channel_id.clone(),
+            ..Default::default()
+        });
+        Some((guild_id, Some(channel_id)))
+    }
+
+    pub fn close_member_list(&mut self) -> Option<String> {
+        self.member_list.take().map(|list| list.guild_id)
+    }
+
+    /// Follow the channel the reader moved to, so the list is never of
+    /// somewhere else. Gives back the subscription to send.
+    pub fn member_list_follow_channel(&mut self) -> Option<(String, Option<String>)> {
+        let list = self.member_list.as_ref()?;
+        let guild_id = self.active_guild_id();
+        let channel_id = self.active_channel_id();
+        match (guild_id, channel_id) {
+            (Some(guild_id), Some(channel_id))
+                if guild_id == list.guild_id && channel_id == list.channel_id =>
+            {
+                None
+            }
+            (Some(guild_id), Some(channel_id)) => {
+                self.member_list = Some(MemberList {
+                    guild_id: guild_id.clone(),
+                    channel_id: channel_id.clone(),
+                    ..Default::default()
+                });
+                Some((guild_id, Some(channel_id)))
+            }
+            // a direct message has no member list; the pane closes and
+            // the guild's subscription is given up
+            _ => {
+                let guild_id = list.guild_id.clone();
+                self.member_list = None;
+                Some((guild_id, None))
+            }
+        }
+    }
+
+    /// Take one GUILD_MEMBER_LIST_UPDATE. Only the list now open is
+    /// followed; the server sends at most one per guild anyway.
+    pub fn apply_member_list_update(&mut self, event: GuildMemberListUpdateEvent) {
+        let channel_id = event.channel_id.clone().unwrap_or_else(|| event.id.clone());
+        let Some(list) = self.member_list.as_mut() else {
+            return;
+        };
+        if list.guild_id != event.guild_id || list.channel_id != channel_id {
+            return;
+        }
+        list.member_count = event.member_count;
+        list.online_count = event.online_count;
+        list.loaded = true;
+
+        let mut presences = Vec::new();
+        let mut members = Vec::new();
+        for op in &event.ops {
+            // SYNC is the only operation the server sends; anything else
+            // is for a client that knows more than this one
+            if op.op != "SYNC" {
+                continue;
+            }
+            let (Some(start), Some(end)) = (op.range.first().copied(), op.range.get(1).copied())
+            else {
+                continue;
+            };
+            if end < start {
+                continue;
+            }
+            // the range is replaced whole: rows it covers that the
+            // operation does not fill are gone
+            for row in start..=end {
+                list.rows.remove(&row);
+            }
+            for (offset, item) in op.items.iter().enumerate() {
+                let row = start + offset as u32;
+                if row > end {
+                    break;
+                }
+                if let Some(group) = &item.group {
+                    list.rows.insert(
+                        row,
+                        MemberRow::Heading {
+                            label: group.id.clone(),
+                            count: group.count,
+                        },
+                    );
+                } else if let Some(entry) = &item.member {
+                    let user_id = entry.member.user.id.clone();
+                    if user_id.is_empty() {
+                        continue;
+                    }
+                    list.rows.insert(
+                        row,
+                        MemberRow::Member {
+                            user_id: user_id.clone(),
+                        },
+                    );
+                    list.members.insert(user_id, entry.member.clone());
+                    members.push(entry.member.clone());
+                    if let Some(presence) = &entry.presence {
+                        let mut presence = presence.clone();
+                        // the list's placeholder presence carries no user
+                        if presence.user.id.is_empty() {
+                            presence.user = entry.member.user.clone();
+                        }
+                        presences.push(presence);
+                    }
+                }
+            }
+            list.known_rows = list.known_rows.max(end.saturating_add(1));
+        }
+        let guild_id = event.guild_id.clone();
+        for presence in presences {
+            self.apply_presence(presence);
+        }
+        if !members.is_empty() {
+            self.ingest_gateway_guild_members(&guild_id, members);
+        }
+    }
+
+    /// The rows the pane draws, in order, up to what has arrived. A gap
+    /// where a window has not come back yet is left out rather than shown
+    /// as a blank, so the list never looks like it has holes in it.
+    pub fn member_list_rows(&self) -> Vec<MemberRow> {
+        let Some(list) = self.member_list.as_ref() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        for index in 0..list.known_rows {
+            if let Some(row) = list.rows.get(&index) {
+                rows.push(row.clone());
+            }
+        }
+        rows
+    }
+
+    /// What to call a member list heading. The server sends a hoisted
+    /// role's id, or the words `online` and `offline`.
+    pub fn member_group_label(&self, guild_id: &str, id: &str) -> String {
+        match id {
+            "online" => "Online".to_string(),
+            "offline" => "Offline".to_string(),
+            role_id => self
+                .guild_roles
+                .get(guild_id)
+                .and_then(|roles| roles.iter().find(|r| r.id.trim() == role_id.trim()))
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| "Members".to_string()),
+        }
+    }
+
+    pub fn member_list_scroll(&mut self, delta: i32) {
+        if let Some(list) = self.member_list.as_mut() {
+            list.scroll = list.scroll.saturating_add_signed(delta as i16);
+        }
+    }
+
     // r (as in reply)
 
     pub fn start_reply(&mut self) {
@@ -5223,6 +5443,28 @@ impl App {
         self.merge_single_message_member(message);
         if let Some(r) = message.referenced_message.as_deref() {
             self.merge_message_embedded_members(r);
+        }
+    }
+
+    /// Take somebody off a community's member list, from
+    /// GUILD_MEMBER_REMOVE. Their presence goes with them: the server
+    /// stops sending one once they are no longer a member.
+    pub fn remove_guild_member(&mut self, guild_id: &str, user_id: &str) {
+        if let Some(members) = self.guild_members.get_mut(guild_id) {
+            members.retain(|m| m.user.id != user_id);
+        }
+        // only where nothing else keeps them visible: a friend, or
+        // somebody in a conversation, still has a presence of their own
+        let elsewhere =
+            self.guild_members.iter().any(|(gid, members)| {
+                gid != guild_id && members.iter().any(|m| m.user.id == user_id)
+            }) || self
+                .private_channels
+                .iter()
+                .any(|c| c.recipients.iter().any(|u| u.id == user_id));
+        if !elsewhere {
+            self.presences.remove(user_id);
+            self.presence_version = self.presence_version.wrapping_add(1);
         }
     }
 
