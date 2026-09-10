@@ -101,12 +101,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         content,
     );
 
-    let footer = if total > 1 {
-        "↑/↓ scroll  ·  ←/→ another reaction  ·  Esc close"
-    } else {
-        "↑/↓ scroll  ·  Esc close"
-    };
-    crate::ui::footer::render(frame, body[1], app, footer);
+    let mut parts = vec!["↑/↓ scroll".to_string()];
+    if total > 1 {
+        parts.push("←/→ another reaction".to_string());
+    }
+    // clearing everybody's takes Manage Messages, so it is only offered
+    // where the server would allow it
+    if app.can_manage_messages() {
+        parts.push("x clear this one".to_string());
+    }
+    parts.push("Esc close".to_string());
+    let footer = parts.join("  ·  ");
+    crate::ui::footer::render(frame, body[1], app, &footer);
 }
 
 #[cfg(test)]

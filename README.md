@@ -826,7 +826,21 @@ Two places say what the keys do, and neither needs **F1**:
 - **The bar under the title**, for wherever the focus is — a different
   line for the servers, the channels, the messages with and without a
   selection, and the compose box with and without a selection.
-- **The bottom line of every overlay**, for the keys that work in it.
+- **The bottom line of every overlay**, for the keys that work in it:
+  the profile, the friends list, the pins, the bookmarks, the pickers,
+  the settings, the debug panel and this one included.
+
+**A line only offers what would do something.** On a profile the three
+relationship keys change with how you stand with the person: a stranger
+gets `+ add friend` and `B block`; a friend gets `x unfriend` instead of
+`+`; somebody who asked you first gets `+ accept` and `x turn down`; a
+request you sent gets `x take it back`; somebody blocked gets `x unblock`
+and nothing else. Your own profile gets none of the three.
+
+That list is not written out twice. The keys and the line read the same
+function, so the line cannot come to offer something the key would not
+do — which is how `+` came to send a fresh friend request at somebody who
+had already asked, where the server wants an accept.
 
 When something happens — a friend request sent, a message pinned, a
 community joined — the words take that line for four seconds and then the

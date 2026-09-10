@@ -433,12 +433,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(paragraph, content);
 
-    let hint = Paragraph::new(Line::from(vec![Span::styled(
-        "↑/↓ move  ·  Space / Enter toggle  ·  Esc / q close",
-        muted,
-    )]))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, body[1]);
+    crate::ui::footer::render(
+        frame,
+        body[1],
+        app,
+        "↑/↓ move  ·  ←/→ or Space / Enter change  ·  Esc / q close",
+    );
 }
 
 #[cfg(test)]

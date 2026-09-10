@@ -145,19 +145,16 @@ fn empty_label(tab: FriendsTab) -> &'static str {
     }
 }
 
-fn footer_for(tab: FriendsTab) -> &'static str {
-    match tab {
-        FriendsTab::Friends => {
-            "\u{2190}/\u{2192} group · Enter message · n name · + add · x unfriend · B block · Esc"
-        }
-        FriendsTab::Incoming => {
-            "\u{2190}/\u{2192} group  ·  a accept  ·  x turn down  ·  B block  ·  + add  ·  Esc close"
-        }
-        FriendsTab::Outgoing => {
-            "\u{2190}/\u{2192} group  ·  x take it back  ·  + add  ·  Esc close"
-        }
-        FriendsTab::Blocked => "\u{2190}/\u{2192} group  ·  x unblock  ·  Esc close",
-    }
+/// Every group can be reloaded and added to; what else there is depends
+/// on which one the cursor is in.
+fn footer_for(tab: FriendsTab) -> String {
+    let doing = match tab {
+        FriendsTab::Friends => "Enter message · n name · x unfriend · B block",
+        FriendsTab::Incoming => "a accept · x turn down · B block",
+        FriendsTab::Outgoing => "x take it back",
+        FriendsTab::Blocked => "x unblock",
+    };
+    format!("\u{2190}/\u{2192} group · {doing} · + add by tag · R reload · Esc close")
 }
 
 #[cfg(test)]

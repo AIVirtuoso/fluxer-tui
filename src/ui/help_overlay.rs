@@ -97,8 +97,11 @@ Messages
            marked message of the channel in one call (needs Manage Messages, and
            the server refuses messages older than two weeks)
   r - reply to selected message
-  u - profile of the selected message's author (p there: picture full size; Esc closes;
-           + asks them to be friends, B blocks them, x undoes whichever tie there is)
+  u - profile of the selected message's author. p shows the picture full size,
+           Esc closes, and + / x / B act on how you stand with them: + asks or
+           accepts, x unfriends, turns down, takes back or unblocks, B blocks.
+           The line at the bottom of the profile names whichever of the three
+           apply, so there is no guessing which.
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
   e - react: opens emoji picker on selected message (Enter to send reaction, Esc cancels)
   Ctrl+E - edit your message (focuses input; Enter save, Esc cancel)
@@ -180,9 +183,11 @@ Other
            bottom with nothing unread. A channel you have never opened gets
            no line, since a rule above the whole history says nothing.
   What you can press: the bar under the title says it for wherever the
-           focus is, and every overlay says it on its own bottom line. When
-           something happens — a request sent, a message pinned — the words
-           take that line for a few seconds and then the keys come back.
+           focus is, and every overlay — profile, friends, pins, pickers, the
+           settings, this one — says it on its own bottom line, naming only
+           what would actually do something where you are. When something
+           happens (a request sent, a message pinned) the words take that
+           line for a few seconds and then the keys come back.
   Who is about: a filled circle in front of a name, green online, amber idle,
            red do not disturb; nothing at all where the server has said
            nothing. A one-to-one conversation shows the other person's in
@@ -265,10 +270,5 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         " Esc / Enter / q - close "
     };
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        footer,
-        crate::ui::theme::muted_style(),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, body[1]);
+    crate::ui::footer::render(frame, body[1], app, footer);
 }

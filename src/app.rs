@@ -895,6 +895,50 @@ pub struct PresenceEntry {
     pub custom_status: Option<CustomStatusPayload>,
 }
 
+/// What to do to a relationship. The gateway tells the client what came
+/// of it, so nothing here writes to the list itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipAction {
+    Add,
+    Accept,
+    Block,
+    Remove,
+}
+
+/// What `+`, `B` and `x` do for one person, given how the reader stands
+/// with them.
+///
+/// The profile's key handler and its footer both read this, so a hint can
+/// never offer something the key does not do — which is how `+` came to
+/// send a fresh friend request at somebody who had already asked, where
+/// the server wants an accept.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RelationshipKeys {
+    /// `+`
+    pub plus: Option<(RelationshipAction, &'static str)>,
+    /// `B`
+    pub block: Option<(RelationshipAction, &'static str)>,
+    /// `x`
+    pub undo: Option<(RelationshipAction, &'static str)>,
+}
+
+impl RelationshipKeys {
+    /// The three of them as hint text, in the order the keys are pressed.
+    pub fn hints(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some((_, label)) = self.plus {
+            out.push(format!("+ {label}"));
+        }
+        if let Some((_, label)) = self.undo {
+            out.push(format!("x {label}"));
+        }
+        if let Some((_, label)) = self.block {
+            out.push(format!("B {label}"));
+        }
+        out
+    }
+}
+
 /// The friends overlay: everybody the reader has a tie to, in the four
 /// groups the server sorts them into.
 #[derive(Debug)]
@@ -5718,6 +5762,50 @@ impl App {
         }
         self.messages_version = self.messages_version.wrapping_add(1);
         self.normalize_selection();
+    }
+
+    /// What the three relationship keys do for somebody, and what to call
+    /// each on the hint line. Nothing at all for the reader themselves.
+    pub fn relationship_keys_for(&self, user_id: &str) -> RelationshipKeys {
+        if user_id == self.me.id {
+            return RelationshipKeys::default();
+        }
+        let block = Some((RelationshipAction::Block, "block"));
+        match self.relationships.get(user_id).map(|r| r.relationship_type) {
+            None => RelationshipKeys {
+                plus: Some((RelationshipAction::Add, "add friend")),
+                block,
+                undo: None,
+            },
+            Some(RELATIONSHIP_FRIEND) => RelationshipKeys {
+                plus: None,
+                block,
+                undo: Some((RelationshipAction::Remove, "unfriend")),
+            },
+            // they asked first, so `+` accepts rather than asking back:
+            // the server takes a different call for each
+            Some(RELATIONSHIP_INCOMING_REQUEST) => RelationshipKeys {
+                plus: Some((RelationshipAction::Accept, "accept")),
+                block,
+                undo: Some((RelationshipAction::Remove, "turn down")),
+            },
+            Some(RELATIONSHIP_OUTGOING_REQUEST) => RelationshipKeys {
+                plus: None,
+                block,
+                undo: Some((RelationshipAction::Remove, "take it back")),
+            },
+            Some(RELATIONSHIP_BLOCKED) => RelationshipKeys {
+                plus: None,
+                // blocking somebody already blocked is nothing to offer
+                block: None,
+                undo: Some((RelationshipAction::Remove, "unblock")),
+            },
+            Some(_) => RelationshipKeys {
+                plus: None,
+                block,
+                undo: Some((RelationshipAction::Remove, "undo")),
+            },
+        }
     }
 
     pub fn relationship_with(&self, user_id: &str) -> Option<&RelationshipResponse> {

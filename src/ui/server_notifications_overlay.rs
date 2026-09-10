@@ -199,9 +199,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         "↑/↓ move  ·  ←/→ / Space change  ·  Esc / Enter / q close"
     };
-    let hint = Paragraph::new(Line::from(vec![Span::styled(hint_text, muted)]))
-        .alignment(Alignment::Center);
-    frame.render_widget(hint, body[1]);
+    crate::ui::footer::render(frame, body[1], app, hint_text);
 }
 
 fn bool_label(value: bool) -> &'static str {

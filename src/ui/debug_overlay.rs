@@ -4,7 +4,7 @@
 
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -139,10 +139,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let scroll = app.debug_scroll.min(max_scroll);
     frame.render_widget(paragraph.scroll((scroll, 0)), popup);
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        " j/k or ↑/↓ scroll · Home: facts · End: newest · s: save to a file · Esc / q close ",
-        muted,
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, outer[2]);
+    crate::ui::footer::render(
+        frame,
+        outer[2],
+        app,
+        "j/k scroll · Home facts · End newest · s save to a file · f map the screen · Esc close",
+    );
 }

@@ -1905,7 +1905,7 @@ fn handle_key_event(
                     spawn_relationship_action(
                         client.clone(),
                         event_tx.clone(),
-                        RelationshipAction::Accept,
+                        crate::app::RelationshipAction::Accept,
                         relationship.user.id,
                         &format!("{name} is a friend now."),
                     );
@@ -1919,7 +1919,7 @@ fn handle_key_event(
                     spawn_relationship_action(
                         client.clone(),
                         event_tx.clone(),
-                        RelationshipAction::Block,
+                        crate::app::RelationshipAction::Block,
                         relationship.user.id,
                         &format!("{name} is blocked."),
                     );
@@ -1941,7 +1941,7 @@ fn handle_key_event(
                     spawn_relationship_action(
                         client.clone(),
                         event_tx.clone(),
-                        RelationshipAction::Remove,
+                        crate::app::RelationshipAction::Remove,
                         relationship.user.id,
                         &done,
                     );
@@ -2455,66 +2455,48 @@ fn handle_key_event(
             },
             KeyCode::Up | KeyCode::Char('k') => app.profile_scroll(-1),
             KeyCode::Down | KeyCode::Char('j') => app.profile_scroll(1),
-            // + ask them to be friends, B block, x undo whichever tie
-            // there is: the three the web client's profile card offers
-            KeyCode::Char('+') => {
-                if let Some(view) = app.profile.as_ref()
-                    && view.user_id != app.me.id
-                {
-                    let user_id = view.user_id.clone();
-                    let name = app
-                        .user_cache
-                        .get(&user_id)
-                        .map(display_name)
-                        .unwrap_or_else(|| "them".to_string());
-                    spawn_relationship_action(
-                        client.clone(),
-                        event_tx.clone(),
-                        RelationshipAction::Add,
-                        user_id,
-                        &format!("Asked {name} to be friends."),
-                    );
-                }
-            }
-            KeyCode::Char('B') => {
-                if let Some(view) = app.profile.as_ref()
-                    && view.user_id != app.me.id
-                {
-                    let user_id = view.user_id.clone();
-                    let name = app
-                        .user_cache
-                        .get(&user_id)
-                        .map(display_name)
-                        .unwrap_or_else(|| "them".to_string());
-                    app.dismiss_profile();
-                    spawn_relationship_action(
-                        client.clone(),
-                        event_tx.clone(),
-                        RelationshipAction::Block,
-                        user_id,
-                        &format!("{name} is blocked."),
-                    );
-                }
-            }
-            KeyCode::Char('x') => {
-                if let Some(view) = app.profile.as_ref()
-                    && view.user_id != app.me.id
-                {
-                    let user_id = view.user_id.clone();
-                    match app.relationship_with(&user_id) {
-                        Some(_) => spawn_relationship_action(
-                            client.clone(),
-                            event_tx.clone(),
-                            RelationshipAction::Remove,
-                            user_id,
-                            "Done.",
-                        ),
-                        None => app.set_status("Nothing to undo: they are nothing to you yet."),
+            // +, B and x: what each does depends on how the reader
+            // stands with them, and `App::relationship_keys_for` is the
+            // one place that decides — the footer reads the same thing,
+            // so a hint can never offer what the key will not do
+            KeyCode::Char('+') | KeyCode::Char('B') | KeyCode::Char('x') => {
+                let Some(user_id) = app.profile.as_ref().map(|v| v.user_id.clone()) else {
+                    return;
+                };
+                let keys = app.relationship_keys_for(&user_id);
+                let chosen = match key.code {
+                    KeyCode::Char('+') => keys.plus,
+                    KeyCode::Char('B') => keys.block,
+                    _ => keys.undo,
+                };
+                let Some((action, label)) = chosen else {
+                    app.set_transient_status("Nothing that key can do here.", App::NOTICE_LIFETIME);
+                    return;
+                };
+                let name = app
+                    .user_cache
+                    .get(&user_id)
+                    .map(display_name)
+                    .unwrap_or_else(|| "them".to_string());
+                let done = match action {
+                    crate::app::RelationshipAction::Add => {
+                        format!("Friend request sent to {name}.")
                     }
+                    crate::app::RelationshipAction::Accept => {
+                        format!("{name} is a friend now.")
+                    }
+                    crate::app::RelationshipAction::Block => format!("{name} is blocked."),
+                    crate::app::RelationshipAction::Remove => {
+                        format!("Done: {label} {name}.")
+                    }
+                };
+                // blocking hides their messages, so the profile goes with
+                // it rather than sitting over a pane that just changed
+                if action == crate::app::RelationshipAction::Block {
+                    app.dismiss_profile();
                 }
+                spawn_relationship_action(client.clone(), event_tx.clone(), action, user_id, &done);
             }
-            KeyCode::PageUp => app.profile_scroll(-12),
-            KeyCode::PageDown => app.profile_scroll(12),
             _ => {}
         }
         return;
@@ -5469,30 +5451,20 @@ fn spawn_relationships_load(client: FluxerHttpClient, event_tx: UnboundedSender<
     });
 }
 
-/// What to do to a relationship. The gateway tells the client what came
-/// of it, so nothing here writes to the list itself.
-#[derive(Debug, Clone, Copy)]
-enum RelationshipAction {
-    Add,
-    Accept,
-    Block,
-    Remove,
-}
-
 fn spawn_relationship_action(
     client: FluxerHttpClient,
     event_tx: UnboundedSender<AppEvent>,
-    action: RelationshipAction,
+    action: crate::app::RelationshipAction,
     user_id: String,
     done: &str,
 ) {
     let done = done.to_string();
     tokio::spawn(async move {
         let result = match action {
-            RelationshipAction::Add => client.friend_request(&user_id).await,
-            RelationshipAction::Accept => client.accept_friend_request(&user_id).await,
-            RelationshipAction::Block => client.block_user(&user_id).await,
-            RelationshipAction::Remove => client.remove_relationship(&user_id).await,
+            crate::app::RelationshipAction::Add => client.friend_request(&user_id).await,
+            crate::app::RelationshipAction::Accept => client.accept_friend_request(&user_id).await,
+            crate::app::RelationshipAction::Block => client.block_user(&user_id).await,
+            crate::app::RelationshipAction::Remove => client.remove_relationship(&user_id).await,
         };
         match result {
             Ok(()) => {
