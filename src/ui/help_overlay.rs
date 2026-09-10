@@ -30,6 +30,12 @@ Focus & navigation
            x undoes whichever tie there is, B blocks, R reloads.
   Alt+P - the pinned messages of the open channel (Enter jumps to one, x unpins)
   Alt+B - the messages you have bookmarked, from everywhere (Enter jumps, x removes)
+  / - search messages. Type the query, Left/Right pick the scope (this channel,
+           this community, everywhere), Enter searches. Then Up/Down move
+           through the hits, Enter jumps to one, n/p turn the page, / goes back
+           to the query, Esc closes. A query takes "words in quotes" that have
+           to appear together, from:someone, has:image|sound|video|file|embed
+           and pinned:true.
 
 Servers (left column)
   Up / Down / j / k - move server selection

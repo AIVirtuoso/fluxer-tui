@@ -2,11 +2,11 @@ use crate::api::types::{
     ChannelPinsResponse, ChannelResponse, CompleteMultipartAttachmentUploadRequest,
     CompleteMultipartUploadItem, CreateMessageAttachment, CreateMessageRequest, EditMessageRequest,
     GatewayBotResponse, GuildResponse, HandoffInitiateResponse, HandoffStatusResponse,
-    MessageQuery, MessageResponse, PresignedAttachmentUploadRequest,
-    PresignedAttachmentUploadRequestItem, PresignedAttachmentUploadResponse, RelationshipResponse,
-    SavedMessageEntryResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
-    UserPartialResponse, UserPrivateResponse, UserSettingsPatch, UserSettingsResponse,
-    WellKnownFluxerResponse,
+    MessageQuery, MessageResponse, MessageSearchRequest, MessageSearchResponse,
+    PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
+    PresignedAttachmentUploadResponse, RelationshipResponse, SavedMessageEntryResponse,
+    UserGuildSettingsPatch, UserGuildSettingsResponse, UserPartialResponse, UserPrivateResponse,
+    UserSettingsPatch, UserSettingsResponse, WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
@@ -736,6 +736,22 @@ impl FluxerHttpClient {
             "/users/@me/relationships",
             None::<&()>,
             None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Search messages. The answer is either a page of results or the
+    /// server saying it is still indexing a channel in scope.
+    pub async fn search_messages(
+        &self,
+        request: &MessageSearchRequest,
+    ) -> Result<MessageSearchResponse> {
+        self.send_json::<(), MessageSearchRequest, MessageSearchResponse>(
+            Method::POST,
+            "/search/messages",
+            None::<&()>,
+            Some(request),
             false,
         )
         .await

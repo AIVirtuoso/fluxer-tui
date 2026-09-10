@@ -20,6 +20,7 @@ pub mod presence;
 pub mod profile_overlay;
 pub mod reaction_users_overlay;
 pub mod saved_overlay;
+pub mod search_overlay;
 pub mod server_notifications_overlay;
 pub mod settings_overlay;
 pub mod sidebar;
@@ -139,6 +140,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         reaction_users_overlay::render(frame, area, app);
     } else if app.message_actions.is_some() {
         message_actions::render(frame, area, app);
+    } else if app.search.is_some() {
+        search_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {
