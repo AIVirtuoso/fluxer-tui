@@ -1379,6 +1379,67 @@ impl PresenceStatus {
     pub const SETTABLE: [Self; 4] = [Self::Online, Self::Idle, Self::Dnd, Self::Invisible];
 }
 
+/// One row of a member list as the gateway sends it: either a group
+/// header or a member. Exactly one of the two fields is there.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemberListItem {
+    #[serde(default)]
+    pub group: Option<MemberListGroup>,
+    #[serde(default)]
+    pub member: Option<MemberListMember>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemberListGroup {
+    /// A hoisted role's id, or the words `online` or `offline`.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub count: u32,
+}
+
+/// A guild member as the member list carries them: the ordinary member
+/// object with a presence always on it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemberListMember {
+    #[serde(flatten)]
+    pub member: GuildMemberResponse,
+    #[serde(default)]
+    pub presence: Option<PresenceRecord>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemberListOp {
+    #[serde(default)]
+    pub op: String,
+    /// The inclusive `[start, end]` the operation replaces.
+    #[serde(default)]
+    pub range: Vec<u32>,
+    #[serde(default)]
+    pub items: Vec<MemberListItem>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GuildMemberListUpdateEvent {
+    #[serde(default)]
+    pub guild_id: String,
+    /// Always the channel id as a string.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub member_count: u32,
+    #[serde(default)]
+    pub online_count: u32,
+    // the payload also carries a `groups` array of the headings in list
+    // order; the client does not read it, because every heading arrives
+    // again as an item inside the operation that places it, and placing
+    // is all the pane needs
+    #[serde(default)]
+    pub ops: Vec<MemberListOp>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

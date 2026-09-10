@@ -401,6 +401,15 @@ pub fn apply_event(
                 if let Some(event) = read::<GuildDeleteEvent>(&kind, payload)
                     && !event.unavailable
                 {
+                    // a member list of a community that is gone has
+                    // nothing left to show, and its subscription with it
+                    if app
+                        .member_list
+                        .as_ref()
+                        .is_some_and(|list| list.guild_id == event.id)
+                    {
+                        app.close_member_list();
+                    }
                     app.remove_guild(&event.id);
                     if app.selected_server == ServerSelection::Guild(event.id) {
                         app.selected_server = ServerSelection::DirectMessages;
@@ -520,6 +529,45 @@ pub fn apply_event(
                         }
                     }
                     msg.reactions.retain(|r| r.count > 0);
+                }
+            }
+            "GUILD_MEMBER_LIST_UPDATE" => {
+                if let Some(event) =
+                    read::<crate::api::types::GuildMemberListUpdateEvent>(&kind, payload)
+                {
+                    app.apply_member_list_update(event);
+                }
+            }
+            "GUILD_MEMBER_ADD" => {
+                #[derive(serde::Deserialize)]
+                struct MemberAdd {
+                    guild_id: String,
+                    #[serde(flatten)]
+                    member: crate::api::types::GuildMemberResponse,
+                }
+                if let Some(event) = read::<MemberAdd>(&kind, payload) {
+                    app.ingest_gateway_guild_members(&event.guild_id, vec![event.member]);
+                }
+            }
+            "GUILD_MEMBER_UPDATE" => {
+                #[derive(serde::Deserialize)]
+                struct MemberUpdate {
+                    guild_id: String,
+                    #[serde(flatten)]
+                    member: crate::api::types::GuildMemberResponse,
+                }
+                if let Some(event) = read::<MemberUpdate>(&kind, payload) {
+                    app.merge_guild_member(&event.guild_id, event.member);
+                }
+            }
+            "GUILD_MEMBER_REMOVE" => {
+                #[derive(serde::Deserialize)]
+                struct MemberRemove {
+                    guild_id: String,
+                    user: crate::api::types::UserPartialResponse,
+                }
+                if let Some(event) = read::<MemberRemove>(&kind, payload) {
+                    app.remove_guild_member(&event.guild_id, &event.user.id);
                 }
             }
             "PRESENCE_UPDATE" => {

@@ -8,6 +8,7 @@ pub mod help_overlay;
 pub mod image_preview;
 pub mod input_bar;
 pub(crate) mod input_word_wrap;
+pub mod member_pane;
 pub mod mention_popup;
 pub mod message_markdown;
 pub mod message_pane;
@@ -82,11 +83,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     sidebar::render_servers(frame, sidebar[0], app);
     sidebar::render_channels(frame, sidebar[1], app);
+    // the member column takes its width off the messages, and is dropped
+    // rather than squeezing them on a narrow terminal
+    let members_w = member_pane::width(app, area.width);
+    let main = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(members_w)])
+        .split(body[1]);
     app.chafa_viewport = (
-        body[1].width.saturating_sub(2).max(12),
-        body[1].height.saturating_sub(2).max(6),
+        main[0].width.saturating_sub(2).max(12),
+        main[0].height.saturating_sub(2).max(6),
     );
-    message_pane::render(frame, body[1], app);
+    message_pane::render(frame, main[0], app);
+    if members_w > 0 {
+        member_pane::render(frame, main[1], app);
+    }
 
     if app.emoji_autocomplete.is_some() {
         emoji_popup::render(frame, root[1], app);

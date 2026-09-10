@@ -44,6 +44,15 @@ pub enum GatewayCommand {
     LazySubscribeGuild {
         guild_id: String,
     },
+    /// Ask for a channel's member list, or with `channel_id` None give up
+    /// the guild's list. `[start, end]` windows are inclusive, at most a
+    /// hundred rows each and ten of them; one session holds at most one
+    /// member list per guild, so subscribing a channel drops the last.
+    SubscribeMemberList {
+        guild_id: String,
+        channel_id: Option<String>,
+        ranges: Vec<(u32, u32)>,
+    },
     Shutdown,
 }
 
@@ -270,6 +279,32 @@ async fn run_connection(
                             if let Err(e) = send_op_json(&mut write, OP_LAZY_REQUEST, d).await {
                                 let _ = event_tx.send(AppEvent::ApiError(format!(
                                     "lazy subscribe failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                    Some(GatewayCommand::SubscribeMemberList { guild_id, channel_id, ranges }) => {
+                        if !guild_id.is_empty() {
+                            // a request with no ranges for a channel
+                            // throws away what was buffered for it, which
+                            // is how the list is given up
+                            let channels = match &channel_id {
+                                Some(id) => json!({
+                                    id.clone(): ranges
+                                        .iter()
+                                        .map(|(start, end)| json!([start, end]))
+                                        .collect::<Vec<_>>()
+                                }),
+                                None => json!({}),
+                            };
+                            let d = json!({
+                                "subscriptions": {
+                                    guild_id: { "member_list_channels": channels }
+                                }
+                            });
+                            if let Err(e) = send_op_json(&mut write, OP_LAZY_REQUEST, d).await {
+                                let _ = event_tx.send(AppEvent::ApiError(format!(
+                                    "member list subscribe failed: {e}"
                                 )));
                             }
                         }
