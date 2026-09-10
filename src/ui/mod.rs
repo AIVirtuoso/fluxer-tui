@@ -13,6 +13,7 @@ pub mod message_markdown;
 pub mod message_pane;
 pub mod pings_overlay;
 pub mod profile_overlay;
+pub mod search_overlay;
 pub mod server_notifications_overlay;
 pub mod settings_overlay;
 pub mod sidebar;
@@ -112,6 +113,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         server_notifications_overlay::render(frame, area, app);
     } else if app.pings.is_some() {
         pings_overlay::render(frame, area, app);
+    } else if app.search.is_some() {
+        search_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {

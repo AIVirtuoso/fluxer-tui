@@ -839,6 +839,37 @@ pub enum PingsState {
     Failed(String),
 }
 
+/// The search overlay: a query being typed, the scope it runs in, and
+/// whatever came back.
+#[derive(Debug)]
+pub struct SearchView {
+    pub query: String,
+    pub scope: crate::search::SearchScope,
+    pub state: SearchState,
+    pub selected: usize,
+    pub page: u32,
+    /// Whether the cursor is in the query line or down among the
+    /// results. Typing goes to the query, moving goes to the results.
+    pub editing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum SearchState {
+    /// Nothing asked for yet.
+    Idle,
+    Running,
+    /// The server is still indexing a channel in scope, which is an
+    /// answer rather than a failure.
+    Indexing,
+    Ready {
+        messages: Vec<MessageResponse>,
+        total: u32,
+        page: u32,
+        hits_per_page: u32,
+    },
+    Failed(String),
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -947,6 +978,12 @@ pub struct App {
     pub own_typing: OwnTyping,
     /// The pings overlay while it is open.
     pub pings: Option<PingsView>,
+    /// The search overlay while it is open.
+    pub search: Option<SearchView>,
+    /// Channels a search answer named that the client has no other copy
+    /// of, so a hit from a community the reader has not opened can still
+    /// say where it came from.
+    pub search_channels: HashMap<String, ChannelResponse>,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1147,6 +1184,8 @@ impl App {
             typing_users: HashMap::new(),
             own_typing: OwnTyping::default(),
             pings: None,
+            search: None,
+            search_channels: HashMap::new(),
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -3047,17 +3086,24 @@ impl App {
 
     /// Where a ping came from: the community, if any, and the channel.
     pub fn ping_location(&self, message: &MessageResponse) -> (Option<String>, String) {
-        let channel = self.channel_by_id(&message.channel_id);
+        self.channel_location(&message.channel_id)
+    }
+
+    /// Where a channel is: its community's name, where it has one, and
+    /// the channel's own. A channel the client does not know is named by
+    /// the tail of its id rather than left blank.
+    pub fn channel_location(&self, channel_id: &str) -> (Option<String>, String) {
+        let channel = self.channel_by_id(channel_id);
         let guild = channel
             .and_then(|c| c.guild_id.clone())
-            .or_else(|| self.guild_id_for_channel(&message.channel_id))
+            .or_else(|| self.guild_id_for_channel(channel_id))
             .and_then(|gid| self.guilds.iter().find(|g| g.id == gid))
             .map(|g| g.name.clone());
         let name = match channel {
             Some(c) => crate::ui::sidebar::channel_name(self, c),
             None => format!(
                 "unknown-{}",
-                &message.channel_id[message.channel_id.len().saturating_sub(4)..]
+                &channel_id[channel_id.len().saturating_sub(4)..]
             ),
         };
         (guild, name)
@@ -4545,6 +4591,247 @@ impl App {
         let to_clipboard = crate::compose::copy_to_system_clipboard(&text);
         self.cut_buffer = text;
         Some(to_clipboard)
+    }
+
+    /// Jump the message pane to a message that is in a channel the client
+    /// knows, the way the pings list does. False when the channel is gone
+    /// — a search can turn up a hit in a community the reader has since
+    /// left, and saying so beats moving the pane somewhere wrong.
+    pub fn jump_to_message(&mut self, channel_id: &str, message_id: &str) -> bool {
+        let Some(server) = self.server_for_channel(channel_id) else {
+            self.set_status("That channel is not on your list any more.");
+            return false;
+        };
+        self.selected_server = server;
+        self.selected_channel_id = Some(channel_id.to_string());
+        self.message_scroll_from_bottom = 0;
+        self.selected_message_index = None;
+        self.normalize_selection();
+        self.focus = Focus::Messages;
+        self.pending_jump = Some((channel_id.to_string(), message_id.to_string()));
+        self.pending_jump_pages = 0;
+        self.apply_pending_jump(channel_id);
+        true
+    }
+
+    // / : search
+
+    pub fn open_search(&mut self) {
+        self.show_settings = false;
+        self.show_server_notifications = false;
+        self.show_help = false;
+        self.dismiss_image_preview();
+        self.profile = None;
+        self.channel_picker = None;
+        self.pings = None;
+        // a search opens on the narrowest scope that makes sense here:
+        // the channel when there is one, the community otherwise
+        let scope = if self.active_channel_id().is_some() {
+            crate::search::SearchScope::Channel
+        } else if self.active_guild_id().is_some() {
+            crate::search::SearchScope::Guild
+        } else {
+            crate::search::SearchScope::Everything
+        };
+        self.search = Some(SearchView {
+            query: String::new(),
+            scope,
+            state: SearchState::Idle,
+            selected: 0,
+            page: 1,
+            editing: true,
+        });
+    }
+
+    pub fn dismiss_search(&mut self) {
+        self.search = None;
+    }
+
+    /// What to send for the query as it stands, with the `from:` names
+    /// turned into ids. `Err` names somebody the client cannot place, so
+    /// the reader is told rather than searched for the wrong thing.
+    pub fn build_search_request(
+        &self,
+        page: u32,
+    ) -> Option<Result<crate::api::types::MessageSearchRequest, String>> {
+        let view = self.search.as_ref()?;
+        let parsed = crate::search::parse(&view.query);
+        if !crate::search::is_searchable(&parsed) {
+            return None;
+        }
+        let mut author_ids = Vec::new();
+        for name in &parsed.authors {
+            match self.user_id_for_name(name) {
+                Some(id) => author_ids.push(id),
+                None => return Some(Err(format!("Nobody here is called \"{name}\"."))),
+            }
+        }
+        Some(Ok(crate::search::build_request(
+            &parsed,
+            author_ids,
+            view.scope,
+            self.active_channel_id(),
+            self.active_guild_id(),
+            page,
+        )))
+    }
+
+    /// Find somebody by what the reader typed after `from:`: their
+    /// nickname here, their display name, or their username, whichever
+    /// matches first. A tag with a `#` is matched exactly.
+    pub fn user_id_for_name(&self, name: &str) -> Option<String> {
+        let needle = name.trim().trim_start_matches('@').to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        if let Some((username, discriminator)) = needle.rsplit_once('#') {
+            return self
+                .user_cache
+                .values()
+                .find(|u| u.username.to_lowercase() == username && u.discriminator == discriminator)
+                .map(|u| u.id.clone());
+        }
+        let guild_id = self.active_guild_id();
+        // a nickname in this community first, since that is the name on
+        // the screen, then the account's own
+        if let Some(guild_id) = &guild_id
+            && let Some(members) = self.guild_members.get(guild_id)
+            && let Some(member) = members.iter().find(|m| {
+                m.nick
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase() == needle)
+            })
+        {
+            return Some(member.user.id.clone());
+        }
+        self.user_cache
+            .values()
+            .find(|u| {
+                u.global_name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase() == needle)
+                    || u.username.to_lowercase() == needle
+            })
+            .map(|u| u.id.clone())
+    }
+
+    pub fn set_search_running(&mut self, page: u32) {
+        if let Some(view) = &mut self.search {
+            view.state = SearchState::Running;
+            view.page = page;
+            view.selected = 0;
+            view.editing = false;
+        }
+    }
+
+    pub fn set_search_results(
+        &mut self,
+        messages: Vec<MessageResponse>,
+        channels: Vec<ChannelResponse>,
+        total: u32,
+        page: u32,
+        hits_per_page: u32,
+    ) {
+        for message in &messages {
+            self.merge_message_embedded_members(message);
+            merge_user_cache(&mut self.user_cache, [message.author.clone()]);
+        }
+        // the answer carries the channels its hits are in, which is how a
+        // result from a community the reader has not opened can still say
+        // where it came from
+        for channel in channels {
+            if !channel.id.is_empty() && self.channel_by_id(&channel.id).is_none() {
+                self.search_channels.insert(channel.id.clone(), channel);
+            }
+        }
+        if let Some(view) = &mut self.search {
+            view.state = SearchState::Ready {
+                messages,
+                total,
+                page,
+                hits_per_page,
+            };
+            view.selected = 0;
+            view.editing = false;
+        }
+    }
+
+    pub fn set_search_indexing(&mut self) {
+        if let Some(view) = &mut self.search {
+            view.state = SearchState::Indexing;
+        }
+    }
+
+    pub fn set_search_failed(&mut self, message: String) {
+        if let Some(view) = &mut self.search {
+            view.state = SearchState::Failed(message);
+        }
+    }
+
+    pub fn search_results(&self) -> Vec<MessageResponse> {
+        match self.search.as_ref().map(|v| &v.state) {
+            Some(SearchState::Ready { messages, .. }) => messages.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn search_move(&mut self, delta: isize) {
+        let count = self.search_results().len();
+        if let Some(view) = &mut self.search {
+            if count == 0 {
+                view.selected = 0;
+                return;
+            }
+            view.editing = false;
+            view.selected = (view.selected as isize + delta).clamp(0, count as isize - 1) as usize;
+        }
+    }
+
+    pub fn search_selected(&self) -> Option<MessageResponse> {
+        let view = self.search.as_ref()?;
+        self.search_results().get(view.selected).cloned()
+    }
+
+    /// How many pages the answer says there are, so the overlay can say
+    /// whether there is another one.
+    pub fn search_pages(&self) -> (u32, u32) {
+        match self.search.as_ref().map(|v| &v.state) {
+            Some(SearchState::Ready {
+                total,
+                page,
+                hits_per_page,
+                ..
+            }) => {
+                let per = (*hits_per_page).max(1);
+                (*page, total.div_ceil(per).max(1))
+            }
+            _ => (1, 1),
+        }
+    }
+
+    /// Where a search hit came from, including channels the reader has
+    /// not opened, whose objects came back with the answer.
+    pub fn search_hit_location(&self, channel_id: &str) -> (Option<String>, String) {
+        if self.channel_by_id(channel_id).is_some() {
+            return self.channel_location(channel_id);
+        }
+        match self.search_channels.get(channel_id) {
+            Some(channel) => {
+                let guild = channel
+                    .guild_id
+                    .as_ref()
+                    .and_then(|gid| self.guilds.iter().find(|g| &g.id == gid))
+                    .map(|g| g.name.clone());
+                (guild, crate::ui::sidebar::channel_name(self, channel))
+            }
+            None => (
+                None,
+                format!(
+                    "unknown-{}",
+                    &channel_id[channel_id.len().saturating_sub(4)..]
+                ),
+            ),
+        }
     }
 
     // r (as in reply)

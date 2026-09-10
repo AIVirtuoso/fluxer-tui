@@ -82,6 +82,11 @@ act on them.
 - **A pings list:** **p** opens the messages that mentioned you, newest
   first, across every community and direct message, the way the web
   client's inbox does; **Enter** jumps to one (see "Interface overview").
+- **Message search.** **/** searches this channel, this community or
+  everywhere, with `from:`, `has:` and `pinned:` filters and quoted
+  phrases typed straight into the query; **Enter** on a hit jumps to it in
+  the chat. `POST /search/messages` was never called before, so there was
+  no search of any kind (see "Searching").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -539,6 +544,57 @@ message, is a Fluxer Premium feature: the server refuses it and the
 client shows what it said. Communities you are in can always use their
 own.
 
+## Searching
+
+**/** opens the search. Type the query, pick the scope with **←** and
+**→**, and press **Enter**. The cursor then moves down among the hits:
+**↑** and **↓** walk them, **Enter** jumps to one in the chat, **n** and
+**p** turn the page, **/** puts the cursor back in the query without
+losing the results, and **Esc** closes.
+
+Three scopes, and it opens on the narrowest one that makes sense from
+where you are:
+
+| Scope | What it covers |
+| ----- | -------------- |
+| **this channel** | The channel you are reading |
+| **this community** | Every channel of it you can see |
+| **everywhere** | Every community you are in and every conversation you have had |
+
+### What a query can say
+
+The web client builds its filters by clicking pills. With a keyboard the
+same filters are worth typing, so they go in the query the way a mail
+client or a code host does:
+
+```
+sixel transparency                 words
+"no more combinations"             has to appear together
+from:ada                           only their messages
+from:ada#0001                      by tag, when two people share a name
+has:image                          also sound, video, file, embed
+pinned:true                        pinned messages only
+has:file from:ada "the patch"      all of it at once
+```
+
+`from:` matches a nickname in the community you are in first, then a
+display name, then a username — and says so rather than searching for the
+wrong thing when it matches nobody. An unknown `has:` value, like
+`has:sausages`, is not a filter at all and is searched for as text, which
+is friendlier than refusing the query.
+
+### Two things the server does
+
+**It may answer "still indexing".** A channel Fluxer has not finished
+indexing makes the whole search come back as `{"indexing": true}` rather
+than results. That is an answer, not a failure: the overlay says so and
+**Enter** tries again.
+
+**A hit can be somewhere you have not opened.** The answer carries the
+channels its hits are in, so a result from a community you have never
+scrolled still says where it came from. Jumping to one in a community you
+have since left says so instead of moving the pane somewhere wrong.
+
 ## Message formatting
 
 Messages are drawn with the markup Fluxer's own parser understands, so
@@ -755,6 +811,7 @@ close. The profile of a selected message's author is on **u** now.
 | **Ctrl+N** / **Ctrl+P** | Next / previous **text** channel (wraps; works from input too unless a popup is open).                                                                                                                                                                   |
 | **Ctrl+K**              | Open **channel picker** (type to filter, **Enter** to jump).                                                                                                                                                                                             |
 | **Alt+A**               | Jump to the **next channel** (after current) that has **unread** or **mention** badges; wraps.                                                                                                                                                           |
+| **/**                   | **Search messages** (see "Searching"). **←** / **→** pick the scope, **Enter** searches, then **↑** / **↓** move through the hits and **Enter** jumps to one.                                                                                            |
 | **F1**                  | **Keybindings** overlay - **↑** / **↓** / **PgUp** / **PgDn** scroll when it does not fit (**Esc** / **Enter** / **q** to close).                                                                                                                        |
 | **Ctrl+H**              | Same overlay when focus is **not** the message input (in the input it is a **Backspace**, since that is the byte xterm's Backspace key sends).                                                                                                           |
 | **F12**                 | **Debug panel**: session facts and the last log lines; **s** there writes them to a file, **f** maps the screen into the log (see "Debugging").                                                                                                          |

@@ -1256,6 +1256,78 @@ pub fn merge_user_cache(
     }
 }
 
+/// What `POST /search/messages` takes. Only the fields the client sets
+/// are sent; the rest of the server's forty-odd filters are left alone.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MessageSearchRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Words that have to appear together, from a quoted part of the
+    /// query.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exact_phrases: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub author_id: Vec<String>,
+    /// `image`, `sound`, `video`, `file` or `embed`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub has: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    /// `current`, `open_dms`, `all_dms`, `all_guilds`, `all`, or
+    /// `open_dms_and_all_guilds`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_guild_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub channel_ids: Vec<String>,
+    pub page: u32,
+    pub hits_per_page: u32,
+    /// `timestamp` or `relevance`.
+    pub sort_by: String,
+}
+
+/// What comes back. The server answers with results, or with
+/// `{"indexing": true}` when a channel in scope has not been indexed
+/// yet — which is a real answer, not an error, and has to be shown as
+/// "ask again in a moment" rather than "nothing found".
+#[derive(Debug, Clone)]
+pub enum MessageSearchResponse {
+    Results(Box<MessageSearchResults>),
+    Indexing,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MessageSearchResults {
+    #[serde(default)]
+    pub messages: Vec<MessageResponse>,
+    #[serde(default)]
+    pub channels: Vec<ChannelResponse>,
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub hits_per_page: u32,
+    #[serde(default)]
+    pub page: u32,
+}
+
+impl<'de> Deserialize<'de> for MessageSearchResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("indexing").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(Self::Indexing);
+        }
+        let results: MessageSearchResults =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self::Results(Box::new(results)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,9 +2,10 @@ use crate::api::types::{
     ChannelResponse, CompleteMultipartAttachmentUploadRequest, CompleteMultipartUploadItem,
     CreateMessageAttachment, CreateMessageRequest, EditMessageRequest, GatewayBotResponse,
     GuildResponse, HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
-    PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
-    PresignedAttachmentUploadResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
-    UserPrivateResponse, UserSettingsResponse, WellKnownFluxerResponse,
+    MessageSearchRequest, MessageSearchResponse, PresignedAttachmentUploadRequest,
+    PresignedAttachmentUploadRequestItem, PresignedAttachmentUploadResponse,
+    UserGuildSettingsPatch, UserGuildSettingsResponse, UserPrivateResponse, UserSettingsResponse,
+    WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
@@ -708,6 +709,22 @@ impl FluxerHttpClient {
             bail!("remove reaction failed: {}", resp.status());
         }
         Ok(())
+    }
+
+    /// Search messages. The answer is either a page of results or the
+    /// server saying it is still indexing a channel in scope.
+    pub async fn search_messages(
+        &self,
+        request: &MessageSearchRequest,
+    ) -> Result<MessageSearchResponse> {
+        self.send_json::<(), MessageSearchRequest, MessageSearchResponse>(
+            Method::POST,
+            "/search/messages",
+            None::<&()>,
+            Some(request),
+            false,
+        )
+        .await
     }
 
     pub async fn handoff_initiate(&self) -> Result<HandoffInitiateResponse> {

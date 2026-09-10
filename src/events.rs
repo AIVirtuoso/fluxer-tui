@@ -158,6 +158,15 @@ pub enum AppEvent {
     MentionsFailed {
         message: String,
     },
+    SearchResults {
+        results: Box<crate::api::types::MessageSearchResults>,
+    },
+    /// The server is still indexing a channel in scope, which is an
+    /// answer rather than a failure.
+    SearchIndexing,
+    SearchFailed {
+        message: String,
+    },
     ProfileLoaded {
         user_id: String,
         guild_id: Option<String>,
@@ -244,6 +253,22 @@ pub fn apply_event(
         }
         AppEvent::MentionsFailed { message } => {
             app.set_pings_failed(message);
+        }
+        AppEvent::SearchResults { results } => {
+            let results = *results;
+            app.set_search_results(
+                results.messages,
+                results.channels,
+                results.total,
+                results.page,
+                results.hits_per_page,
+            );
+        }
+        AppEvent::SearchIndexing => {
+            app.set_search_indexing();
+        }
+        AppEvent::SearchFailed { message } => {
+            app.set_search_failed(message);
         }
         AppEvent::ProfileLoaded {
             user_id,

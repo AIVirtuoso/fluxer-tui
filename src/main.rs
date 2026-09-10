@@ -10,6 +10,7 @@ mod events;
 mod media;
 mod notify;
 mod permissions;
+mod search;
 mod slash_commands;
 mod term_bg;
 mod ui;
@@ -1720,6 +1721,81 @@ fn handle_key_event(
         return;
     }
 
+    if app.search.is_some() {
+        let editing = app.search.as_ref().is_some_and(|v| v.editing);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => app.dismiss_search(),
+            // Enter searches while the cursor is in the query, and jumps
+            // to a hit once it is down among them
+            KeyCode::Enter if editing => run_search(app, client, event_tx, 1),
+            KeyCode::Enter => match app.search_selected() {
+                Some(message) => {
+                    app.dismiss_search();
+                    app.jump_to_message(&message.channel_id, &message.id);
+                }
+                // there is nothing to jump to yet, so Enter searches
+                None => run_search(app, client, event_tx, 1),
+            },
+            KeyCode::Left if editing => {
+                if let Some(view) = app.search.as_mut() {
+                    view.scope = view.scope.previous();
+                }
+            }
+            KeyCode::Right if editing => {
+                if let Some(view) = app.search.as_mut() {
+                    view.scope = view.scope.next();
+                }
+            }
+            KeyCode::Backspace if editing => {
+                if let Some(view) = app.search.as_mut() {
+                    view.query.pop();
+                }
+            }
+            KeyCode::Char('u') if editing && ctrl => {
+                if let Some(view) = app.search.as_mut() {
+                    view.query.clear();
+                }
+            }
+            // typing goes to the query whenever the cursor is in it, so
+            // no letter can be a command there
+            KeyCode::Char(c) if editing && !ctrl => {
+                if let Some(view) = app.search.as_mut()
+                    && view.query.chars().count() < 1024
+                {
+                    view.query.push(c);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => app.search_move(1),
+            KeyCode::Up | KeyCode::Char('k') => app.search_move(-1),
+            KeyCode::PageDown => app.search_move(8),
+            KeyCode::PageUp => app.search_move(-8),
+            KeyCode::Home => app.search_move(isize::MIN / 2),
+            KeyCode::End => app.search_move(isize::MAX / 2),
+            // / puts the cursor back in the query without losing the hits
+            KeyCode::Char('/') => {
+                if let Some(view) = app.search.as_mut() {
+                    view.editing = true;
+                }
+            }
+            KeyCode::Char('n') => {
+                let (page, pages) = app.search_pages();
+                if page < pages {
+                    run_search(app, client, event_tx, page + 1);
+                }
+            }
+            KeyCode::Char('p') => {
+                let (page, _) = app.search_pages();
+                if page > 1 {
+                    run_search(app, client, event_tx, page - 1);
+                }
+            }
+            KeyCode::Char('q') => app.dismiss_search(),
+            _ => {}
+        }
+        return;
+    }
+
     if app.pings.is_some() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.dismiss_pings(),
@@ -2335,6 +2411,17 @@ fn handle_key_event(
                 app.set_status("Forward: pick channel (Ctrl+K), type optional note, Enter to send");
             }
         }
+        // / = search messages
+        KeyCode::Char('/')
+            if matches!(
+                app.focus,
+                Focus::Servers | Focus::Channels | Focus::Messages
+            ) && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.open_search();
+        }
         KeyCode::Char('[') if app.focus == Focus::Messages => {
             try_load_older_messages(app, client, event_tx);
         }
@@ -2580,6 +2667,58 @@ fn spawn_guild_roles_load(
                     guild_id,
                     forbidden,
                     message: format!("Failed to load roles: {err}"),
+                });
+            }
+        }
+    });
+}
+
+/// Send the search the overlay is holding. Enter in the results, and the
+/// paging keys, both come here; the page decides which.
+fn run_search(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+    page: u32,
+) {
+    match app.build_search_request(page) {
+        Some(Ok(request)) => {
+            app.set_search_running(page);
+            spawn_search(client.clone(), event_tx.clone(), request);
+        }
+        Some(Err(message)) => app.set_search_failed(message),
+        None => app.set_status("Type something to search for."),
+    }
+}
+
+fn spawn_search(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    request: crate::api::types::MessageSearchRequest,
+) {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        match client.search_messages(&request).await {
+            Ok(crate::api::types::MessageSearchResponse::Results(results)) => {
+                debug::log(
+                    "search",
+                    format!(
+                        "{} of {} in {} ms",
+                        results.messages.len(),
+                        results.total,
+                        started.elapsed().as_millis()
+                    ),
+                );
+                let _ = event_tx.send(AppEvent::SearchResults { results });
+            }
+            Ok(crate::api::types::MessageSearchResponse::Indexing) => {
+                debug::log("search", "server is still indexing");
+                let _ = event_tx.send(AppEvent::SearchIndexing);
+            }
+            Err(err) => {
+                debug::log("search", format!("search failed: {err:#}"));
+                let _ = event_tx.send(AppEvent::SearchFailed {
+                    message: format!("Search failed: {err}"),
                 });
             }
         }
