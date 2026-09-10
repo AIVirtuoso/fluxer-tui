@@ -1,6 +1,7 @@
 pub mod ansi_line;
 pub mod channel_picker;
 pub mod command_popup;
+pub mod conversation_overlay;
 pub mod debug_overlay;
 pub mod emoji_popup;
 pub mod file_picker;
@@ -112,6 +113,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         server_notifications_overlay::render(frame, area, app);
     } else if app.pings.is_some() {
         pings_overlay::render(frame, area, app);
+    } else if app.conversation.is_some() {
+        conversation_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {

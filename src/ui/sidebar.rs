@@ -207,6 +207,15 @@ fn channel_label(
         Span::styled(truncated, style),
     ];
 
+    // a conversation kept at the top says so, since its place in the list
+    // is the only other sign of it
+    if app.is_dm_pinned(&channel.id) {
+        spans.push(Span::styled(
+            " \u{00B7}pin",
+            crate::ui::theme::muted_style(),
+        ));
+    }
+
     if visible_unread && !is_selected {
         spans.insert(
             0,

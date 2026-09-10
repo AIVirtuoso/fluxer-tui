@@ -21,6 +21,10 @@ Focus & navigation
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
   p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
+  Alt+N - start a conversation: type to filter the people the client knows,
+           Space picks several for a group, Enter opens it (or makes the group)
+  Alt+G - the group conversation now open: rename it, add somebody, take
+           somebody out, leave it
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -31,6 +35,9 @@ Channels (middle column)
   Up / Down / j / k - move channel
   n - notification settings for the selected community
   Enter - open message view for channel
+  In the direct messages list: P keeps a conversation at the top of the list
+           (it shows ·pin), x closes it. Closing deletes nothing; the
+           conversation comes back the moment either side writes.
 
 Messages
   Up / Down / j / k - scroll list, or move selection when a message is selected
@@ -102,6 +109,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)
   Alt+S - sticker picker (see Input)
+  Alt+N - start a conversation      Alt+G - look after the open group
 
 Other
   Edited messages show “(edited)” after the timestamp when the API sends edited_timestamp.
