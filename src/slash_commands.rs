@@ -85,6 +85,20 @@ pub static SLASH_COMMANDS: &[SlashCommandDef] = &[
         requires_guild: true,
         requires_channel_perm: Some(CHANGE_NICKNAME),
     },
+    SlashCommandDef {
+        name: "/status",
+        description: "Set your online status: /status online, idle, dnd or invisible.",
+        simple_append: None,
+        requires_guild: false,
+        requires_channel_perm: None,
+    },
+    SlashCommandDef {
+        name: "/customstatus",
+        description: "Set the line under your name: /customstatus <text>, or alone to clear it.",
+        simple_append: None,
+        requires_guild: false,
+        requires_channel_perm: None,
+    },
 ];
 
 pub fn command_name_query(input: &str) -> Option<&str> {
@@ -147,6 +161,10 @@ pub enum OutgoingSlash {
     DebugSave,
     /// Write a map of the next frame to the debug log.
     DebugFrame,
+    /// Set the reader's own online status.
+    SetStatus(crate::api::types::PresenceStatus),
+    /// Set, or with None clear, the line under the reader's name.
+    SetCustomStatus(Option<String>),
     Blocked(String),
     Normal,
 }
@@ -165,6 +183,38 @@ pub fn resolve_outgoing_slash(
         {
             return OutgoingSlash::SendContent(content.to_string());
         }
+    }
+    if t == "/status" || t.starts_with("/status ") {
+        let want = t.strip_prefix("/status").unwrap_or("").trim();
+        if want.is_empty() {
+            return OutgoingSlash::Blocked(
+                "Say which: /status online, idle, dnd or invisible.".to_string(),
+            );
+        }
+        let picked = crate::api::types::PresenceStatus::SETTABLE
+            .iter()
+            .find(|s| s.wire() == want.to_ascii_lowercase());
+        return match picked {
+            Some(status) => OutgoingSlash::SetStatus(*status),
+            None => OutgoingSlash::Blocked(format!(
+                "\"{want}\" is not one of them: online, idle, dnd or invisible."
+            )),
+        };
+    }
+    if t == "/customstatus" {
+        return OutgoingSlash::SetCustomStatus(None);
+    }
+    if let Some(rest) = t.strip_prefix("/customstatus ") {
+        let body = rest.trim();
+        if body.is_empty() {
+            return OutgoingSlash::SetCustomStatus(None);
+        }
+        if body.chars().count() > 128 {
+            return OutgoingSlash::Blocked(
+                "That is longer than the 128 characters the server takes.".to_string(),
+            );
+        }
+        return OutgoingSlash::SetCustomStatus(Some(body.to_string()));
     }
     if t == "/me" {
         return OutgoingSlash::Blocked("Add text after /me (e.g. /me waves).".to_string());
@@ -304,5 +354,43 @@ mod tests {
         ));
         // an unknown command is text like any other
         assert!(matches!(pick("/stickers"), OutgoingSlash::Normal));
+    }
+
+    #[test]
+    fn status_takes_one_of_the_four_a_person_can_choose() {
+        use crate::api::types::PresenceStatus;
+        let pick = |t: &str| resolve_outgoing_slash(t, None, "me", "me", u64::MAX);
+        assert!(matches!(
+            pick("/status dnd"),
+            OutgoingSlash::SetStatus(PresenceStatus::Dnd)
+        ));
+        assert!(matches!(
+            pick("/status  INVISIBLE "),
+            OutgoingSlash::SetStatus(PresenceStatus::Invisible)
+        ));
+        // offline is not something you set; you go invisible instead
+        assert!(matches!(pick("/status offline"), OutgoingSlash::Blocked(_)));
+        assert!(matches!(pick("/status"), OutgoingSlash::Blocked(_)));
+        assert!(matches!(pick("/statuses"), OutgoingSlash::Normal));
+    }
+
+    #[test]
+    fn customstatus_sets_a_line_and_alone_clears_it() {
+        let pick = |t: &str| resolve_outgoing_slash(t, None, "me", "me", u64::MAX);
+        assert!(matches!(
+            pick("/customstatus  writing it up "),
+            OutgoingSlash::SetCustomStatus(Some(t)) if t == "writing it up"
+        ));
+        assert!(matches!(
+            pick("/customstatus"),
+            OutgoingSlash::SetCustomStatus(None)
+        ));
+        assert!(matches!(
+            pick("/customstatus   "),
+            OutgoingSlash::SetCustomStatus(None)
+        ));
+        // the server takes 128 characters, so a longer one is stopped here
+        let long = format!("/customstatus {}", "x".repeat(129));
+        assert!(matches!(pick(&long), OutgoingSlash::Blocked(_)));
     }
 }

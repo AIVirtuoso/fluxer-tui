@@ -82,6 +82,11 @@ act on them.
 - **A pings list:** **p** opens the messages that mentioned you, newest
   first, across every community and direct message, the way the web
   client's inbox does; **Enter** jumps to one (see "Interface overview").
+- **Who is online.** The client used to name `PRESENCE_UPDATE` only to
+  keep it out of the debug log; it now follows presence and shows it, in
+  the conversation list, beside the name on a message, in the profile and
+  on the status bar for your own. `/status` sets yours and
+  `/customstatus` the line under your name (see "Presence").
 - **Copy a message.** **y**, or **Ctrl+C**, on a selected message puts
   its text and the link of each file on it on the system clipboard
   through `wl-copy` or `xclip`, and always in the client's own cut
@@ -538,6 +543,57 @@ Sending a sticker of another community, or any custom sticker in a direct
 message, is a Fluxer Premium feature: the server refuses it and the
 client shows what it said. Communities you are in can always use their
 own.
+
+## Presence
+
+Fluxer tells a client who is about through `PRESENCE_UPDATE`, and through
+the presences that come with the session at start. This client follows
+them and shows them in four places:
+
+- **The conversation list.** A one-to-one conversation shows the other
+  person's state in place of its `@`.
+- **Beside a name on a message**, on the row that names the author.
+- **In the profile** (**u** on a message), where the state is written out
+  in words, along with "on a phone" when their presence came from one and
+  the line they have set under their name.
+- **On the status bar**, for your own.
+
+**Two glyphs carry it, not four**, with colour separating the rest:
+
+| | State | Colour |
+| - | ----- | ------ |
+| `●` | online | green |
+| `●` | idle | amber |
+| `●` | do not disturb | red |
+| `○` | offline or invisible | dim |
+
+That is deliberate. The shape carries the distinction that matters at a
+glance — about, or not — and is the one a terminal with no colour can
+still read; the two characters are in every monospace font worth the
+name, where a third and fourth rarer glyph come out as missing-character
+boxes on some of them. Anywhere the state is worth spelling out it is
+also written in words, so colour is never the only thing saying it.
+
+**Nothing is drawn for somebody the server has said nothing about.** On a
+message, only a person who is actually about gets a mark: a hollow circle
+on every other message would be noise, and would claim somebody is away
+when the truth is that the client has not been told either way. The
+server only sends presences for people you share a community or a
+conversation with.
+
+### Setting your own
+
+```
+/status online        /status idle        /status dnd        /status invisible
+/customstatus writing it up
+/customstatus                             (clears the line)
+```
+
+`/status` writes to your account, so it follows you to the web client and
+back. **Invisible** is how you appear offline while still receiving
+everything; there is no `/status offline`, because that is not a thing
+you choose. `/customstatus` takes up to 128 characters; setting an emoji
+on it is not wired up here, but one set elsewhere is shown.
 
 ## Message formatting
 

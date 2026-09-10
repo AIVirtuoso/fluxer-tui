@@ -168,6 +168,7 @@ fn logged_sparsely(kind: &str) -> bool {
     matches!(
         kind,
         "PRESENCE_UPDATE"
+            | "PRESENCE_UPDATE_BULK"
             | "TYPING_START"
             | "VOICE_STATE_UPDATE"
             | "GUILD_MEMBER_LIST_UPDATE"

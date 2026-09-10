@@ -4,7 +4,7 @@ use crate::api::types::{
     GuildResponse, HandoffInitiateResponse, HandoffStatusResponse, MessageQuery, MessageResponse,
     PresignedAttachmentUploadRequest, PresignedAttachmentUploadRequestItem,
     PresignedAttachmentUploadResponse, UserGuildSettingsPatch, UserGuildSettingsResponse,
-    UserPrivateResponse, UserSettingsResponse, WellKnownFluxerResponse,
+    UserPrivateResponse, UserSettingsPatch, UserSettingsResponse, WellKnownFluxerResponse,
 };
 use crate::media::StagedAttachment;
 use anyhow::{Context, Result, anyhow, bail};
@@ -146,6 +146,22 @@ impl FluxerHttpClient {
             "/users/@me/settings",
             None::<&()>,
             None::<&()>,
+            false,
+        )
+        .await
+    }
+
+    /// Write the reader's own settings. Only the fields set on the patch
+    /// are sent, so the rest of the account's settings are untouched.
+    pub async fn update_user_settings(
+        &self,
+        patch: &UserSettingsPatch,
+    ) -> Result<UserSettingsResponse> {
+        self.send_json::<(), UserSettingsPatch, UserSettingsResponse>(
+            Method::PATCH,
+            "/users/@me/settings",
+            None::<&()>,
+            Some(patch),
             false,
         )
         .await

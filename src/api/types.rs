@@ -906,6 +906,8 @@ pub struct UserSettingsResponse {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
+    pub custom_status: Option<CustomStatusPayload>,
+    #[serde(default)]
     pub theme: String,
     #[serde(default)]
     pub locale: String,
@@ -929,6 +931,10 @@ pub struct ReadyEvent {
     pub users: Vec<UserPartialResponse>,
     #[serde(default)]
     pub user_settings: Option<UserSettingsResponse>,
+    /// Who is online at the moment the session starts, for direct
+    /// messages and friends; a community's own are on its guild object.
+    #[serde(default)]
+    pub presences: Vec<PresenceRecord>,
     #[serde(default, deserialize_with = "deserialize_lenient_vec")]
     pub user_guild_settings: Vec<UserGuildSettingsResponse>,
     #[serde(
@@ -956,6 +962,8 @@ pub struct GuildCreateEvent {
     pub stickers: Vec<GuildStickerResponse>,
     #[serde(default)]
     pub voice_states: Vec<VoiceStateResponse>,
+    #[serde(default)]
+    pub presences: Vec<PresenceRecord>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1254,6 +1262,121 @@ pub fn merge_user_cache(
             cache.insert(user.id.clone(), user);
         }
     }
+}
+
+/// The bits of `PATCH /users/@me/settings` the client writes. Anything
+/// left `None` is not sent at all, so nothing else is disturbed;
+/// `custom_status` is `Some(None)` to clear it, which the server reads as
+/// an explicit null.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UserSettingsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_status: Option<Option<CustomStatusPayload>>,
+}
+
+/// Somebody's online state, as PRESENCE_UPDATE and the ready payloads
+/// carry it. `status` is a bare string on the wire; [`PresenceStatus`]
+/// gives it a type.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresenceRecord {
+    #[serde(default)]
+    pub guild_id: Option<String>,
+    #[serde(default)]
+    pub user: UserPartialResponse,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub afk: bool,
+    /// Set when the presence comes from a phone, which the web client
+    /// draws differently; here it is only said in the profile.
+    #[serde(default)]
+    pub mobile: bool,
+    #[serde(default)]
+    pub custom_status: Option<CustomStatusPayload>,
+}
+
+/// The line somebody sets under their name. `text` and the emoji are
+/// each optional and either may be there alone.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomStatusPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji_name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub emoji_animated: bool,
+}
+
+impl CustomStatusPayload {
+    /// Whether it says anything at all; an empty one is cleared rather
+    /// than sent.
+    pub fn is_empty(&self) -> bool {
+        self.text.as_deref().unwrap_or("").trim().is_empty()
+            && self.emoji_id.is_none()
+            && self.emoji_name.is_none()
+    }
+}
+
+/// The five states the server knows. `Invisible` is only ever the
+/// reader's own: to everybody else an invisible account is `Offline`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PresenceStatus {
+    Online,
+    Idle,
+    Dnd,
+    Invisible,
+    #[default]
+    Offline,
+}
+
+impl PresenceStatus {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "online" => Self::Online,
+            "idle" => Self::Idle,
+            "dnd" => Self::Dnd,
+            "invisible" => Self::Invisible,
+            _ => Self::Offline,
+        }
+    }
+
+    /// What the API calls it.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Idle => "idle",
+            Self::Dnd => "dnd",
+            Self::Invisible => "invisible",
+            Self::Offline => "offline",
+        }
+    }
+
+    /// What to call it on the screen.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Idle => "idle",
+            Self::Dnd => "do not disturb",
+            Self::Invisible => "invisible",
+            Self::Offline => "offline",
+        }
+    }
+
+    /// Whether they count as away. Invisible is away to everybody but
+    /// the reader themselves.
+    pub fn is_offline(self) -> bool {
+        matches!(self, Self::Offline | Self::Invisible)
+    }
+
+    /// The four a person can choose for themselves; offline is not one
+    /// of them, invisible is how you say it.
+    pub const SETTABLE: [Self; 4] = [Self::Online, Self::Idle, Self::Dnd, Self::Invisible];
 }
 
 #[cfg(test)]

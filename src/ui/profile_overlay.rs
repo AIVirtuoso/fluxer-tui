@@ -153,6 +153,37 @@ fn build_lines(app: &App, view: &ProfileView, width: usize, avatar: bool) -> Vec
         Span::styled(fit(&tag, header_w), dim),
     ]));
 
+    // where they are: spelled out as well as coloured, so the dot is
+    // never the only thing saying it
+    let status = app.presence_status(&view.user_id);
+    let entry = app.presence_entry(&view.user_id);
+    let mut presence_spans = vec![
+        Span::raw(margin.clone()),
+        crate::ui::presence::dot_prefix(status),
+        Span::styled(status.label(), crate::ui::presence::style(status)),
+    ];
+    if entry.is_some_and(|e| e.mobile) {
+        presence_spans.push(Span::styled(" · on a phone", muted));
+    }
+    lines.push(Line::from(presence_spans));
+
+    // the line they set under their name, when they have set one
+    let custom = if view.user_id == app.me.id {
+        app.own_custom_status().cloned()
+    } else {
+        entry.and_then(|e| e.custom_status.clone())
+    };
+    if let Some(custom) = custom.filter(|c| !c.is_empty()) {
+        let mut spans = vec![Span::raw(margin.clone())];
+        if let Some(name) = custom.emoji_name.as_deref().filter(|n| !n.is_empty()) {
+            spans.push(Span::styled(format!("{name} "), text));
+        }
+        if let Some(line) = custom.text.as_deref().filter(|t| !t.trim().is_empty()) {
+            spans.push(Span::styled(fit(line, header_w), text));
+        }
+        lines.push(Line::from(spans));
+    }
+
     let third = match (&view.state, shown.pronouns.as_deref()) {
         (ProfileState::Loading, _) => Span::styled("Loading profile…", muted),
         (ProfileState::Failed(msg), _) => Span::styled(fit(msg, header_w), danger),

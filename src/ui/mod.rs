@@ -12,6 +12,7 @@ pub mod mention_popup;
 pub mod message_markdown;
 pub mod message_pane;
 pub mod pings_overlay;
+pub mod presence;
 pub mod profile_overlay;
 pub mod server_notifications_overlay;
 pub mod settings_overlay;

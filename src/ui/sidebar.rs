@@ -169,10 +169,21 @@ fn channel_label(
         ));
     }
 
+    // a one-to-one conversation shows the other person's presence in
+    // place of the @, which says more in the same column
+    let dm_status = app
+        .dm_peer_id(channel)
+        .map(|user_id| app.presence_status(&user_id));
     let (icon, color) = match channel.channel_type() {
         CHANNEL_GUILD_TEXT => ("#", crate::ui::theme::text_dim()),
         CHANNEL_GUILD_VOICE => ("\u{1F50A}", crate::ui::theme::voice_color()),
-        CHANNEL_DM => ("@", crate::ui::theme::text_dim()),
+        CHANNEL_DM => match dm_status {
+            Some(status) => (
+                crate::ui::presence::glyph(status),
+                crate::ui::presence::colour(status),
+            ),
+            None => ("@", crate::ui::theme::text_dim()),
+        },
         CHANNEL_GROUP_DM => ("+", crate::ui::theme::text_dim()),
         CHANNEL_DM_PERSONAL_NOTES => ("*", crate::ui::theme::text_dim()),
         CHANNEL_GUILD_LINK => ("\u{1F517}", crate::ui::theme::link_color()),
@@ -202,8 +213,15 @@ fn channel_label(
     };
     let truncated = truncate_str(&name, max_width.saturating_sub(indent.len() + 3));
 
+    // the presence glyph keeps its own colour whatever the row is doing,
+    // since the colour is the whole of what it says
+    let icon_style = match dm_status {
+        Some(status) => crate::ui::presence::style(status),
+        None => style,
+    };
     let mut spans = vec![
-        Span::styled(format!("{indent}{icon} "), style),
+        Span::styled(indent.to_string(), style),
+        Span::styled(format!("{icon} "), icon_style),
         Span::styled(truncated, style),
     ];
 
