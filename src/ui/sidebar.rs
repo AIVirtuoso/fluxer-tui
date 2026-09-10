@@ -207,6 +207,15 @@ fn channel_label(
         Span::styled(truncated, style),
     ];
 
+    // a conversation ringing says so where it sits, since the reader may
+    // be looking at another one
+    if app.channel_is_ringing(&channel.id) {
+        spans.push(Span::styled(
+            " ringing",
+            Style::default().fg(crate::ui::theme::danger()),
+        ));
+    }
+
     if visible_unread && !is_selected {
         spans.insert(
             0,

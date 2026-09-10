@@ -622,6 +622,9 @@ async fn main() -> Result<()> {
                     config.token = Some(token);
                     save_config(&config_path, &config)?;
                 }
+                if effects.start_voice_media {
+                    start_voice_media(&mut app, &config);
+                }
                 if let Some((title, bytes)) = effects.chafa_fallback {
                     let (cols, rows) = app.chafa_preview_cells;
                     spawn_image_chafa_fallback(event_tx.clone(), title, bytes, cols, rows);
@@ -1590,7 +1593,7 @@ fn handle_key_event(
     key: KeyEvent,
     client: &FluxerHttpClient,
     event_tx: &UnboundedSender<AppEvent>,
-    _gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
+    gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
     config_path: &Path,
     config: &mut AppConfig,
 ) {
@@ -1715,6 +1718,19 @@ fn handle_key_event(
                     );
                 }
             }
+            _ => {}
+        }
+        return;
+    }
+
+    if app.voice_menu.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => app.dismiss_voice_menu(),
+            KeyCode::Up | KeyCode::Char('k') => app.voice_menu_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.voice_menu_move(1),
+            KeyCode::Home => app.voice_menu_move(isize::MIN / 2),
+            KeyCode::End => app.voice_menu_move(isize::MAX / 2),
+            KeyCode::Enter => run_voice_action(app, client, event_tx, gateway_cmd_tx),
             _ => {}
         }
         return;
@@ -2335,6 +2351,16 @@ fn handle_key_event(
                 app.set_status("Forward: pick channel (Ctrl+K), type optional note, Enter to send");
             }
         }
+        // Alt+V = voice: join, answer, mute, leave
+        KeyCode::Char('v') | KeyCode::Char('V')
+            if key.modifiers.contains(KeyModifiers::ALT)
+                && matches!(
+                    app.focus,
+                    Focus::Servers | Focus::Channels | Focus::Messages
+                ) =>
+        {
+            app.open_voice_menu();
+        }
         KeyCode::Char('[') if app.focus == Focus::Messages => {
             try_load_older_messages(app, client, event_tx);
         }
@@ -2582,6 +2608,213 @@ fn spawn_guild_roles_load(
                     message: format!("Failed to load roles: {err}"),
                 });
             }
+        }
+    });
+}
+
+/// Start the program that carries a call's audio, once the server has
+/// handed over the grant.
+///
+/// The client stays in the channel either way: being in a voice channel
+/// without carrying sound is a real state, and the voice menu says so
+/// rather than pretending the call failed.
+fn start_voice_media(app: &mut App, config: &AppConfig) {
+    let Some((channel_id, grant)) = app.voice_grant_to_start() else {
+        return;
+    };
+    let template = config.media.voice_command.trim();
+    if template.is_empty() {
+        debug::log("voice", "no [media] voice_command, so no sound");
+        app.set_status(
+            "In the channel. Set [media] voice_command to carry the sound (see the README).",
+        );
+        return;
+    }
+    let parts = crate::media::voice::GrantParts {
+        url: &grant.endpoint,
+        token: &grant.token,
+        key: grant.e2ee_key.as_deref(),
+    };
+    let Some(argv) = crate::media::voice::build_command(template, &parts) else {
+        app.set_status("[media] voice_command is empty after the placeholders.");
+        return;
+    };
+    // the log gets the program and how many arguments, never the
+    // arguments themselves: one of them is the token
+    debug::log(
+        "voice",
+        format!("starting {} with {} arguments", argv[0], argv.len() - 1),
+    );
+    match crate::media::voice::spawn(&argv) {
+        Ok(_) => {
+            app.set_voice_media_running(true);
+            let (_, name) = app.channel_location(&channel_id);
+            app.set_status(format!("In {name}."));
+        }
+        Err(err) => {
+            debug::log("voice", format!("could not start {}: {err}", argv[0]));
+            app.set_status(format!(
+                "In the channel, but {} would not start: {err}",
+                argv[0]
+            ));
+        }
+    }
+}
+
+/// Enter on a row of the voice menu.
+fn run_voice_action(
+    app: &mut App,
+    client: &FluxerHttpClient,
+    event_tx: &UnboundedSender<AppEvent>,
+    gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
+) {
+    let Some(action) = app.voice_selected_action() else {
+        return;
+    };
+    match action {
+        crate::app::VoiceAction::Join => {
+            let (Some(channel_id), guild_id) = (app.active_channel_id(), app.active_guild_id())
+            else {
+                return;
+            };
+            app.dismiss_voice_menu();
+            app.set_voice_joining(channel_id.clone(), guild_id.clone());
+            app.set_status("Joining…");
+            send_voice_state(app, gateway_cmd_tx, Some(channel_id), guild_id);
+        }
+        crate::app::VoiceAction::Answer => {
+            let Some(channel_id) = app.first_ringing_channel() else {
+                return;
+            };
+            app.dismiss_voice_menu();
+            app.clear_incoming_call(&channel_id);
+            // a call lives in the direct-message context, which is a
+            // null guild
+            app.set_voice_joining(channel_id.clone(), None);
+            app.set_status("Answering…");
+            send_voice_state(app, gateway_cmd_tx, Some(channel_id), None);
+        }
+        crate::app::VoiceAction::Decline => {
+            let Some(channel_id) = app.first_ringing_channel() else {
+                return;
+            };
+            app.dismiss_voice_menu();
+            app.clear_incoming_call(&channel_id);
+            app.set_status("Turned it down.");
+            // only the reader stops being rung; it goes on ringing for
+            // everybody else
+            let me = vec![app.me.id.clone()];
+            spawn_stop_ringing(client.clone(), event_tx.clone(), channel_id, me);
+        }
+        crate::app::VoiceAction::StartCall => {
+            let Some(channel_id) = app.active_channel_id() else {
+                return;
+            };
+            app.dismiss_voice_menu();
+            app.set_voice_joining(channel_id.clone(), None);
+            app.set_status("Ringing…");
+            send_voice_state(app, gateway_cmd_tx, Some(channel_id.clone()), None);
+            spawn_ring_call(client.clone(), event_tx.clone(), channel_id);
+        }
+        crate::app::VoiceAction::Mute | crate::app::VoiceAction::Unmute => {
+            let mute = action == crate::app::VoiceAction::Mute;
+            let deaf = app.voice.as_ref().is_some_and(|c| c.self_deaf) && mute;
+            app.set_voice_flags(mute, deaf);
+            app.set_status(if mute { "Muted." } else { "Unmuted." });
+            resend_voice_state(app, gateway_cmd_tx);
+        }
+        crate::app::VoiceAction::Deafen | crate::app::VoiceAction::Undeafen => {
+            let deaf = action == crate::app::VoiceAction::Deafen;
+            app.set_voice_flags(deaf, deaf);
+            app.set_status(if deaf { "Deafened." } else { "Undeafened." });
+            resend_voice_state(app, gateway_cmd_tx);
+        }
+        crate::app::VoiceAction::CopyGrant => {
+            let Some(connection) = app.voice.clone() else {
+                return;
+            };
+            let Some(grant) = connection.grant else {
+                return;
+            };
+            // for setting a player up by hand, or for a bug report where
+            // the reader knows what they are pasting
+            let text = format!("url={}\ntoken={}", grant.endpoint, grant.token);
+            let clipboard = app.copy_text_out(text);
+            app.dismiss_voice_menu();
+            app.set_status(if clipboard {
+                "Copied the connection details. They are a credential; do not paste them into a bug report."
+            } else {
+                "Copied to the cut buffer (Alt+V pastes). They are a credential."
+            });
+        }
+        crate::app::VoiceAction::Leave => {
+            let guild_id = app.voice.as_ref().and_then(|c| c.guild_id.clone());
+            app.dismiss_voice_menu();
+            send_voice_state(app, gateway_cmd_tx, None, guild_id);
+            app.clear_voice();
+            app.set_status("Left the call.");
+        }
+    }
+}
+
+/// Send an opcode 4 with the flags the client is holding.
+fn send_voice_state(
+    app: &App,
+    gateway_cmd_tx: &UnboundedSender<GatewayCommand>,
+    channel_id: Option<String>,
+    guild_id: Option<String>,
+) {
+    let (connection_id, self_mute, self_deaf) = match app.voice.as_ref() {
+        Some(connection) => (
+            connection.connection_id.clone(),
+            connection.self_mute,
+            connection.self_deaf,
+        ),
+        None => (None, false, false),
+    };
+    let _ = gateway_cmd_tx.send(GatewayCommand::VoiceState {
+        guild_id,
+        channel_id,
+        connection_id,
+        self_mute,
+        self_deaf,
+    });
+}
+
+/// Tell the server the flags changed, without moving channel.
+fn resend_voice_state(app: &App, gateway_cmd_tx: &UnboundedSender<GatewayCommand>) {
+    let Some(connection) = app.voice.as_ref() else {
+        return;
+    };
+    send_voice_state(
+        app,
+        gateway_cmd_tx,
+        Some(connection.channel_id.clone()),
+        connection.guild_id.clone(),
+    );
+}
+
+fn spawn_ring_call(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = client.ring_call(&channel_id).await {
+            let _ = event_tx.send(AppEvent::ApiError(format!("Failed to ring: {err}")));
+        }
+    });
+}
+
+fn spawn_stop_ringing(
+    client: FluxerHttpClient,
+    event_tx: UnboundedSender<AppEvent>,
+    channel_id: String,
+    recipients: Vec<String>,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = client.stop_ringing(&channel_id, &recipients).await {
+            let _ = event_tx.send(AppEvent::ApiError(format!("{err}")));
         }
     });
 }

@@ -839,6 +839,80 @@ pub enum PingsState {
     Failed(String),
 }
 
+/// The voice channel this session is in, as far as the client knows.
+///
+/// Fluxer carries voice media over LiveKit, so the client does the
+/// joining, the leaving, the muting and the bookkeeping, and hands the
+/// grant to a program on PATH to carry the audio — the same division as
+/// the audio player and the notification sender.
+#[derive(Debug, Clone)]
+pub struct VoiceConnection {
+    pub channel_id: String,
+    pub guild_id: Option<String>,
+    /// The server's name for this connection, needed to change or leave
+    /// it. None until the first ack or grant comes back.
+    pub connection_id: Option<String>,
+    pub self_mute: bool,
+    pub self_deaf: bool,
+    /// The grant, once VOICE_SERVER_UPDATE has arrived.
+    pub grant: Option<VoiceGrant>,
+    /// Whether a media program was started for this connection.
+    pub media_running: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoiceGrant {
+    pub endpoint: String,
+    pub token: String,
+    pub e2ee_key: Option<String>,
+}
+
+/// Somebody ringing a direct message or group.
+#[derive(Debug, Clone)]
+pub struct IncomingCall {
+    pub channel_id: String,
+    /// Who is being rung, from the call event; the reader is in it while
+    /// the call is still ringing for them.
+    pub ringing: Vec<String>,
+}
+
+/// The voice menu.
+#[derive(Debug)]
+pub struct VoiceView {
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceAction {
+    Join,
+    Answer,
+    Decline,
+    StartCall,
+    Mute,
+    Unmute,
+    Deafen,
+    Undeafen,
+    Leave,
+    CopyGrant,
+}
+
+impl VoiceAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Join => "Join this voice channel",
+            Self::Answer => "Answer the call",
+            Self::Decline => "Turn the call down",
+            Self::StartCall => "Ring this conversation",
+            Self::Mute => "Mute yourself",
+            Self::Unmute => "Unmute yourself",
+            Self::Deafen => "Deafen yourself",
+            Self::Undeafen => "Undeafen yourself",
+            Self::Leave => "Leave",
+            Self::CopyGrant => "Copy the connection details",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ProfileView {
     pub user_id: String,
@@ -947,6 +1021,12 @@ pub struct App {
     pub own_typing: OwnTyping,
     /// The pings overlay while it is open.
     pub pings: Option<PingsView>,
+    /// The voice menu while it is open.
+    pub voice_menu: Option<VoiceView>,
+    /// The voice channel this session is in, if any.
+    pub voice: Option<VoiceConnection>,
+    /// Conversations ringing at the moment, by channel.
+    pub incoming_calls: HashMap<String, IncomingCall>,
     /// A message to select once its channel's history is loaded:
     /// (channel, message), set by a jump from the pings overlay.
     pub pending_jump: Option<(String, String)>,
@@ -1147,6 +1227,9 @@ impl App {
             typing_users: HashMap::new(),
             own_typing: OwnTyping::default(),
             pings: None,
+            voice_menu: None,
+            voice: None,
+            incoming_calls: HashMap::new(),
             pending_jump: None,
             pending_jump_pages: 0,
             gateway_status: GatewayStatus::Disconnected,
@@ -3047,17 +3130,24 @@ impl App {
 
     /// Where a ping came from: the community, if any, and the channel.
     pub fn ping_location(&self, message: &MessageResponse) -> (Option<String>, String) {
-        let channel = self.channel_by_id(&message.channel_id);
+        self.channel_location(&message.channel_id)
+    }
+
+    /// Where a channel is: its community's name, where it has one, and
+    /// the channel's own. A channel the client does not know is named by
+    /// the tail of its id rather than left blank.
+    pub fn channel_location(&self, channel_id: &str) -> (Option<String>, String) {
+        let channel = self.channel_by_id(channel_id);
         let guild = channel
             .and_then(|c| c.guild_id.clone())
-            .or_else(|| self.guild_id_for_channel(&message.channel_id))
+            .or_else(|| self.guild_id_for_channel(channel_id))
             .and_then(|gid| self.guilds.iter().find(|g| g.id == gid))
             .map(|g| g.name.clone());
         let name = match channel {
             Some(c) => crate::ui::sidebar::channel_name(self, c),
             None => format!(
                 "unknown-{}",
-                &message.channel_id[message.channel_id.len().saturating_sub(4)..]
+                &channel_id[channel_id.len().saturating_sub(4)..]
             ),
         };
         (guild, name)
@@ -4545,6 +4635,220 @@ impl App {
         let to_clipboard = crate::compose::copy_to_system_clipboard(&text);
         self.cut_buffer = text;
         Some(to_clipboard)
+    }
+
+    /// Put text on the system clipboard and always in the cut buffer,
+    /// the way `copy_selected_message` does; the bool says whether a
+    /// clipboard program took it.
+    pub fn copy_text_out(&mut self, text: String) -> bool {
+        let to_clipboard = crate::compose::copy_to_system_clipboard(&text);
+        self.cut_buffer = text;
+        to_clipboard
+    }
+
+    // Alt+V: voice
+
+    pub fn open_voice_menu(&mut self) {
+        self.show_settings = false;
+        self.show_server_notifications = false;
+        self.show_help = false;
+        self.dismiss_image_preview();
+        self.profile = None;
+        self.channel_picker = None;
+        self.pings = None;
+        self.voice_menu = Some(VoiceView { selected: 0 });
+    }
+
+    pub fn dismiss_voice_menu(&mut self) {
+        self.voice_menu = None;
+    }
+
+    /// Whether a conversation is ringing for the reader.
+    pub fn channel_is_ringing(&self, channel_id: &str) -> bool {
+        self.incoming_calls
+            .get(channel_id)
+            .is_some_and(|call| call.ringing.contains(&self.me.id))
+    }
+
+    /// Any conversation ringing for the reader, whether or not it is the
+    /// one they are looking at.
+    pub fn first_ringing_channel(&self) -> Option<String> {
+        self.incoming_calls
+            .values()
+            .find(|call| call.ringing.contains(&self.me.id))
+            .map(|call| call.channel_id.clone())
+    }
+
+    /// What the voice menu offers here. The rows depend on whether the
+    /// reader is in a call, whether one is ringing, and what kind of
+    /// channel is open.
+    pub fn voice_actions(&self) -> Vec<VoiceAction> {
+        let mut out = Vec::new();
+        if self.first_ringing_channel().is_some() {
+            out.push(VoiceAction::Answer);
+            out.push(VoiceAction::Decline);
+        }
+        match &self.voice {
+            Some(connection) => {
+                out.push(if connection.self_mute {
+                    VoiceAction::Unmute
+                } else {
+                    VoiceAction::Mute
+                });
+                out.push(if connection.self_deaf {
+                    VoiceAction::Undeafen
+                } else {
+                    VoiceAction::Deafen
+                });
+                if connection.grant.is_some() {
+                    out.push(VoiceAction::CopyGrant);
+                }
+                out.push(VoiceAction::Leave);
+            }
+            None => {
+                if self.active_channel_is_voice() {
+                    out.push(VoiceAction::Join);
+                } else if self.active_channel_is_private_conversation() {
+                    out.push(VoiceAction::StartCall);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the channel now open is a one-to-one or a group, which is
+    /// where a call can be started.
+    pub fn active_channel_is_private_conversation(&self) -> bool {
+        self.active_channel_id()
+            .and_then(|id| self.channel_by_id(&id).cloned())
+            .is_some_and(|c| matches!(c.channel_type(), CHANNEL_DM | CHANNEL_GROUP_DM))
+    }
+
+    pub fn voice_menu_len(&self) -> usize {
+        self.voice_actions().len()
+    }
+
+    pub fn voice_menu_move(&mut self, delta: isize) {
+        let count = self.voice_menu_len();
+        if let Some(view) = &mut self.voice_menu {
+            view.selected = if count == 0 {
+                0
+            } else {
+                (view.selected as isize + delta).clamp(0, count as isize - 1) as usize
+            };
+        }
+    }
+
+    pub fn voice_selected_action(&self) -> Option<VoiceAction> {
+        let view = self.voice_menu.as_ref()?;
+        self.voice_actions().get(view.selected).copied()
+    }
+
+    /// Remember that the client asked to be in a channel, before the
+    /// server has said anything back.
+    pub fn set_voice_joining(&mut self, channel_id: String, guild_id: Option<String>) {
+        self.voice = Some(VoiceConnection {
+            channel_id,
+            guild_id,
+            connection_id: None,
+            self_mute: false,
+            self_deaf: false,
+            grant: None,
+            media_running: false,
+        });
+    }
+
+    pub fn clear_voice(&mut self) {
+        self.voice = None;
+    }
+
+    /// Take VOICE_SERVER_UPDATE: the grant for the connection.
+    pub fn set_voice_grant(&mut self, event: crate::api::types::VoiceServerUpdateEvent) {
+        let Some(connection) = &mut self.voice else {
+            return;
+        };
+        if !event.channel_id.is_empty() && connection.channel_id != event.channel_id {
+            return;
+        }
+        connection.connection_id = Some(event.connection_id);
+        // the grant says the scope outright — a community's channel has
+        // a guild and a call has none — so it settles what the client
+        // guessed when it asked to join
+        connection.guild_id = event.guild_id;
+        connection.grant = Some(VoiceGrant {
+            endpoint: event.endpoint,
+            token: event.token,
+            e2ee_key: event.e2ee_key,
+        });
+        // a fresh grant means a fresh connection to carry
+        connection.media_running = false;
+    }
+
+    pub fn set_voice_media_running(&mut self, running: bool) {
+        if let Some(connection) = &mut self.voice {
+            connection.media_running = running;
+        }
+    }
+
+    /// The grant to hand a media program, when there is one waiting to be
+    /// carried.
+    pub fn voice_grant_to_start(&self) -> Option<(String, VoiceGrant)> {
+        let connection = self.voice.as_ref()?;
+        if connection.media_running {
+            return None;
+        }
+        let grant = connection.grant.clone()?;
+        Some((connection.channel_id.clone(), grant))
+    }
+
+    pub fn set_voice_flags(&mut self, self_mute: bool, self_deaf: bool) {
+        if let Some(connection) = &mut self.voice {
+            connection.self_mute = self_mute;
+            // deafening implies not hearing, and the web client mutes
+            // with it, so the two move together in that direction
+            connection.self_deaf = self_deaf;
+            if self_deaf {
+                connection.self_mute = true;
+            }
+        }
+    }
+
+    pub fn upsert_incoming_call(&mut self, channel_id: String, ringing: Vec<String>) {
+        if ringing.is_empty() {
+            self.incoming_calls.remove(&channel_id);
+            return;
+        }
+        self.incoming_calls.insert(
+            channel_id.clone(),
+            IncomingCall {
+                channel_id,
+                ringing,
+            },
+        );
+    }
+
+    pub fn clear_incoming_call(&mut self, channel_id: &str) {
+        self.incoming_calls.remove(channel_id);
+    }
+
+    /// A line for the status bar while a call is on or ringing.
+    pub fn voice_status_line(&self) -> Option<String> {
+        if let Some(channel_id) = self.first_ringing_channel() {
+            let (_, name) = self.channel_location(&channel_id);
+            return Some(format!("{name} is ringing (Alt+V)"));
+        }
+        let connection = self.voice.as_ref()?;
+        let (_, name) = self.channel_location(&connection.channel_id);
+        let mut what = String::new();
+        if connection.self_deaf {
+            what.push_str(" deaf");
+        } else if connection.self_mute {
+            what.push_str(" muted");
+        }
+        if connection.grant.is_none() {
+            what.push_str(" connecting");
+        }
+        Some(format!("in {name}{what}"))
     }
 
     // r (as in reply)

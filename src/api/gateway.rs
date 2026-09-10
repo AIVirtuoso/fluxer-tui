@@ -16,6 +16,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 const OP_DISPATCH: u8 = 0;
 const OP_HEARTBEAT: u8 = 1;
 const OP_IDENTIFY: u8 = 2;
+const OP_VOICE_STATE: u8 = 4;
 const OP_RESUME: u8 = 6;
 const OP_RECONNECT: u8 = 7;
 const OP_INVALID_SESSION: u8 = 9;
@@ -43,6 +44,16 @@ pub enum GatewayCommand {
     /// User-account sessions: subscribe so MESSAGE_CREATE, TYPING_START, etc. are delivered (see fluxer session_passive).
     LazySubscribeGuild {
         guild_id: String,
+    },
+    /// Opcode 4: join, move, change or leave the voice membership of
+    /// this session. `channel_id` None leaves; `guild_id` None is the
+    /// direct-message context, which is where a call lives.
+    VoiceState {
+        guild_id: Option<String>,
+        channel_id: Option<String>,
+        connection_id: Option<String>,
+        self_mute: bool,
+        self_deaf: bool,
     },
     Shutdown,
 }
@@ -271,6 +282,30 @@ async fn run_connection(
                                     "lazy subscribe failed: {e}"
                                 )));
                             }
+                        }
+                    }
+                    Some(GatewayCommand::VoiceState {
+                        guild_id,
+                        channel_id,
+                        connection_id,
+                        self_mute,
+                        self_deaf,
+                    }) => {
+                        // every field is sent, null included: null is
+                        // what means "leave" and "the DM context", so
+                        // leaving them out would say something else
+                        let d = json!({
+                            "guild_id": guild_id,
+                            "channel_id": channel_id,
+                            "connection_id": connection_id,
+                            "self_mute": self_mute,
+                            "self_deaf": self_deaf,
+                            "self_video": false,
+                        });
+                        if let Err(e) = send_op_json(&mut write, OP_VOICE_STATE, d).await {
+                            let _ = event_tx.send(AppEvent::ApiError(format!(
+                                "voice state update failed: {e}"
+                            )));
                         }
                     }
                     Some(GatewayCommand::Shutdown) | None => {

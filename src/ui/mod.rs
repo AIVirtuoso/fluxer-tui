@@ -20,6 +20,7 @@ pub(crate) mod span_wrap;
 pub mod status_bar;
 pub mod sticker_picker;
 pub mod theme;
+pub mod voice_overlay;
 
 use crate::app::App;
 use ratatui::Frame;
@@ -112,6 +113,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         server_notifications_overlay::render(frame, area, app);
     } else if app.pings.is_some() {
         pings_overlay::render(frame, area, app);
+    } else if app.voice_menu.is_some() {
+        voice_overlay::render(frame, area, app);
     } else if app.image_preview.is_some() {
         image_preview::render(frame, area, app);
     } else if app.profile.is_some() {

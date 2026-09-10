@@ -710,6 +710,71 @@ impl FluxerHttpClient {
         Ok(())
     }
 
+    /// Ring the people in a conversation, which is how a call starts.
+    pub async fn ring_call(&self, channel_id: &str) -> Result<()> {
+        self.send_empty(
+            Method::POST,
+            &format!("/channels/{channel_id}/call/ring"),
+            Some(&serde_json::json!({})),
+            "ring them",
+        )
+        .await
+    }
+
+    /// Stop a conversation ringing. With `recipients` holding only the
+    /// reader it turns the call down for them alone and leaves it
+    /// ringing for everybody else, which is what declining means.
+    pub async fn stop_ringing(&self, channel_id: &str, recipients: &[String]) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            #[serde(skip_serializing_if = "<[String]>::is_empty")]
+            recipients: &'a [String],
+        }
+        self.send_empty(
+            Method::POST,
+            &format!("/channels/{channel_id}/call/stop-ringing"),
+            Some(&Body { recipients }),
+            "stop the ringing",
+        )
+        .await
+    }
+
+    /// A call whose answer is either 204 or nothing worth reading.
+    async fn send_empty<B>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        what: &str,
+    ) -> Result<()>
+    where
+        B: Serialize + ?Sized,
+    {
+        let mut builder = self
+            .inner
+            .request(method, self.url(path))
+            .header("X-Fluxer-Platform", "desktop")
+            .header("Authorization", self.token.as_deref().unwrap_or(""));
+        if let Some(body) = body {
+            builder = builder.json(body);
+        }
+        let resp = builder
+            .send()
+            .await
+            .with_context(|| format!("failed to {what}"))?;
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            let detail = resp.text().await.unwrap_or_default();
+            let detail = detail.chars().take(200).collect::<String>();
+            crate::debug::log("http", format!("{what} failed: {status}"));
+            if detail.is_empty() {
+                bail!("{what} failed: {status}");
+            }
+            bail!("{what} failed: {status} {detail}");
+        }
+        Ok(())
+    }
+
     pub async fn handoff_initiate(&self) -> Result<HandoffInitiateResponse> {
         self.send_json::<(), (), HandoffInitiateResponse>(
             Method::POST,

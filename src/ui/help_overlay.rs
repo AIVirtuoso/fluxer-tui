@@ -21,6 +21,11 @@ Focus & navigation
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
   p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
+  Alt+V - voice: join the open voice channel, ring a conversation, answer or turn
+           down a call, mute, deafen, leave. The client joins and keeps the
+           bookkeeping; the sound itself is carried by the program named in
+           [media] voice_command, and the menu says plainly when there is none
+           (see README, "Voice").
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -102,6 +107,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)
   Alt+S - sticker picker (see Input)
+  Alt+V - voice: join, answer, mute, leave
 
 Other
   Edited messages show “(edited)” after the timestamp when the API sends edited_timestamp.
