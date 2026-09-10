@@ -120,13 +120,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         content,
     );
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "↑/↓ move  ·  Enter go to message  ·  x unpin  ·  R reload  ·  Esc close",
-            muted,
-        )))
-        .alignment(Alignment::Center),
+    crate::ui::footer::render(
+        frame,
         body[1],
+        app,
+        "↑/↓ move  ·  Enter go to message  ·  x unpin  ·  R reload  ·  Esc close",
     );
 }
 

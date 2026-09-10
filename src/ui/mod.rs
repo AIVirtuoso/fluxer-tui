@@ -6,6 +6,7 @@ pub mod conversation_overlay;
 pub mod debug_overlay;
 pub mod emoji_popup;
 pub mod file_picker;
+pub mod footer;
 pub mod friends_overlay;
 pub mod help_overlay;
 pub mod image_preview;

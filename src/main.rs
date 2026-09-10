@@ -809,6 +809,11 @@ async fn main() -> Result<()> {
 }
 
 fn ensure_lazy_guild_subscription(app: &mut App, gateway_cmd_tx: &UnboundedSender<GatewayCommand>) {
+    // noticing the reader moved is done here rather than at each of the
+    // dozen call sites that move them: the history, the last community
+    // and the "new messages" line all hang off it
+    app.note_active_channel();
+    app.clear_unread_anchor_if_caught_up();
     if app.gateway_status != GatewayStatus::Connected {
         return;
     }
@@ -2875,8 +2880,11 @@ fn handle_key_event(
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::BackTab => app.focus = app.focus.previous(),
-        KeyCode::Left | KeyCode::Char('h') => app.focus = app.focus.previous(),
-        KeyCode::Right | KeyCode::Char('l') => app.focus = app.focus.next(),
+        // these carry no modifier, so they would swallow every Alt key
+        // that shares a letter with them; the guard is what keeps
+        // Alt+Left, Alt+Right and Alt+L reachable further down
+        KeyCode::Left | KeyCode::Char('h') if !alt => app.focus = app.focus.previous(),
+        KeyCode::Right | KeyCode::Char('l') if !alt => app.focus = app.focus.next(),
         KeyCode::Char('i') => {
             if app.active_channel_is_text() && app.can_send_in_active_channel() {
                 app.focus = Focus::Input;
@@ -2907,15 +2915,55 @@ fn handle_key_event(
         // Alt+J / Alt+K scroll the member column, which has no focus of
         // its own: it is a list to read beside the messages, not a place
         // the Tab cycle stops at
-        KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Down
+        KeyCode::Char('j') | KeyCode::Char('J')
             if key.modifiers.contains(KeyModifiers::ALT) && app.member_list.is_some() =>
         {
             app.member_list_scroll(1);
         }
-        KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Up
+        KeyCode::Char('k') | KeyCode::Char('K')
             if key.modifiers.contains(KeyModifiers::ALT) && app.member_list.is_some() =>
         {
             app.member_list_scroll(-1);
+        }
+        // Alt+Up / Alt+Down step the server column from anywhere, so the
+        // reader does not have to put the focus on it first
+        KeyCode::Up if alt => app.step_server(-1),
+        KeyCode::Down if alt => app.step_server(1),
+        // Alt+Left / Alt+Right walk the channels visited, the way a
+        // browser's back and forward do
+        KeyCode::Left if alt => {
+            if !app.step_channel_history(true) {
+                app.set_transient_status("Nothing further back.", App::NOTICE_LIFETIME);
+            }
+        }
+        KeyCode::Right if alt => {
+            if !app.step_channel_history(false) {
+                app.set_transient_status("Nothing further forward.", App::NOTICE_LIFETIME);
+            }
+        }
+        // Alt+1 to Alt+9: the conversation list, then the communities in
+        // order, the way the web client numbers them
+        KeyCode::Char(c @ '1'..='9') if alt => {
+            let slot = c.to_digit(10).unwrap_or(0) as usize;
+            if !app.go_to_server_slot(slot) {
+                app.set_transient_status(format!("There is no slot {slot}."), App::NOTICE_LIFETIME);
+            }
+        }
+        // Alt+L: back and forth between the last community and the
+        // conversation list
+        KeyCode::Char('l') | KeyCode::Char('L') if alt => {
+            app.toggle_guild_and_dms();
+        }
+        // U: the "new messages" line
+        KeyCode::Char('U')
+            if matches!(
+                app.focus,
+                Focus::Servers | Focus::Channels | Focus::Messages
+            ) =>
+        {
+            if !app.jump_to_first_unread() {
+                app.set_transient_status("Nothing new to jump to here.", App::NOTICE_LIFETIME);
+            }
         }
         KeyCode::Up | KeyCode::Char('k') => match app.focus {
             Focus::Servers => {
@@ -5472,7 +5520,7 @@ fn spawn_friend_request_by_tag(
         {
             Ok(()) => {
                 let _ = event_tx.send(AppEvent::SetStatus(format!(
-                    "Asked {username}#{discriminator} to be friends."
+                    "Friend request sent to {username}#{discriminator}."
                 )));
             }
             Err(err) => {

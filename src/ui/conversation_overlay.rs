@@ -193,10 +193,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             "\u{2191}/\u{2193} move  ·  Enter take them out  ·  Esc back".to_string()
         }
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, muted))).alignment(Alignment::Center),
-        body[1],
-    );
+    crate::ui::footer::render(frame, body[1], app, &footer);
 }
 
 #[cfg(test)]

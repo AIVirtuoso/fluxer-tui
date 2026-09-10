@@ -1259,10 +1259,15 @@ pub fn apply_event(
             app.message_scroll_from_bottom = 0;
         }
         AppEvent::ApiError(message) => {
+            // an error stays until something replaces it: it is the one
+            // thing a reader must not miss by looking away
             app.set_status(message);
         }
         AppEvent::SetStatus(message) => {
-            app.set_status(message);
+            // "sent", "joined", "pinned" and their like fade, so an
+            // overlay's footer goes back to telling the reader what the
+            // keys do rather than what happened a minute ago
+            app.set_transient_status(message, crate::app::App::NOTICE_LIFETIME);
         }
         AppEvent::ImagePreviewBytes { title, bytes } => {
             if !matches!(app.image_preview, Some(ImagePreviewState::Loading { .. })) {

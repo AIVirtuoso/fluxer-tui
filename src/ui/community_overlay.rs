@@ -305,10 +305,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ),
         None => footer,
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, muted))).alignment(Alignment::Center),
-        body[1],
-    );
+    crate::ui::footer::render(frame, body[1], app, &footer);
 }
 
 #[cfg(test)]

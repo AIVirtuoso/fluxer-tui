@@ -472,6 +472,28 @@ fn context_row(
     }
 }
 
+/// The "new messages" line: a rule across the pane with the words in the
+/// middle, in the same amber the mention bar uses, since both mean "this
+/// is the part meant for you".
+fn unread_divider_line(text_w: u16) -> Line<'static> {
+    const LABEL: &str = " new messages ";
+    let style = Style::default().fg(crate::ui::theme::mention_bar());
+    let width = text_w as usize;
+    let rule = width.saturating_sub(LABEL.chars().count());
+    // a pane too narrow for the words keeps the rule, so the line is
+    // still there to see
+    if rule < 4 {
+        return Line::from(Span::styled("\u{2500}".repeat(width.max(1)), style));
+    }
+    let left = rule / 2;
+    let right = rule - left;
+    Line::from(vec![
+        Span::styled("\u{2500}".repeat(left), style),
+        Span::styled(LABEL, style.add_modifier(Modifier::BOLD)),
+        Span::styled("\u{2500}".repeat(right), style),
+    ])
+}
+
 fn header_row(
     message: &crate::api::types::MessageResponse,
     author: &str,
@@ -597,9 +619,17 @@ fn build_message_lines(
         .max(1);
     let picture_max = crate::media::preview_limits(body_w, pane_rows, app.cell_px);
     let reply_target = reply_target_index(app, messages);
+    // the message the "new messages" line sits above, if any
+    let first_unread = app.active_first_unread_message_id();
 
     for (idx, message) in messages.iter().enumerate() {
         let is_selected_msg = app.selected_message_index == Some(idx);
+
+        // the line goes above the first message that arrived after the
+        // reader last left, and takes a row of its own
+        if first_unread.as_deref() == Some(message.id.as_str()) {
+            lines.push(unread_divider_line(text_w));
+        }
         let cur_ts = message
             .timestamp
             .parse::<chrono::DateTime<chrono::Utc>>()

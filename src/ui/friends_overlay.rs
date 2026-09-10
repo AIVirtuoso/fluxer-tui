@@ -133,10 +133,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ),
         None => footer_for(view.tab).to_string(),
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, muted))).alignment(Alignment::Center),
-        body[1],
-    );
+    crate::ui::footer::render(frame, body[1], app, &footer);
 }
 
 fn empty_label(tab: FriendsTab) -> &'static str {
