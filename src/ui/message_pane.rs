@@ -165,12 +165,21 @@ struct Gutter {
     mention: bool,
     /// The message the selected reply answers: a mark on its first row.
     reply_target: bool,
+    /// Marked with `m` for a bulk delete: a cross on its first row, and
+    /// the selection arrow turns the same colour where both apply.
+    marked: bool,
 }
 
 impl Gutter {
     fn span(self, row: usize) -> Span<'static> {
         if row == 0 && self.selected {
+            if self.marked {
+                return Span::styled("\u{25B6} ", Style::default().fg(crate::ui::theme::danger()));
+            }
             return sel_prefix_span(true);
+        }
+        if row == 0 && self.marked {
+            return Span::styled("\u{2716} ", Style::default().fg(crate::ui::theme::danger()));
         }
         if row == 0 && self.reply_target {
             return Span::styled(
@@ -635,6 +644,7 @@ fn build_message_lines(
         let gutter = Gutter {
             selected: is_selected_msg,
             mention,
+            marked: app.is_marked(&message.channel_id, &message.id),
             reply_target: reply_target == Some(idx),
         };
 

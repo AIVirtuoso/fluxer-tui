@@ -21,6 +21,8 @@ Focus & navigation
   Enter (channels) - open messages, or open link-channel URL, or focus input on text channel
   R - refresh: reload current channel messages and guild channels/members
   p - pings: the messages that mentioned you (Enter jumps to one, x dismisses it, X all)
+  Alt+P - the pinned messages of the open channel (Enter jumps to one, x unpins)
+  Alt+B - the messages you have bookmarked, from everywhere (Enter jumps, x removes)
 
 Servers (left column)
   Up / Down / j / k - move server selection
@@ -38,9 +40,24 @@ Messages
   G - jump to the newest message; while scrolled up, the view stays put as messages arrive
   Scroll up near the top - older messages load automatically
   s - select last message (selection mode)
+  a - everything that can be done with the selected message, in one menu (the
+           keyboard's answer to the web client's right-click): pin, bookmark, mark
+           unread, mark the channel or the community read, hide or show the link
+           previews, who reacted, clear the reactions, copy a link or the id,
+           remove one file from it, delete the marked messages, report it.
+           ↑/↓ move, Enter chooses, Esc steps back out of a list or closes.
+           The keys below are the same things without the menu.
   y or Ctrl+C - copy the selected message: its text and the links of its files, to
            the system clipboard where wl-copy or xclip is there, and always to the
            cut buffer, so Alt+V pastes it in the input (that is the way on the console)
+  Y - copy a link to the selected message (the web app address of it)
+  P - pin the selected message to the channel, or unpin it
+  b - bookmark the selected message, or take the bookmark off
+  v - who reacted to the selected message (←/→ walks its other reactions, x clears
+           everybody's reaction with the one shown, with Manage Messages)
+  m - mark the selected message; a → "Delete the marked messages" deletes every
+           marked message of the channel in one call (needs Manage Messages, and
+           the server refuses messages older than two weeks)
   r - reply to selected message
   u - profile of the selected message's author (p there: picture full size; Esc closes)
   f - forward selected (pick channel with Ctrl+K, optional note, Enter)
@@ -102,6 +119,7 @@ Ctrl+channel (disabled while : or @ autocomplete is open)
 Alt
   Alt+A - next channel with unread or mention (hotlist; wraps)
   Alt+S - sticker picker (see Input)
+  Alt+P - pinned messages of the open channel     Alt+B - your bookmarks
 
 Other
   Edited messages show “(edited)” after the timestamp when the API sends edited_timestamp.

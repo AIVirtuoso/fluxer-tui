@@ -822,6 +822,10 @@ pub struct MessageResponse {
     pub edited_timestamp: Option<String>,
     #[serde(default)]
     pub pinned: bool,
+    /// Message flags; the only one the client acts on is
+    /// `SUPPRESS_EMBEDS` (bit 2), which hides the link previews.
+    #[serde(default)]
+    pub flags: u64,
     #[serde(default)]
     pub mention_everyone: bool,
     #[serde(default)]
@@ -1254,6 +1258,45 @@ pub fn merge_user_cache(
             cache.insert(user.id.clone(), user);
         }
     }
+}
+
+/// Bit 2 of a message's `flags`: the server leaves the embeds out of
+/// the message when it is set, which is what "suppress embeds" does.
+pub const MESSAGE_FLAG_SUPPRESS_EMBEDS: u64 = 1 << 2;
+
+/// One entry of `GET /channels/{id}/messages/pins`: the message and when
+/// it was pinned (which is not the message's own timestamp).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelPinResponse {
+    #[serde(default)]
+    pub message: MessageResponse,
+    #[serde(default)]
+    pub pinned_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelPinsResponse {
+    #[serde(default)]
+    pub items: Vec<ChannelPinResponse>,
+    #[serde(default)]
+    pub has_more: bool,
+}
+
+/// One entry of `GET /users/@me/saved-messages`. `message` is null when
+/// the message it points at has since been deleted or put out of reach,
+/// and `status` says which.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedMessageEntryResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub channel_id: String,
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<MessageResponse>,
 }
 
 #[cfg(test)]

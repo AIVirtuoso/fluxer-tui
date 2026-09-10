@@ -158,6 +158,47 @@ pub enum AppEvent {
     MentionsFailed {
         message: String,
     },
+    /// The pinned messages of one channel.
+    PinsLoaded {
+        channel_id: String,
+        items: Vec<crate::api::types::ChannelPinResponse>,
+    },
+    PinsFailed {
+        channel_id: String,
+        message: String,
+    },
+    /// The user's bookmarked messages.
+    SavedLoaded {
+        entries: Vec<crate::api::types::SavedMessageEntryResponse>,
+    },
+    SavedFailed {
+        message: String,
+    },
+    /// Who reacted to a message with one emoji. The emoji comes back with
+    /// the answer so a list that arrives after the view has walked on to
+    /// another reaction is dropped rather than shown under the wrong one.
+    ReactionUsersLoaded {
+        emoji: String,
+        users: Vec<crate::api::types::UserPartialResponse>,
+    },
+    ReactionUsersFailed {
+        emoji: String,
+        message: String,
+    },
+    /// A pin or unpin the server refused: the loaded copy is put back to
+    /// what it was, since the pane was changed before the call went out.
+    MessagePinFailed {
+        channel_id: String,
+        message_id: String,
+        pinned: bool,
+        message: String,
+    },
+    /// A bookmark the server refused, put back the same way.
+    BookmarkFailed {
+        message_id: String,
+        saved: bool,
+        message: String,
+    },
     ProfileLoaded {
         user_id: String,
         guild_id: Option<String>,
@@ -182,6 +223,9 @@ pub struct EventEffects {
     pub chafa_fallback: Option<(String, Vec<u8>)>,
     /// Messages to announce outside the client.
     pub notify: Vec<crate::notify::Notification>,
+    /// A channel whose pins changed while its overlay was open, so the
+    /// list has to be asked for again (the event carries no messages).
+    pub reload_pins: Option<String>,
 }
 
 /// A gateway payload read into its type; when it cannot be, the debug
@@ -244,6 +288,48 @@ pub fn apply_event(
         }
         AppEvent::MentionsFailed { message } => {
             app.set_pings_failed(message);
+        }
+        AppEvent::PinsLoaded { channel_id, items } => {
+            app.set_pins_loaded(&channel_id, items);
+        }
+        AppEvent::PinsFailed {
+            channel_id,
+            message,
+        } => {
+            app.set_pins_failed(&channel_id, message);
+        }
+        AppEvent::SavedLoaded { entries } => {
+            app.set_saved_loaded(entries);
+        }
+        AppEvent::SavedFailed { message } => {
+            app.set_saved_failed(message);
+        }
+        AppEvent::ReactionUsersLoaded { emoji, users } => {
+            app.set_reaction_users_loaded(&emoji, users);
+        }
+        AppEvent::ReactionUsersFailed { emoji, message } => {
+            app.set_reaction_users_failed(&emoji, message);
+        }
+        AppEvent::MessagePinFailed {
+            channel_id,
+            message_id,
+            pinned,
+            message,
+        } => {
+            app.set_local_message_pinned(&channel_id, &message_id, pinned);
+            app.set_status(message);
+        }
+        AppEvent::BookmarkFailed {
+            message_id,
+            saved,
+            message,
+        } => {
+            if saved {
+                app.remember_saved_message(message_id);
+            } else {
+                app.forget_saved_message(&message_id);
+            }
+            app.set_status(message);
         }
         AppEvent::ProfileLoaded {
             user_id,
@@ -512,6 +598,99 @@ pub fn apply_event(
                     msg.reactions.retain(|r| r.count > 0);
                 }
             }
+            "MESSAGE_REACTION_REMOVE_ALL" => {
+                #[derive(serde::Deserialize)]
+                struct RemoveAll {
+                    channel_id: String,
+                    message_id: String,
+                }
+                if let Some(event) = read::<RemoveAll>(&kind, payload)
+                    && let Some(msgs) = app.messages.get_mut(&event.channel_id)
+                    && let Some(msg) = std::rc::Rc::make_mut(msgs)
+                        .iter_mut()
+                        .find(|m| m.id == event.message_id)
+                {
+                    app.messages_version = app.messages_version.wrapping_add(1);
+                    msg.reactions.clear();
+                }
+            }
+            "MESSAGE_REACTION_REMOVE_EMOJI" => {
+                #[derive(serde::Deserialize)]
+                struct RemoveEmoji {
+                    channel_id: String,
+                    message_id: String,
+                    emoji: crate::api::types::ReactionEmojiResponse,
+                }
+                if let Some(event) = read::<RemoveEmoji>(&kind, payload)
+                    && let Some(msgs) = app.messages.get_mut(&event.channel_id)
+                    && let Some(msg) = std::rc::Rc::make_mut(msgs)
+                        .iter_mut()
+                        .find(|m| m.id == event.message_id)
+                {
+                    app.messages_version = app.messages_version.wrapping_add(1);
+                    let key = reaction_emoji_key(&event.emoji);
+                    msg.reactions
+                        .retain(|r| reaction_emoji_key(&r.emoji) != key);
+                }
+            }
+            "MESSAGE_DELETE_BULK" => {
+                #[derive(serde::Deserialize)]
+                struct DeleteBulk {
+                    channel_id: String,
+                    #[serde(default)]
+                    ids: Vec<String>,
+                }
+                if let Some(event) = read::<DeleteBulk>(&kind, payload) {
+                    for id in &event.ids {
+                        app.remove_message(&event.channel_id, id);
+                    }
+                    if let Some(marks) = app.marked_messages.get_mut(&event.channel_id) {
+                        for id in &event.ids {
+                            marks.remove(id);
+                        }
+                        if marks.is_empty() {
+                            app.marked_messages.remove(&event.channel_id);
+                        }
+                    }
+                    app.normalize_selection();
+                }
+            }
+            "CHANNEL_PINS_UPDATE" => {
+                #[derive(serde::Deserialize)]
+                struct PinsUpdate {
+                    channel_id: String,
+                }
+                if let Some(event) = read::<PinsUpdate>(&kind, payload) {
+                    // the list itself is not sent; the open overlay asks
+                    // for it again and the sidebar marks the channel
+                    app.channels_with_new_pins.insert(event.channel_id.clone());
+                    if app
+                        .pins
+                        .as_ref()
+                        .is_some_and(|v| v.channel_id == event.channel_id)
+                    {
+                        effects.reload_pins = Some(event.channel_id);
+                    }
+                }
+            }
+            "SAVED_MESSAGE_CREATE" => {
+                #[derive(serde::Deserialize)]
+                struct SavedChange {
+                    message_id: String,
+                }
+                if let Some(event) = read::<SavedChange>(&kind, payload) {
+                    app.remember_saved_message(event.message_id);
+                }
+            }
+            "SAVED_MESSAGE_DELETE" => {
+                #[derive(serde::Deserialize)]
+                struct SavedChange {
+                    message_id: String,
+                }
+                if let Some(event) = read::<SavedChange>(&kind, payload) {
+                    app.forget_saved_message(&event.message_id);
+                }
+            }
             "VOICE_STATE_UPDATE" => {
                 if let Some(state) = read::<VoiceStateResponse>(&kind, payload) {
                     app.update_voice_state(state);
@@ -733,6 +912,7 @@ pub fn apply_event(
                 timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 edited_timestamp: None,
                 pinned: false,
+                flags: 0,
                 mention_everyone: false,
                 mentions: vec![],
                 mention_roles: vec![],

@@ -124,7 +124,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 /// The message on one row: its lines joined, mentions and emoji shown as
 /// in the chat; attachments counted when there is no text. The row is
 /// clipped at the popup's edge.
-fn preview_spans(
+pub fn preview_spans(
     app: &App,
     message: &crate::api::types::MessageResponse,
     base: Style,
