@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,4 +50,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fluxer-dev-build
-          path: target/debug/fluxer
+          path: target/debug/fluxter
