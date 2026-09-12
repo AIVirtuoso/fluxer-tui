@@ -15,7 +15,7 @@ pub const READ_MESSAGE_HISTORY: u64 = 0x10000;
 const OVERWRITE_ROLE: i32 = 0;
 const OVERWRITE_MEMBER: i32 = 1;
 
-/// isreali GPT was here... Beep Boop. (joke)
+// isreali GPT was here... Beep Boop. (joke)
 
 pub fn compute_channel_permissions(
     user_id: &str,

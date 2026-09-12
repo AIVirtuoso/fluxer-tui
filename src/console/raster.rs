@@ -344,6 +344,7 @@ impl Rasterizer {
 
     /// Paint `buf` (plus pictures and the cursor) into an XRGB8888 frame of
     /// `width x height` pixels with `stride` pixels per row.
+    #[allow(clippy::too_many_arguments)] // a buffer and the frame it is painted into
     pub fn render(
         &mut self,
         buf: &Buffer,
@@ -629,6 +630,7 @@ fn blend(dst: u32, src: [u8; 3], alpha: u8) -> u32 {
     pack([f(src[0], d[0]), f(src[1], d[1]), f(src[2], d[2])])
 }
 
+#[allow(clippy::too_many_arguments)] // the frame, its geometry and the rectangle
 fn fill_rect(
     frame: &mut [u32],
     stride: u32,
@@ -652,6 +654,7 @@ fn fill_rect(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // the frame, its geometry and the glyph
 fn blit_glyph(
     frame: &mut [u32],
     stride: u32,

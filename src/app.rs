@@ -1820,6 +1820,7 @@ impl App {
         24 * 60 * 60 * 1000,
     ];
 
+    #[allow(clippy::too_many_arguments)] // everything READY brings, each of it needed
     pub fn new(
         discovery: WellKnownFluxerResponse,
         me: UserPrivateResponse,
@@ -2502,7 +2503,7 @@ impl App {
         let Some(channel) = self.channel_by_id(channel_id) else {
             return false;
         };
-        self.channel_notification_visibility(&channel) == NotificationVisibility::AllMessages
+        self.channel_notification_visibility(channel) == NotificationVisibility::AllMessages
             && self.channel_is_unread(channel_id)
     }
 
@@ -2510,7 +2511,7 @@ impl App {
         let Some(channel) = self.channel_by_id(channel_id) else {
             return 0;
         };
-        match self.channel_notification_visibility(&channel) {
+        match self.channel_notification_visibility(channel) {
             NotificationVisibility::None => 0,
             NotificationVisibility::AllMessages | NotificationVisibility::MentionsOnly => {
                 self.channel_mention_count(channel_id)
@@ -3047,13 +3048,13 @@ impl App {
         let Some(channel) = self.channel_by_id(&message.channel_id) else {
             return message.mentions.iter().any(|user| user.id == self.me.id);
         };
-        if self.channel_notification_visibility(&channel) == NotificationVisibility::None {
+        if self.channel_notification_visibility(channel) == NotificationVisibility::None {
             return false;
         }
         if self.message_mentions_me(message) {
             return true;
         }
-        channel.guild_id.is_none() && !self.channel_is_muted_effective(&channel)
+        channel.guild_id.is_none() && !self.channel_is_muted_effective(channel)
     }
 
     /// Whether a message mentions the user: by name, through one of their
@@ -3137,10 +3138,10 @@ impl App {
                 mention_count: 0,
             });
 
-        if self.message_notifies_me(message) {
-            if let Some(rs) = self.read_states.get_mut(channel_id) {
-                rs.mention_count = rs.mention_count.saturating_add(1);
-            }
+        if self.message_notifies_me(message)
+            && let Some(rs) = self.read_states.get_mut(channel_id)
+        {
+            rs.mention_count = rs.mention_count.saturating_add(1);
         }
     }
 
@@ -4562,10 +4563,10 @@ impl App {
             *elapsed -= lim;
             *frame_idx = (*frame_idx + 1) % frames.len();
         }
-        if *frame_idx != old_idx {
-            if let Some(ref picker) = self.image_picker {
-                *current_protocol = picker.new_resize_protocol(frames[*frame_idx].clone());
-            }
+        if *frame_idx != old_idx
+            && let Some(ref picker) = self.image_picker
+        {
+            *current_protocol = picker.new_resize_protocol(frames[*frame_idx].clone());
         }
     }
 
@@ -4905,7 +4906,8 @@ impl App {
         let channel_id = message.channel_id.clone();
         self.messages_version = self.messages_version.wrapping_add(1);
         let entries = std::rc::Rc::make_mut(self.messages.entry(channel_id).or_default());
-        let was_new = if let Some(existing) = entries
+
+        if let Some(existing) = entries
             .iter_mut()
             .find(|existing| existing.id == message.id)
         {
@@ -4920,8 +4922,7 @@ impl App {
                 .map_or(0, |i| i + 1);
             entries.insert(at, message);
             true
-        };
-        was_new
+        }
     }
 
     pub fn set_channel_messages(&mut self, channel_id: &str, mut messages: Vec<MessageResponse>) {
@@ -8109,18 +8110,17 @@ impl App {
         user: &UserPartialResponse,
     ) -> String {
         let u = self.user_cache.get(&user.id).unwrap_or(user);
-        if let Some(gid) = guild_id {
-            if let Some(members) = self.guild_members.get(gid) {
-                if let Some(m) = members.iter().find(|m| m.user.id == user.id) {
-                    let base = self.user_cache.get(&m.user.id).unwrap_or(&m.user);
-                    return m
-                        .nick
-                        .as_ref()
-                        .filter(|n| !n.trim().is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| account_display_name(base));
-                }
-            }
+        if let Some(gid) = guild_id
+            && let Some(members) = self.guild_members.get(gid)
+            && let Some(m) = members.iter().find(|m| m.user.id == user.id)
+        {
+            let base = self.user_cache.get(&m.user.id).unwrap_or(&m.user);
+            return m
+                .nick
+                .as_ref()
+                .filter(|n| !n.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| account_display_name(base));
         }
         account_display_name(u)
     }
@@ -8131,41 +8131,40 @@ impl App {
         let guild_default = || crate::ui::theme::text();
 
         if let Some(gid) = guild_id {
-            if let Some(members) = self.guild_members.get(gid) {
-                if let Some(member) = members.iter().find(|m| m.user.id == user_id) {
-                    if let Some(roles) = self.guild_roles.get(gid) {
-                        let role_pos = |rid: &str| {
-                            let rid = rid.trim();
-                            roles
-                                .iter()
-                                .find(|r| r.id.trim() == rid)
-                                .map(|r| r.position)
-                                .unwrap_or(i32::MIN)
-                        };
-                        let mut role_ids: Vec<&str> =
-                            member.roles.iter().map(|s| s.as_str()).collect();
-                        role_ids.sort_by(|a, b| {
-                            role_pos(b).cmp(&role_pos(a)).then_with(|| {
-                                snowflake_sort_key(a.trim()).cmp(&snowflake_sort_key(b.trim()))
-                            })
-                        });
-                        for rid in role_ids {
-                            let rid = rid.trim();
-                            if let Some(r) = roles.iter().find(|rr| rr.id.trim() == rid) {
-                                if r.color != 0 {
-                                    return crate::ui::theme::rgb_pack_to_color(r.color);
-                                }
-                            }
-                        }
-                        let gid_trim = gid.trim();
-                        if let Some(everyone) = roles.iter().find(|r| r.id.trim() == gid_trim) {
-                            if everyone.color != 0 {
-                                return crate::ui::theme::rgb_pack_to_color(everyone.color);
-                            }
+            if let Some(members) = self.guild_members.get(gid)
+                && let Some(member) = members.iter().find(|m| m.user.id == user_id)
+            {
+                if let Some(roles) = self.guild_roles.get(gid) {
+                    let role_pos = |rid: &str| {
+                        let rid = rid.trim();
+                        roles
+                            .iter()
+                            .find(|r| r.id.trim() == rid)
+                            .map(|r| r.position)
+                            .unwrap_or(i32::MIN)
+                    };
+                    let mut role_ids: Vec<&str> = member.roles.iter().map(|s| s.as_str()).collect();
+                    role_ids.sort_by(|a, b| {
+                        role_pos(b).cmp(&role_pos(a)).then_with(|| {
+                            snowflake_sort_key(a.trim()).cmp(&snowflake_sort_key(b.trim()))
+                        })
+                    });
+                    for rid in role_ids {
+                        let rid = rid.trim();
+                        if let Some(r) = roles.iter().find(|rr| rr.id.trim() == rid)
+                            && r.color != 0
+                        {
+                            return crate::ui::theme::rgb_pack_to_color(r.color);
                         }
                     }
-                    return guild_default();
+                    let gid_trim = gid.trim();
+                    if let Some(everyone) = roles.iter().find(|r| r.id.trim() == gid_trim)
+                        && everyone.color != 0
+                    {
+                        return crate::ui::theme::rgb_pack_to_color(everyone.color);
+                    }
                 }
+                return guild_default();
             }
             return guild_default();
         }
