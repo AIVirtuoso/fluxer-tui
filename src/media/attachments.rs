@@ -19,7 +19,9 @@ pub struct StagedAttachment {
     pub dimensions: Option<(u32, u32)>,
 }
 
-static STAGED_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+// A 32-bit counter, not a 64-bit one: powerpc and the other 32-bit targets have no
+// `AtomicU64` at all, and no session stages four billion attachments.
+static STAGED_IDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 impl StagedAttachment {
     pub fn new(filename: String, content_type: String, bytes: Vec<u8>) -> Self {
@@ -29,7 +31,7 @@ impl StagedAttachment {
             None
         };
         Self {
-            id: STAGED_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id: u64::from(STAGED_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
             filename,
             content_type,
             bytes,
