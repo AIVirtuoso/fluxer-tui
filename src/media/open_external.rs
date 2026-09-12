@@ -95,7 +95,7 @@ pub fn open_file_path(path: &Path) -> io::Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let st = Command::new("xdg-open").arg(path).status()?;
-        return command_ok("xdg-open", st);
+        command_ok("xdg-open", st)
     }
     #[cfg(not(any(
         target_os = "macos",

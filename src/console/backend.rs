@@ -593,7 +593,9 @@ impl Backend for ConsoleBackend {
 /// The terminal backend the app runs on.
 pub enum AnyBackend {
     Crossterm(TermBackend<Stdout>),
-    Console(ConsoleBackend),
+    /// Boxed: the console backend carries the frame and the glyph cache, and is
+    /// far larger than the crossterm one.
+    Console(Box<ConsoleBackend>),
 }
 
 impl AnyBackend {

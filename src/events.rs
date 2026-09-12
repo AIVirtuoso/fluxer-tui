@@ -668,16 +668,15 @@ pub fn apply_event(
                 }
             }
             "TYPING_START" => {
-                if let Some(ev) = read::<TypingStartEvent>(&kind, payload) {
-                    if !ev.channel_id.is_empty()
-                        && !ev.user_id.is_empty()
-                        && ev.user_id != app.me.id
-                    {
-                        if let (Some(gid), Some(m)) = (ev.guild_id.as_deref(), ev.member.as_ref()) {
-                            app.merge_guild_member(gid, m.clone());
-                        }
-                        app.record_typing(&ev.channel_id, &ev.user_id);
+                if let Some(ev) = read::<TypingStartEvent>(&kind, payload)
+                    && !ev.channel_id.is_empty()
+                    && !ev.user_id.is_empty()
+                    && ev.user_id != app.me.id
+                {
+                    if let (Some(gid), Some(m)) = (ev.guild_id.as_deref(), ev.member.as_ref()) {
+                        app.merge_guild_member(gid, m.clone());
                     }
+                    app.record_typing(&ev.channel_id, &ev.user_id);
                 }
             }
             "MESSAGE_UPDATE" => {

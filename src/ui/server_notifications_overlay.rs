@@ -128,22 +128,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ];
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  ", text),
-        Span::styled(app.selected_server_name(), accent),
-        Span::styled(" · notification settings", dim),
-    ]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        "  COMMUNITY",
-        accent_soft.add_modifier(Modifier::BOLD),
-    )]));
-    lines.push(Line::from(vec![Span::styled(
-        "  ───────────────────────────────────────────",
-        accent_soft,
-    )]));
-    lines.push(Line::from(""));
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("  ", text),
+            Span::styled(app.selected_server_name(), accent),
+            Span::styled(" · notification settings", dim),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  COMMUNITY",
+            accent_soft.add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  ───────────────────────────────────────────",
+            accent_soft,
+        )]),
+        Line::from(""),
+    ];
 
     for (index, (label, value, detail)) in rows.iter().enumerate() {
         lines.push(Line::from(vec![Span::styled(format!("  {label}"), dim)]));

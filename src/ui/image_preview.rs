@@ -53,6 +53,7 @@ fn center_subrect(outer: Rect, child_w: u16, child_h: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+#[allow(clippy::too_many_arguments)] // two rects and the styles they are drawn with
 fn render_bitmap_like(
     frame: &mut Frame<'_>,
     content: Rect,
@@ -245,7 +246,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 .collect();
             if max_scroll == 0 && out_lines.len() < inner_h {
                 let pad = (inner_h - out_lines.len()) / 2;
-                out_lines.splice(0..0, std::iter::repeat(Line::default()).take(pad));
+                out_lines.splice(0..0, std::iter::repeat_n(Line::default(), pad));
             }
             let block = Block::default()
                 .title(Line::from(vec![

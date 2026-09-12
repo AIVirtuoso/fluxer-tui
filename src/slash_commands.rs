@@ -118,10 +118,10 @@ pub fn visible_commands(
         if c.requires_guild && !guild_channel {
             return false;
         }
-        if let Some(bit) = c.requires_channel_perm {
-            if channel_perms & bit == 0 {
-                return false;
-            }
+        if let Some(bit) = c.requires_channel_perm
+            && channel_perms & bit == 0
+        {
+            return false;
         }
         true
     })
@@ -279,10 +279,8 @@ pub fn resolve_outgoing_slash(
     }
     let nick_arg = if t == "/nick" {
         Some(String::new())
-    } else if let Some(rest) = t.strip_prefix("/nick ") {
-        Some(rest.to_string())
     } else {
-        None
+        t.strip_prefix("/nick ").map(|rest| rest.to_string())
     };
     if let Some(arg_raw) = nick_arg {
         let guild_id = match guild_id {

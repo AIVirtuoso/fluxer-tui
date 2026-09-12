@@ -2757,39 +2757,39 @@ fn handle_key_event(
                     }
                     return;
                 }
-                if app.focus == Focus::Messages {
-                    if let Some(msg) = app.selected_message() {
-                        match first_message_preview_media(&msg) {
-                            Some(MessagePreviewMedia::Image { url, label }) => {
-                                app.start_image_preview_loading(label.clone());
-                                spawn_image_preview(client.clone(), event_tx.clone(), url, label);
-                            }
-                            Some(MessagePreviewMedia::Video { url, label }) => {
+                if app.focus == Focus::Messages
+                    && let Some(msg) = app.selected_message()
+                {
+                    match first_message_preview_media(&msg) {
+                        Some(MessagePreviewMedia::Image { url, label }) => {
+                            app.start_image_preview_loading(label.clone());
+                            spawn_image_preview(client.clone(), event_tx.clone(), url, label);
+                        }
+                        Some(MessagePreviewMedia::Video { url, label }) => {
+                            app.set_status(format!("Fetching {label}…"));
+                            spawn_open_video(client.clone(), event_tx.clone(), url, label);
+                        }
+                        Some(MessagePreviewMedia::Audio { url, label }) => {
+                            if app.audio_playing(&url) {
+                                app.stop_audio();
+                            } else {
                                 app.set_status(format!("Fetching {label}…"));
-                                spawn_open_video(client.clone(), event_tx.clone(), url, label);
-                            }
-                            Some(MessagePreviewMedia::Audio { url, label }) => {
-                                if app.audio_playing(&url) {
-                                    app.stop_audio();
-                                } else {
-                                    app.set_status(format!("Fetching {label}…"));
-                                    spawn_audio_fetch(
-                                        client.clone(),
-                                        event_tx.clone(),
-                                        url,
-                                        label,
-                                        app.disk_cache.clone(),
-                                    );
-                                }
-                            }
-                            None => {
-                                app.set_status(
-                                    "No image, video or audio attachment or embed on this message.",
+                                spawn_audio_fetch(
+                                    client.clone(),
+                                    event_tx.clone(),
+                                    url,
+                                    label,
+                                    app.disk_cache.clone(),
                                 );
                             }
                         }
-                        return;
+                        None => {
+                            app.set_status(
+                                "No image, video or audio attachment or embed on this message.",
+                            );
+                        }
                     }
+                    return;
                 }
             }
             _ => {}
@@ -5673,7 +5673,7 @@ fn init_terminal(
             return Err(e);
         }
     };
-    let terminal = Terminal::new(console::backend::AnyBackend::Console(backend))
+    let terminal = Terminal::new(console::backend::AnyBackend::Console(Box::new(backend)))
         .context("failed to create console terminal")?;
     Ok((terminal, Some(session)))
 }

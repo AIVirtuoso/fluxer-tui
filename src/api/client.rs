@@ -1629,10 +1629,10 @@ impl FluxerHttpClient {
             .inner
             .get(&target)
             .header("X-Fluxer-Platform", "desktop");
-        if let Some(token) = self.token.as_deref() {
-            if !token.is_empty() {
-                req = req.header("Authorization", token);
-            }
+        if let Some(token) = self.token.as_deref()
+            && !token.is_empty()
+        {
+            req = req.header("Authorization", token);
         }
         let response = req
             .send()
